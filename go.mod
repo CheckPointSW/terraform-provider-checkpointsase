@@ -1,4 +1,4 @@
-module terraform-provider-perimeter81
+module terraform-provider-checkpointsase
 
 go 1.26.2
 

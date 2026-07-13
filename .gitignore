@@ -1,6 +1,7 @@
 .DS_Store
 terraform-provider-perimeter81
 terraform-provider-checkpoint-sase
+terraform-provider-checkpointsase
 bin
 
 # Created by https://www.toptal.com/developers/gitignore/api/go,terraform
