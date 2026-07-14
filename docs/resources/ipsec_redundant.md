@@ -131,6 +131,10 @@ Required:
 - `p81_gateway_subnets` (List of String) Check Point SASE gateway subnet CIDR blocks reachable through either tunnel.
 - `remote_gateway_subnets` (List of String) Remote-side subnet CIDR blocks reachable through either tunnel.
 
+Optional:
+
+- `peak_bandwidth` (Number) Expected peak throughput of the tunnel pair in Mbps. Defaults to 1000. Required by the downstream service even though the public-api DTO marks it optional.
+
 
 <a id="nestedblock--tunnel1"></a>
 ### Nested Schema for `tunnel1`

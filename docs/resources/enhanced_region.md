@@ -49,6 +49,7 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
-# Import an existing enhanced_region resource by its ID.
-terraform import checkpointsase_enhanced_region.example <id>
+# Import an existing enhanced_region resource by composite ID.
+# The ID format is <network_id>-<region_id>.
+terraform import checkpointsase_enhanced_region.example <network_id>-<region_id>
 ```
