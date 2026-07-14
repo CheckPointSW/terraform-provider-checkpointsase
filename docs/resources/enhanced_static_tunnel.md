@@ -15,6 +15,11 @@ Manages a static IPsec tunnel attached to a region of a `checkpointsase_enhanced
 ```terraform
 # A static IPsec tunnel attached to a region of an enhanced network.
 # Timing fields use duration-string syntax ("30s", "60m", "8h"), not raw integers.
+# Encryption values must match the public-api enum (PhaseEncryptionV2_1) — use
+# "aes256", "aes128", etc. Passphrases must satisfy the IsPassphrase regex
+# (letters/digits/`.`/`_`, 8-64 chars — no hyphens).
+# `p81_gateway_subnets` must equal the parent enhanced network's own subnet
+# (or `0.0.0.0/0` for a default route); arbitrary CIDRs are rejected.
 resource "checkpointsase_enhanced_static_tunnel" "example" {
   network_id             = "ZwAeo5wqiF"
   region_id              = "K7tEfRm9vQ"
@@ -25,7 +30,7 @@ resource "checkpointsase_enhanced_static_tunnel" "example" {
   remote_gateway_subnets = ["192.168.40.0/24"]
   peak_bandwidth         = 1000
   auth_type              = "psk"
-  passphrase             = "ChangeMe-shared-secret"
+  passphrase             = "ChangeMeSharedSecret"
 
   key_exchange  = "ikev2"
   ike_life_time = "28800s"
@@ -35,13 +40,13 @@ resource "checkpointsase_enhanced_static_tunnel" "example" {
 
   phase1 {
     auth                = ["sha256"]
-    encryption          = ["aes-cbc-256"]
+    encryption          = ["aes256"]
     key_exchange_method = ["modp2048"]
   }
 
   phase2 {
     auth                = ["sha256"]
-    encryption          = ["aes-cbc-256"]
+    encryption          = ["aes256"]
     key_exchange_method = ["modp2048"]
   }
 }
@@ -73,7 +78,7 @@ resource "checkpointsase_enhanced_static_tunnel" "example" {
 - `last_updated` (String) Timestamp of the last update to this resource.
 - `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication (8-64 characters). Required when auth_type is 'psk'.
 - `peak_bandwidth` (Number) Expected peak throughput of the tunnel communication in Mbps. Allowed range is 10–8000. Defaults to 1000.
-- `remote_id` (String) The remote gateway ID.
+- `remote_id` (String) The remote gateway ID. When omitted, the server defaults this to `remote_public_ip`; the provider reads the server-assigned value back into state.
 - `remote_public_ip` (String) The remote gateway public IP address.
 
 ### Read-Only
@@ -106,6 +111,7 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
-# Import an existing enhanced_static_tunnel resource by its ID.
-terraform import checkpointsase_enhanced_static_tunnel.example <id>
+# Import an existing enhanced_static_tunnel resource by composite ID.
+# The ID format is <network_id>-<tunnel_id>.
+terraform import checkpointsase_enhanced_static_tunnel.example <network_id>-<tunnel_id>
 ```

@@ -42,8 +42,8 @@ Set `base_url` (or the `BASE_URL` environment variable) to target your API regio
 terraform {
   required_providers {
     checkpointsase = {
-      source  = "CheckPoint/checkpoint-sase"
-      version = "~> 1.0"
+      source  = "CheckPointSW/checkpointsase"
+      version = "~> 2.3"
     }
   }
 }

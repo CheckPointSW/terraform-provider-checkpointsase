@@ -15,6 +15,9 @@ Manages a dynamic (BGP-routed) IPsec tunnel attached to a `checkpointsase_enhanc
 ```terraform
 # A dynamic (BGP-routed) IPsec tunnel attached to an enhanced network.
 # Timing fields use duration-string syntax ("30s", "60m", "8h"), not raw integers.
+# Encryption values must match the public-api enum (PhaseEncryptionV2_1) — use
+# "aes256", "aes128", etc. Passphrases must satisfy the IsPassphrase regex
+# (letters/digits/`.`/`_`, 8-64 chars — no hyphens).
 resource "checkpointsase_enhanced_dynamic_tunnel" "example" {
   network_id             = "ZwAeo5wqiF"
   tunnel_name            = "dynamicTunnel01"
@@ -22,12 +25,17 @@ resource "checkpointsase_enhanced_dynamic_tunnel" "example" {
   p81_gateway_subnets    = ["10.99.0.0/24"]
   remote_gateway_subnets = ["192.168.50.0/24"]
   peak_bandwidth         = 1000
+  # BGP autonomous-system number for the Check Point SASE side (required).
+  left_asn = 65000
 
   tunnel {
-    region_id        = "K7tEfRm9vQ"
-    auth_type        = "psk"
-    passphrase       = "ChangeMe-shared-secret"
-    remote_public_ip = "203.0.113.50"
+    region_id            = "K7tEfRm9vQ"
+    auth_type            = "psk"
+    passphrase           = "ChangeMeSharedSecret"
+    remote_public_ip     = "203.0.113.50"
+    remote_asn           = 65010
+    p81_gw_internal_ip   = "169.254.0.1"
+    remote_gw_internal_ip = "169.254.0.2"
   }
 
   key_exchange  = "ikev2"
@@ -38,13 +46,13 @@ resource "checkpointsase_enhanced_dynamic_tunnel" "example" {
 
   phase1 {
     auth                = ["sha256"]
-    encryption          = ["aes-cbc-256"]
+    encryption          = ["aes256"]
     key_exchange_method = ["modp2048"]
   }
 
   phase2 {
     auth                = ["sha256"]
-    encryption          = ["aes-cbc-256"]
+    encryption          = ["aes256"]
     key_exchange_method = ["modp2048"]
   }
 }
@@ -59,6 +67,7 @@ resource "checkpointsase_enhanced_dynamic_tunnel" "example" {
 - `dpd_timeout` (String) Dead peer detection timeout, formatted `<int>s`. Allowed range is `5s`–`60s`.
 - `ike_life_time` (String) IKE lifetime as a `<int><unit>` duration string, e.g. `28800s`, `480m`, or `8h`. Server-enforced ranges: `s` 10–86400, `m` 1–1440, `h` 1–24.
 - `key_exchange` (String) IKE version for key exchange. Must be `ikev1` or `ikev2`.
+- `left_asn` (Number) The local (Check Point SASE) BGP autonomous-system number for this dynamic tunnel. Required by the API; valid ranges per IsValidASN.
 - `lifetime` (String) IPSec SA lifetime as a `<int><unit>` duration string, e.g. `3600s`, `60m`, or `1h`. Server-enforced ranges: `s` 10–86400, `m` 1–1440, `h` 1–24.
 - `network_id` (String) The ID of the enhanced network this dynamic tunnel belongs to.
 - `p81_gateway_subnets` (List of String) List of Check Point SASE gateway subnet CIDR blocks (shared settings).
@@ -103,16 +112,17 @@ Required:
 
 Required:
 
+- `p81_gw_internal_ip` (String) The Check Point SASE gateway internal IP address (BGP peer local).
 - `region_id` (String) The enhanced region ID for this tunnel endpoint.
+- `remote_asn` (Number) BGP autonomous-system number for the remote endpoint. Required by the API.
+- `remote_gw_internal_ip` (String) The remote gateway internal IP address (BGP peer remote).
 
 Optional:
 
 - `auth_type` (String) Authentication type for this tunnel endpoint. Must be `psk` or `cert`.
 - `customer_root_ca` (String) Customer root certificate authority. Required when auth_type is 'cert'.
-- `p81_gw_internal_ip` (String) The Check Point SASE gateway internal IP address.
-- `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication (8-64 characters). Required when auth_type is 'psk'.
-- `remote_gw_internal_ip` (String) The remote gateway internal IP address.
-- `remote_id` (String) The remote gateway ID.
+- `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).
+- `remote_id` (String) The remote gateway ID. Server defaults to `remote_public_ip` when omitted.
 - `remote_public_ip` (String) The remote gateway public IP address.
 
 ## Import
@@ -122,6 +132,7 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
-# Import an existing enhanced_dynamic_tunnel resource by its ID.
-terraform import checkpointsase_enhanced_dynamic_tunnel.example <id>
+# Import an existing enhanced_dynamic_tunnel resource by composite ID.
+# The ID format is <network_id>-<tunnel_id>.
+terraform import checkpointsase_enhanced_dynamic_tunnel.example <network_id>-<tunnel_id>
 ```
