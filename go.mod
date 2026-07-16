@@ -3,7 +3,7 @@ module terraform-provider-checkpointsase
 go 1.26.2
 
 require (
-	github.com/Perimeter81-Public/perimeter-81-client-sdk/v2 v2.3.0
+	github.com/CheckPointSW/perimeter-81-client-sdk/v2 v2.3.0
 	github.com/hashicorp/terraform-plugin-docs v0.25.0
 	github.com/hashicorp/terraform-plugin-sdk/v2 v2.26.1
 )
