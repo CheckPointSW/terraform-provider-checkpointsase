@@ -183,11 +183,9 @@ func dataSourceEnhancedTunnelsRead(ctx context.Context, d *schema.ResourceData, 
 	}
 
 	// v3's read shape (EnhancedTunnel) dropped remote_public_ip, remote_id
-	// and description entirely — see flattenEnhancedTunnelsData below.
-	// Preserve whatever this data source last saw per tunnel id instead of
-	// blanking those three fields.
-	priorTunnels, _ := d.Get("tunnels").([]interface{})
-	tunnels := flattenEnhancedTunnelsData(response.GetData(), priorTunnels)
+	// and description entirely — see flattenEnhancedTunnelsData below for
+	// why they read back as "" here and why that can't be worked around.
+	tunnels := flattenEnhancedTunnelsData(response.GetData())
 	if err := d.Set("tunnels", tunnels); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set Enhanced Tunnels data", err)
@@ -200,13 +198,10 @@ func dataSourceEnhancedTunnelsRead(ctx context.Context, d *schema.ResourceData, 
 /*
 flattenEnhancedTunnelsData flattens a list of EnhancedTunnel SDK models to a Terraform-compatible list.
   - @param tunnels []perimeter81Sdk.EnhancedTunnel - the tunnels to flatten
-  - @param priorTunnels []interface{} - the previous value of the "tunnels" attribute (from
-    d.Get), used to preserve remote_public_ip/remote_id/description across reads — see comment
-    below.
 
 @return []interface{} - the flattened tunnels
 */
-func flattenEnhancedTunnelsData(tunnels []perimeter81Sdk.EnhancedTunnel, priorTunnels []interface{}) []interface{} {
+func flattenEnhancedTunnelsData(tunnels []perimeter81Sdk.EnhancedTunnel) []interface{} {
 	if tunnels == nil {
 		return make([]interface{}, 0)
 	}
@@ -214,42 +209,30 @@ func flattenEnhancedTunnelsData(tunnels []perimeter81Sdk.EnhancedTunnel, priorTu
 	// v3: remote_public_ip, remote_id and description were dropped from
 	// EnhancedTunnel (the v3 read shape) — they only still exist on the
 	// write-side types (StaticTunnelCreate/StaticTunnelUpdate/
-	// DynamicTunnelDetails/DynamicTunnelUpdate). This data source has no
-	// prior Terraform config to fall back to (everything here is Computed),
-	// so the best available substitute is whatever this data source itself
-	// last observed for the same tunnel id — same preserve-prior-state
-	// rationale as resourceGatewayRead's `name`/`idle` handling in
-	// resource_gateway.go. Drift detection on these three fields is
-	// impossible under v3: a tunnel seen here for the first time has no
-	// prior value to carry forward and reads back as "".
-	type priorFields struct {
-		remotePublicIP string
-		remoteID       string
-		description    string
-	}
-	priorByID := make(map[string]priorFields, len(priorTunnels))
-	for _, p := range priorTunnels {
-		pm, ok := p.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		id, _ := pm["id"].(string)
-		if id == "" {
-			continue
-		}
-		var pf priorFields
-		pf.remotePublicIP, _ = pm["remote_public_ip"].(string)
-		pf.remoteID, _ = pm["remote_id"].(string)
-		pf.description, _ = pm["description"].(string)
-		priorByID[id] = pf
-	}
-
+	// DynamicTunnelDetails/DynamicTunnelUpdate), so there is nothing here to
+	// read them from. They are always "" below, on every refresh, for every
+	// tunnel — not just "the first time a tunnel is observed."
+	//
+	// This is NOT fixable with a preserve-prior-state merge the way
+	// resourceGatewayRead's `name`/`idle` handling in resource_gateway.go
+	// (a resource) works: Terraform never gives a data source its previous
+	// state. Confirmed in terraform-plugin-sdk/v2@v2.26.1:
+	// grpc_provider.go:1155 calls `res.Diff(ctx, nil, config, ...)` for
+	// ReadDataSource — the state argument is a hardcoded `nil` — and
+	// resource.go:935 states outright: "Data sources are always built
+	// completely from scratch on each read, so the source state is always
+	// nil." Contrast ReadResource, which receives the real prior state via
+	// req.CurrentState (grpc_provider.go:581) — that's what makes the
+	// resource-level preservation elsewhere in this task correct and this
+	// data source different in kind, not just in effort. Do not attempt a
+	// "carry forward by id" merge here; there is no supported mechanism to
+	// carry anything forward, and inventing one (e.g. a package-level cache)
+	// would be worse than the honest "" this produces. Drift detection on
+	// these three fields is simply impossible under v3 for this data source.
 	result := make([]interface{}, len(tunnels))
 	for i, tunnel := range tunnels {
-		id := tunnel.GetId()
-		prior := priorByID[id]
 		tunnelMap := map[string]interface{}{
-			"id":           id,
+			"id":           tunnel.GetId(),
 			"tunnel_name":  tunnel.GetTunnelName(),
 			"region_id":    tunnel.GetRegionID(),
 			"ha_tunnel_id": tunnel.GetHaTunnelID(),
@@ -264,9 +247,9 @@ func flattenEnhancedTunnelsData(tunnels []perimeter81Sdk.EnhancedTunnel, priorTu
 			"dpd_delay":              tunnel.AdvancedSettings.GetDpdDelay(),
 			"dpd_timeout":            tunnel.AdvancedSettings.GetDpdTimeout(),
 			"dpd_action":             tunnel.GetDpdAction(),
-			"remote_public_ip":       prior.remotePublicIP,
-			"remote_id":              prior.remoteID,
-			"description":            prior.description,
+			"remote_public_ip":       "",
+			"remote_id":              "",
+			"description":            "",
 			"routing_type":           string(tunnel.GetRoutingType()),
 			"peak_bandwidth":         int(tunnel.GetPeakBandwidthMbps()),
 			"p81_gateway_subnets":    tunnel.GetP81GatewaySubnets(),

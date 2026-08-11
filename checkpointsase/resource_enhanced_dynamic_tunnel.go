@@ -291,7 +291,15 @@ func flattenDynamicTunnelDetails(tunnelItems []interface{}) []perimeter81Sdk.Dyn
 		detail.RemoteASN = int32(tunnelMap["remote_asn"].(int))
 		// v3: AuthType and RemotePublicIP are required strings (not
 		// *string) on DynamicTunnelDetails — Passphrase/CustomerRootCA
-		// remain pointers.
+		// remain pointers. Same behavioral implication as
+		// StaticTunnelCreate's RemotePublicIP/RemoteID/AuthType (see
+		// resource_enhanced_static_tunnel.go's Create and Defect #3 in the
+		// Task 12A report): when the user leaves auth_type/remote_public_ip
+		// unset in HCL, the `ok && v != ""` guard below simply skips the
+		// assignment, so these required fields still serialize as "" rather
+		// than being omitted from the request. Inherent to v3's
+		// requiredness, not introduced here, and not fixed per Phase 1
+		// scope (endpoint-only port).
 		if v, ok := tunnelMap["auth_type"].(string); ok && v != "" {
 			detail.AuthType = v
 		}
