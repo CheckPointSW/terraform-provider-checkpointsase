@@ -108,28 +108,26 @@ func resourceApplicationImportState(ctx context.Context, d *schema.ResourceData,
 }
 
 /*
-buildApplicationHostNullable builds a NullableOneOfFixedHostIdpHost from a host string value.
+buildApplicationHost builds a CommonCreateApplicationHost (fixed variant) from a host string value.
 */
-func buildApplicationHostNullable(host string) perimeter81Sdk.NullableOneOfFixedHostIdpHost {
+func buildApplicationHost(host string) perimeter81Sdk.CommonCreateApplicationHost {
 	hostValue := perimeter81Sdk.StringAsFixedHostValue(&host)
 	fixedHost := perimeter81Sdk.FixedHost{
 		Source: "fixed",
 		Value:  hostValue,
 	}
-	var hostInterface interface{} = fixedHost
-	return *perimeter81Sdk.NewNullableOneOfFixedHostIdpHost(&hostInterface)
+	return perimeter81Sdk.FixedHostAsCommonCreateApplicationHost(&fixedHost)
 }
 
 /*
-buildApplicationPortNullable builds a NullableOneOfFixedPortIdpPort from a port int32 value.
+buildApplicationPort builds a CommonCreateApplicationPort (fixed variant) from a port int32 value.
 */
-func buildApplicationPortNullable(port int32) perimeter81Sdk.NullableOneOfFixedPortIdpPort {
+func buildApplicationPort(port int32) perimeter81Sdk.CommonCreateApplicationPort {
 	fixedPort := perimeter81Sdk.FixedPort{
 		Source: "fixed",
 		Value:  port,
 	}
-	var portInterface interface{} = fixedPort
-	return *perimeter81Sdk.NewNullableOneOfFixedPortIdpPort(&portInterface)
+	return perimeter81Sdk.FixedPortAsCommonCreateApplicationPort(&fixedPort)
 }
 
 /*
@@ -153,8 +151,8 @@ func resourceApplicationCreate(ctx context.Context, d *schema.ResourceData, m in
 	users := flattenStringsArrayData(d.Get("users").([]interface{}))
 	groups := flattenStringsArrayData(d.Get("groups").([]interface{}))
 
-	hostNullable := buildApplicationHostNullable(host)
-	portNullable := buildApplicationPortNullable(port)
+	hostPayload := buildApplicationHost(host)
+	portPayload := buildApplicationPort(port)
 
 	var payload perimeter81Sdk.CreateApplicationRequest
 
@@ -164,8 +162,8 @@ func resourceApplicationCreate(ctx context.Context, d *schema.ResourceData, m in
 			Name:       appName,
 			Type:       appType,
 			Network:    networkId,
-			Host:       hostNullable,
-			Port:       portNullable,
+			Host:       hostPayload,
+			Port:       portPayload,
 			Users:      users,
 			Groups:     groups,
 			Headers:    map[string]interface{}{},
@@ -179,8 +177,8 @@ func resourceApplicationCreate(ctx context.Context, d *schema.ResourceData, m in
 			Name:       appName,
 			Type:       appType,
 			Network:    networkId,
-			Host:       hostNullable,
-			Port:       portNullable,
+			Host:       hostPayload,
+			Port:       portPayload,
 			Users:      users,
 			Groups:     groups,
 			Headers:    map[string]interface{}{},
@@ -190,16 +188,21 @@ func resourceApplicationCreate(ctx context.Context, d *schema.ResourceData, m in
 			HttpsCreateApplication: &httpsApp,
 		}
 	case "rdp":
+		// The provider always creates RDP applications with auth disabled.
+		// AuthEnabled is *bool in v3 (the server omits it on read responses
+		// even though the spec marks it required), so take the address of a
+		// named local rather than a literal.
+		authDisabled := false
 		rdpApp := perimeter81Sdk.RdpCreateApplication{
 			Name:       appName,
 			Type:       appType,
 			Network:    networkId,
-			Host:       hostNullable,
-			Port:       portNullable,
+			Host:       hostPayload,
+			Port:       portPayload,
 			Users:      users,
 			Groups:     groups,
 			Attributes: perimeter81Sdk.RdpAttributes{},
-			Auth:       perimeter81Sdk.ApplicationAuth{AuthEnabled: false},
+			Auth:       perimeter81Sdk.ApplicationAuth{AuthEnabled: &authDisabled},
 		}
 		payload = perimeter81Sdk.CreateApplicationRequest{
 			RdpCreateApplication: &rdpApp,
