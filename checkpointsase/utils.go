@@ -863,7 +863,7 @@ func addGatewayToRegion(ctx context.Context, client *perimeter81Sdk.APIClient, g
 			RegionId: region_id,
 			Idle:     gateway.Idle,
 		}
-		status, _, err := client.GatewaysAPI.StandardNetworksControllerV2AddNetworkInstance(ctx, network_id).CreateInstancesInNetworkPayload(gatewayPayload).Execute()
+		status, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2AddNetworkInstance(ctx, network_id).CreateInstancesInNetworkPayload(gatewayPayload).Execute()
 		if err != nil {
 			diags = appendErrorDiags(diags, "Unable to create gateway", err)
 			return diags, err
@@ -922,7 +922,7 @@ func deleteGatewayFromRegion(ctx context.Context, client *perimeter81Sdk.APIClie
 		})
 	}
 	// DeleteNetworkInstance is synchronous — returns AsyncOperationResult (no status URL to poll)
-	_, _, err := client.GatewaysAPI.StandardNetworksControllerV2DeleteNetworkInstance(ctx, network_id).RemoveRegionInstance(gatewaysForDelete).Execute()
+	_, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2DeleteNetworkInstance(ctx, network_id).RemoveRegionInstance(gatewaysForDelete).Execute()
 	if err != nil {
 		diags = appendErrorDiags(diags, "Unable to delete gateways", err)
 		return diags, err

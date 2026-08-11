@@ -164,7 +164,7 @@ func resourceWireguardCreate(ctx context.Context, d *schema.ResourceData, m inte
 	}
 
 	// create the wireguard tunnel and check for errors
-	status, _, err := client.WireguardAPI.StandardCreateWireguardTunnel(ctx, networkId).CreateWireguardTunnelPayload(wireguardBody).Execute()
+	status, _, err := client.StandardTunnelsAPI.StandardCreateWireguardTunnel(ctx, networkId).CreateWireguardTunnelPayload(wireguardBody).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to create Wireguard tunnel", err)
@@ -230,7 +230,7 @@ func resourceWireguardRead(ctx context.Context, d *schema.ResourceData, m interf
 	}
 
 	// get the wireguard tunnel and check for errors
-	tunnel, _, err := client.WireguardAPI.StandardGetWireguardTunnel(ctx, networkId, tunnelId).Execute()
+	tunnel, _, err := client.StandardTunnelsAPI.StandardGetWireguardTunnel(ctx, networkId, tunnelId).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to read wireguard tunnel", err)
@@ -321,7 +321,7 @@ func resourceWireguardUpdate(ctx context.Context, d *schema.ResourceData, m inte
 			RemoteSubnets:  remoteSubnets,
 		}
 		// update the wireguard tunnel and check for errors
-		status, _, err := client.WireguardAPI.StandardUpdateWireguardTunnel(ctx, networkId, tunnelId).WireGuradDetails(wireguardDetails).Execute()
+		status, _, err := client.StandardTunnelsAPI.StandardUpdateWireguardTunnel(ctx, networkId, tunnelId).WireGuradDetails(wireguardDetails).Execute()
 		if err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to update wireguard Tunnel", err)
@@ -369,7 +369,7 @@ func resourceWireguardDelete(ctx context.Context, d *schema.ResourceData, m inte
 	networkId := d.Get("network_id").(string)
 
 	// delete the wireguard tunnel and check for errors
-	status, _, err := client.WireguardAPI.StandardDeleteWireguardTunnel(ctx, networkId, tunnelId).Execute()
+	status, _, err := client.StandardTunnelsAPI.StandardDeleteWireguardTunnel(ctx, networkId, tunnelId).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to delete wireguard tunnel", err)

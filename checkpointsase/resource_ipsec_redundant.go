@@ -440,7 +440,7 @@ func resourceIpsecRedundantCreate(ctx context.Context, d *schema.ResourceData, m
 		},
 	}
 	// create the ipsec-redundant tunnel using the client sdk and check for errors
-	status, _, err := client.IPSecRedundantAPI.StandardCreateIPSecRedundantTunnel(ctx, networkId).CreateIPSecRedundantPayload(ipSecRedundantBody).Execute()
+	status, _, err := client.StandardTunnelsAPI.StandardCreateIPSecRedundantTunnel(ctx, networkId).CreateIPSecRedundantPayload(ipSecRedundantBody).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to create ipsec-redundant tunnel", err)
@@ -505,7 +505,7 @@ func resourceIpsecRedundantRead(ctx context.Context, d *schema.ResourceData, m i
 		tunnelId = ids[1]
 	}
 	// get the ipsec-redundant tunnel using the client sdk and check for errors
-	tunnel, _, err := client.IPSecRedundantAPI.StandardGetIPSecRedundantTunnel(ctx, networkId, tunnelId).Execute()
+	tunnel, _, err := client.StandardTunnelsAPI.StandardGetIPSecRedundantTunnel(ctx, networkId, tunnelId).Execute()
 
 	if err != nil {
 		d.Partial(true)
@@ -575,7 +575,7 @@ func resourceIpsecRedundantDelete(ctx context.Context, d *schema.ResourceData, m
 	networkId := d.Get("network_id").(string)
 
 	// delete the ipsec-redundant tunnel using the client sdk and check for errors
-	status, _, err := client.IPSecRedundantAPI.StandardDeleteIPSecRedundantTunnel(ctx, networkId, tunnelId).Execute()
+	status, _, err := client.StandardTunnelsAPI.StandardDeleteIPSecRedundantTunnel(ctx, networkId, tunnelId).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to delete ipsec-redundant tunnel", err)

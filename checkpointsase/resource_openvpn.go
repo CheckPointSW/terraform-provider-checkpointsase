@@ -166,7 +166,7 @@ func resourceOpenvpnCreate(ctx context.Context, d *schema.ResourceData, m interf
 		TunnelName: tunnelName,
 	}
 	// create the tunnel and check for errors
-	status, _, err := client.OpenVPNAPI.StandardCreateOpenVPNTunnel(ctx, networkId).BaseTunnelValues(baseTunnelBody).Execute()
+	status, _, err := client.StandardTunnelsAPI.StandardCreateOpenVPNTunnel(ctx, networkId).BaseTunnelValues(baseTunnelBody).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to create Openvpn tunnel", err)
@@ -226,7 +226,7 @@ func resourceOpenvpnRead(ctx context.Context, d *schema.ResourceData, m interfac
 	}
 
 	// get the tunnel and check for errors
-	tunnel, _, err := client.OpenVPNAPI.StandardGetOpenVPNTunnel(ctx, networkId, tunnelId).Execute()
+	tunnel, _, err := client.StandardTunnelsAPI.StandardGetOpenVPNTunnel(ctx, networkId, tunnelId).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to read openvpn tunnel", err)
@@ -293,7 +293,7 @@ func resourceOpenvpnUpdate(ctx context.Context, d *schema.ResourceData, m interf
 		tunnelId := d.Id()
 		networkId := d.Get("network_id").(string)
 		// update the tunnel and check for errors
-		status, _, err := client.OpenVPNAPI.StandardUpdateOpenVPNTunnel(ctx, networkId, tunnelId).Execute()
+		status, _, err := client.StandardTunnelsAPI.StandardUpdateOpenVPNTunnel(ctx, networkId, tunnelId).Execute()
 		if err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to update openvpn Tunnel", err)
@@ -342,7 +342,7 @@ func resourceOpenvpnDelete(ctx context.Context, d *schema.ResourceData, m interf
 	networkId := d.Get("network_id").(string)
 
 	// delete the tunnel and check for errors
-	status, _, err := client.OpenVPNAPI.StandardDeleteOpenVPNTunnel(ctx, networkId, tunnelId).Execute()
+	status, _, err := client.StandardTunnelsAPI.StandardDeleteOpenVPNTunnel(ctx, networkId, tunnelId).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to delete openvpn tunnel", err)

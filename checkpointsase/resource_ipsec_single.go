@@ -306,7 +306,7 @@ func resourceIpsecSingleCreate(ctx context.Context, d *schema.ResourceData, m in
 	}
 
 	// create the ipsec single tunnel and check for errors
-	status, _, err := client.IPSecSingleAPI.StandardCreateIPSecSingleTunnel(ctx, networkId).CreateIPSecSinglePayload(ipSecSingleBody).Execute()
+	status, _, err := client.StandardTunnelsAPI.StandardCreateIPSecSingleTunnel(ctx, networkId).CreateIPSecSinglePayload(ipSecSingleBody).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to create IpsecSingle tunnel", err)
@@ -372,7 +372,7 @@ func resourceIpsecSingleRead(ctx context.Context, d *schema.ResourceData, m inte
 	}
 
 	// get the ipsec-single tunnel and check for errors
-	tunnel, _, err := client.IPSecSingleAPI.StandardGetIPSecSingleTunnel(ctx, networkId, tunnelId).Execute()
+	tunnel, _, err := client.StandardTunnelsAPI.StandardGetIPSecSingleTunnel(ctx, networkId, tunnelId).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to read ipsec-single tunnel", err)
@@ -527,7 +527,7 @@ func resourceIpsecSingleUpdate(ctx context.Context, d *schema.ResourceData, m in
 		}
 
 		// update the ipsec-single tunnel and check for errors
-		status, _, err := client.IPSecSingleAPI.StandardUpdateIPSecSingleTunnel(ctx, networkId, tunnelId).IPSecSingleDetails(ipSecSingleDetails).Execute()
+		status, _, err := client.StandardTunnelsAPI.StandardUpdateIPSecSingleTunnel(ctx, networkId, tunnelId).IPSecSingleDetails(ipSecSingleDetails).Execute()
 		if err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to update ipsec-single Tunnel", err)
@@ -576,7 +576,7 @@ func resourceIpsecSingleDelete(ctx context.Context, d *schema.ResourceData, m in
 	networkId := d.Get("network_id").(string)
 
 	// delete the ipsec-single tunnel and check for errors
-	status, _, err := client.IPSecSingleAPI.StandardDeleteIPSecSingleTunnel(ctx, networkId, tunnelId).Execute()
+	status, _, err := client.StandardTunnelsAPI.StandardDeleteIPSecSingleTunnel(ctx, networkId, tunnelId).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to delete ipsec-single tunnel", err)
