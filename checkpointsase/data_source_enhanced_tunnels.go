@@ -182,7 +182,12 @@ func dataSourceEnhancedTunnelsRead(ctx context.Context, d *schema.ResourceData, 
 		return appendErrorDiags(diags, "Unable to set Enhanced Tunnels total_page", err)
 	}
 
-	tunnels := flattenEnhancedTunnelsData(response.GetData())
+	// v3's read shape (EnhancedTunnel) dropped remote_public_ip, remote_id
+	// and description entirely — see flattenEnhancedTunnelsData below.
+	// Preserve whatever this data source last saw per tunnel id instead of
+	// blanking those three fields.
+	priorTunnels, _ := d.Get("tunnels").([]interface{})
+	tunnels := flattenEnhancedTunnelsData(response.GetData(), priorTunnels)
 	if err := d.Set("tunnels", tunnels); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set Enhanced Tunnels data", err)
@@ -195,30 +200,73 @@ func dataSourceEnhancedTunnelsRead(ctx context.Context, d *schema.ResourceData, 
 /*
 flattenEnhancedTunnelsData flattens a list of EnhancedTunnel SDK models to a Terraform-compatible list.
   - @param tunnels []perimeter81Sdk.EnhancedTunnel - the tunnels to flatten
+  - @param priorTunnels []interface{} - the previous value of the "tunnels" attribute (from
+    d.Get), used to preserve remote_public_ip/remote_id/description across reads — see comment
+    below.
 
 @return []interface{} - the flattened tunnels
 */
-func flattenEnhancedTunnelsData(tunnels []perimeter81Sdk.EnhancedTunnel) []interface{} {
+func flattenEnhancedTunnelsData(tunnels []perimeter81Sdk.EnhancedTunnel, priorTunnels []interface{}) []interface{} {
 	if tunnels == nil {
 		return make([]interface{}, 0)
 	}
+
+	// v3: remote_public_ip, remote_id and description were dropped from
+	// EnhancedTunnel (the v3 read shape) — they only still exist on the
+	// write-side types (StaticTunnelCreate/StaticTunnelUpdate/
+	// DynamicTunnelDetails/DynamicTunnelUpdate). This data source has no
+	// prior Terraform config to fall back to (everything here is Computed),
+	// so the best available substitute is whatever this data source itself
+	// last observed for the same tunnel id — same preserve-prior-state
+	// rationale as resourceGatewayRead's `name`/`idle` handling in
+	// resource_gateway.go. Drift detection on these three fields is
+	// impossible under v3: a tunnel seen here for the first time has no
+	// prior value to carry forward and reads back as "".
+	type priorFields struct {
+		remotePublicIP string
+		remoteID       string
+		description    string
+	}
+	priorByID := make(map[string]priorFields, len(priorTunnels))
+	for _, p := range priorTunnels {
+		pm, ok := p.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		id, _ := pm["id"].(string)
+		if id == "" {
+			continue
+		}
+		var pf priorFields
+		pf.remotePublicIP, _ = pm["remote_public_ip"].(string)
+		pf.remoteID, _ = pm["remote_id"].(string)
+		pf.description, _ = pm["description"].(string)
+		priorByID[id] = pf
+	}
+
 	result := make([]interface{}, len(tunnels))
 	for i, tunnel := range tunnels {
+		id := tunnel.GetId()
+		prior := priorByID[id]
 		tunnelMap := map[string]interface{}{
-			"id":                     tunnel.GetId(),
-			"tunnel_name":            tunnel.GetTunnelName(),
-			"region_id":              tunnel.GetRegionID(),
-			"ha_tunnel_id":           tunnel.GetHaTunnelID(),
-			"auth_type":              tunnel.GetAuthType(),
-			"key_exchange":           tunnel.GetKeyExchange(),
-			"ike_life_time":          tunnel.GetIkeLifeTime(),
-			"lifetime":               tunnel.GetLifetime(),
-			"dpd_delay":              tunnel.GetDpdDelay(),
-			"dpd_timeout":            tunnel.GetDpdTimeout(),
+			"id":           id,
+			"tunnel_name":  tunnel.GetTunnelName(),
+			"region_id":    tunnel.GetRegionID(),
+			"ha_tunnel_id": tunnel.GetHaTunnelID(),
+			"auth_type":    tunnel.GetAuthType(),
+			"key_exchange": tunnel.GetKeyExchange(),
+			// v3: IkeLifeTime/Lifetime/DpdDelay/DpdTimeout moved off
+			// EnhancedTunnel and onto its nested *IPSecAdvancedSettingsV23
+			// (AdvancedSettings is a pointer, but IPSecAdvancedSettingsV23's
+			// Get* accessors are nil-safe, so no manual nil-check is needed).
+			"ike_life_time":          tunnel.AdvancedSettings.GetIkeLifeTime(),
+			"lifetime":               tunnel.AdvancedSettings.GetLifetime(),
+			"dpd_delay":              tunnel.AdvancedSettings.GetDpdDelay(),
+			"dpd_timeout":            tunnel.AdvancedSettings.GetDpdTimeout(),
 			"dpd_action":             tunnel.GetDpdAction(),
-			"remote_public_ip":       tunnel.GetRemotePublicIP(),
-			"remote_id":              tunnel.GetRemoteID(),
-			"description":            tunnel.GetDescription(),
+			"remote_public_ip":       prior.remotePublicIP,
+			"remote_id":              prior.remoteID,
+			"description":            prior.description,
 			"routing_type":           string(tunnel.GetRoutingType()),
 			"peak_bandwidth":         int(tunnel.GetPeakBandwidthMbps()),
 			"p81_gateway_subnets":    tunnel.GetP81GatewaySubnets(),

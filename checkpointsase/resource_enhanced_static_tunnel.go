@@ -302,6 +302,9 @@ func resourceEnhancedStaticTunnelCreate(ctx context.Context, d *schema.ResourceD
 
 	// Public-api requires `routingType` (string) and `features` (object) on
 	// every static tunnel create — see baseEnhancedIPSecTunnel.dto.ts.
+	// v3: RoutingType and Features are value types (not pointers) on
+	// StaticTunnelCreate — unlike StaticTunnelUpdate, where both remain
+	// pointers. See model_static_tunnel_create.go vs model_static_tunnel_update.go.
 	routingType := perimeter81Sdk.ROUTINGTYPE_ROUTE
 	payload := perimeter81Sdk.StaticTunnelCreate{
 		RegionID:             regionId,
@@ -315,20 +318,27 @@ func resourceEnhancedStaticTunnelCreate(ctx context.Context, d *schema.ResourceD
 		RemoteGatewaySubnets: remoteGatewaySubnets,
 		Phase1:               phase1,
 		Phase2:               phase2,
-		RoutingType:          &routingType,
-		Features:             &perimeter81Sdk.NetworkFeaturesCreate{},
+		RoutingType:          routingType,
+		Features:             perimeter81Sdk.NetworkFeaturesCreate{},
 	}
+	// v3: RemotePublicIP, RemoteID and AuthType are required strings (not
+	// *string) on StaticTunnelCreate, so they're always serialized — even
+	// as "" when the corresponding schema attribute is Optional and left
+	// unset by the user (e.g. cert-auth tunnels with no remote_public_ip).
+	// That's a behavior change baked into the v3 spec's requiredness, not
+	// something introduced here; flagged in the Task 12A report rather than
+	// worked around, per the type-port-only scope of this pass.
 	if v, ok := d.GetOk("remote_public_ip"); ok {
 		s := v.(string)
-		payload.RemotePublicIP = &s
+		payload.RemotePublicIP = s
 	}
 	if v, ok := d.GetOk("remote_id"); ok {
 		s := v.(string)
-		payload.RemoteID = &s
+		payload.RemoteID = s
 	}
 	if v, ok := d.GetOk("auth_type"); ok {
 		s := v.(string)
-		payload.AuthType = &s
+		payload.AuthType = s
 	}
 	if v, ok := d.GetOk("passphrase"); ok {
 		s := v.(string)
@@ -427,30 +437,34 @@ func resourceEnhancedStaticTunnelRead(ctx context.Context, d *schema.ResourceDat
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel key_exchange", err)
 	}
-	if err := d.Set("ike_life_time", tunnelData.IkeLifeTime); err != nil {
+	// v3: IkeLifeTime/Lifetime/DpdDelay/DpdTimeout moved off EnhancedTunnel
+	// and onto its nested *IPSecAdvancedSettingsV23 (AdvancedSettings is a
+	// pointer, but IPSecAdvancedSettingsV23's Get* accessors are nil-safe,
+	// so no manual nil-check is required here).
+	if err := d.Set("ike_life_time", tunnelData.AdvancedSettings.GetIkeLifeTime()); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel ike_life_time", err)
 	}
-	if err := d.Set("lifetime", tunnelData.Lifetime); err != nil {
+	if err := d.Set("lifetime", tunnelData.AdvancedSettings.GetLifetime()); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel lifetime", err)
 	}
-	if err := d.Set("dpd_delay", tunnelData.DpdDelay); err != nil {
+	if err := d.Set("dpd_delay", tunnelData.AdvancedSettings.GetDpdDelay()); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel dpd_delay", err)
 	}
-	if err := d.Set("dpd_timeout", tunnelData.DpdTimeout); err != nil {
+	if err := d.Set("dpd_timeout", tunnelData.AdvancedSettings.GetDpdTimeout()); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel dpd_timeout", err)
 	}
-	if err := d.Set("remote_public_ip", tunnelData.RemotePublicIP); err != nil {
-		d.Partial(true)
-		return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel remote_public_ip", err)
-	}
-	if err := d.Set("remote_id", tunnelData.RemoteID); err != nil {
-		d.Partial(true)
-		return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel remote_id", err)
-	}
+	// v3: RemotePublicIP and RemoteID no longer exist on EnhancedTunnel (the
+	// read shape) — they only live on StaticTunnelCreate/StaticTunnelUpdate
+	// (write-only under v3). Drift detection on these two fields is
+	// impossible under v3: the server never tells us the current value, so
+	// intentionally leave `remote_public_ip`/`remote_id` state untouched
+	// here rather than blanking the user's configured value. Same
+	// preserve-prior-state precedent as resourceGatewayRead's handling of
+	// `name`/`idle` in resource_gateway.go.
 	if err := d.Set("auth_type", tunnelData.AuthType); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel auth_type", err)
@@ -463,21 +477,21 @@ func resourceEnhancedStaticTunnelRead(ctx context.Context, d *schema.ResourceDat
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel remote_gateway_subnets", err)
 	}
-	if err := d.Set("phase1", flattenIPSecPhaseConfigV23ToMap(tunnelData.Phase1)); err != nil {
+	if err := d.Set("phase1", flattenIPSecPhaseConfigV23ToMap(tunnelData.AdvancedSettings.GetPhase1())); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel phase1", err)
 	}
-	if err := d.Set("phase2", flattenIPSecPhaseConfigV23ToMap(tunnelData.Phase2)); err != nil {
+	if err := d.Set("phase2", flattenIPSecPhaseConfigV23ToMap(tunnelData.AdvancedSettings.GetPhase2())); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel phase2", err)
 	}
 
-	if tunnelData.Description != nil {
-		if err := d.Set("description", *tunnelData.Description); err != nil {
-			d.Partial(true)
-			return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel description", err)
-		}
-	}
+	// v3: Description no longer exists on EnhancedTunnel (the read shape) —
+	// it only lives on StaticTunnelCreate/StaticTunnelUpdate (write-only
+	// under v3). Drift detection on this field is impossible under v3;
+	// intentionally leave `description` state untouched here rather than
+	// blanking the user's configured value (same precedent as
+	// resourceGatewayRead's `name`/`idle` handling in resource_gateway.go).
 	if tunnelData.PeakBandwidthMbps != nil {
 		if err := d.Set("peak_bandwidth", int(*tunnelData.PeakBandwidthMbps)); err != nil {
 			d.Partial(true)
@@ -568,8 +582,14 @@ func resourceEnhancedStaticTunnelUpdate(ctx context.Context, d *schema.ResourceD
 		phase2 := flattenIPSecPhaseConfigV23(v)
 		payload.Phase2 = &phase2
 	}
-	peakBandwidth := int32(d.Get("peak_bandwidth").(int))
-	payload.PeakBandwidth = &peakBandwidth
+	// v3: StaticTunnelUpdate has no bandwidth field at all — verified against
+	// the SDK: PeakBandwidthMbps exists only on StaticTunnelCreate,
+	// EnhancedTunnel and EnhancedTunnelBase, not on StaticTunnelUpdate. There
+	// is nowhere left to send peak_bandwidth on update in v3; the schema
+	// attribute is preserved (Phase 1 does not touch schema) but changes to
+	// it can no longer be propagated to the server after tunnel creation.
+	// This is a real capability regression forced by the type restructure,
+	// not a design choice — flagged in the Task 12A report for a later phase.
 
 	_, _, err := client.EnhancedTunnelsAPI.UpdateStaticTunnel(ctx, networkId, tunnelId).StaticTunnelUpdate(payload).Execute()
 	if err != nil {

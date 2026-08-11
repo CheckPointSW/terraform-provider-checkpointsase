@@ -568,9 +568,21 @@ func flattenSharedSettingsData(sharedSettingsItem *perimeter81Sdk.IPSecSharedSet
 		sharedSettingsData := make(map[string]interface{})
 		sharedSettingsData["p81_gateway_subnets"] = sharedSettingsItem.P81GatewaySubnets
 		sharedSettingsData["remote_gateway_subnets"] = sharedSettingsItem.RemoteGatewaySubnets
-		if sharedSettingsItem.PeakBandwidth != nil {
-			sharedSettingsData["peak_bandwidth"] = int(*sharedSettingsItem.PeakBandwidth)
-		}
+		// v3 dropped the bandwidth field entirely from IPSecSharedSettings —
+		// verified against the SDK: no field of any name carries it anymore.
+		// This flatten helper has no ResourceData to fall back to (it's a
+		// stateless []interface{} builder), so it can no longer populate
+		// "peak_bandwidth" here at all — the key is simply omitted. Its only
+		// caller, resourceIpsecRedundantRead (resource_ipsec_redundant.go),
+		// assigns this return value directly via d.Set("shared_settings",
+		// ...), which will read the omitted key back as the zero value (0),
+		// silently blanking any previously-configured peak_bandwidth. That
+		// call site would need a preserve-prior-state merge, same pattern as
+		// resourceGatewayRead's `name`/`idle` handling in resource_gateway.go,
+		// to avoid the blank-out — but resource_ipsec_redundant.go is out of
+		// scope for Task 12A (it has its own separate v3 port, including an
+		// unrelated compile error on the create side). Flagged for whichever
+		// later phase owns that file.
 		sharedSettings[0] = sharedSettingsData
 		return sharedSettings
 	}

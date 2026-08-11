@@ -289,8 +289,11 @@ func flattenDynamicTunnelDetails(tunnelItems []interface{}) []perimeter81Sdk.Dyn
 			RegionID: regionId,
 		}
 		detail.RemoteASN = int32(tunnelMap["remote_asn"].(int))
+		// v3: AuthType and RemotePublicIP are required strings (not
+		// *string) on DynamicTunnelDetails — Passphrase/CustomerRootCA
+		// remain pointers.
 		if v, ok := tunnelMap["auth_type"].(string); ok && v != "" {
-			detail.AuthType = &v
+			detail.AuthType = v
 		}
 		if v, ok := tunnelMap["passphrase"].(string); ok && v != "" {
 			detail.Passphrase = &v
@@ -299,7 +302,7 @@ func flattenDynamicTunnelDetails(tunnelItems []interface{}) []perimeter81Sdk.Dyn
 			detail.CustomerRootCA = &v
 		}
 		if v, ok := tunnelMap["remote_public_ip"].(string); ok && v != "" {
-			detail.RemotePublicIP = &v
+			detail.RemotePublicIP = v
 		}
 		// OPEN-02: the v2.3 API rejects an empty remoteID with
 		// `tunnels.0.remoteID must be a string`, even though the field is
@@ -312,14 +315,16 @@ func flattenDynamicTunnelDetails(tunnelItems []interface{}) []perimeter81Sdk.Dyn
 				remoteId = v
 			}
 		}
+		// v3: RemoteID, P81GWInternalIP and RemoteGWInternalIP are also
+		// required strings (not *string) on DynamicTunnelDetails.
 		if remoteId != "" {
-			detail.RemoteID = &remoteId
+			detail.RemoteID = remoteId
 		}
 		if v, ok := tunnelMap["p81_gw_internal_ip"].(string); ok && v != "" {
-			detail.P81GWInternalIP = &v
+			detail.P81GWInternalIP = v
 		}
 		if v, ok := tunnelMap["remote_gw_internal_ip"].(string); ok && v != "" {
-			detail.RemoteGWInternalIP = &v
+			detail.RemoteGWInternalIP = v
 		}
 		tunnels[i] = detail
 	}
@@ -343,7 +348,6 @@ func resourceEnhancedDynamicTunnelCreate(ctx context.Context, d *schema.Resource
 	tunnelName := d.Get("tunnel_name").(string)
 	p81GatewaySubnets := flattenStringsArrayData(d.Get("p81_gateway_subnets").([]interface{}))
 	remoteGatewaySubnets := flattenStringsArrayData(d.Get("remote_gateway_subnets").([]interface{}))
-	peakBandwidth := int32(d.Get("peak_bandwidth").(int))
 	keyExchange := d.Get("key_exchange").(string)
 	ikeLifeTime := d.Get("ike_life_time").(string)
 	lifetime := d.Get("lifetime").(string)
@@ -354,10 +358,18 @@ func resourceEnhancedDynamicTunnelCreate(ctx context.Context, d *schema.Resource
 	tunnels := flattenDynamicTunnelDetails(d.Get("tunnel").([]interface{}))
 
 	leftASN := int32(d.Get("left_asn").(int))
+	// v3 dropped the bandwidth field entirely from every IPSecSharedSettings-
+	// family type — verified against the SDK: EnhancedIPSecSharedSettingsCreate,
+	// IPSecSharedSettings, IPSecSharedSettingsCreate and
+	// EnhancedIPSecSharedSettingsUpdate all lack it, and DynamicTunnelCreate
+	// has no top-level replacement either. There is nowhere left to send
+	// peak_bandwidth for a dynamic tunnel create in v3; the schema attribute
+	// is preserved (Phase 1 does not touch schema) but its value can no
+	// longer reach the API. Flagged as a capability regression for a later
+	// phase — see the Task 12A report.
 	sharedSettings := perimeter81Sdk.EnhancedIPSecSharedSettingsCreate{
 		P81GatewaySubnets:    p81GatewaySubnets,
 		RemoteGatewaySubnets: remoteGatewaySubnets,
-		PeakBandwidth:        &peakBandwidth,
 		Features:             perimeter81Sdk.NetworkFeaturesCreate{},
 		LeftASN:              leftASN,
 	}
@@ -460,27 +472,31 @@ func resourceEnhancedDynamicTunnelRead(ctx context.Context, d *schema.ResourceDa
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel key_exchange", err)
 		}
-		if err := d.Set("ike_life_time", tunnel.IkeLifeTime); err != nil {
+		// v3: IkeLifeTime/Lifetime/DpdDelay/DpdTimeout/Phase1/Phase2 moved off
+		// EnhancedTunnel and onto its nested *IPSecAdvancedSettingsV23
+		// (AdvancedSettings is a pointer, but IPSecAdvancedSettingsV23's Get*
+		// accessors are nil-safe, so no manual nil-check is required here).
+		if err := d.Set("ike_life_time", tunnel.AdvancedSettings.GetIkeLifeTime()); err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel ike_life_time", err)
 		}
-		if err := d.Set("lifetime", tunnel.Lifetime); err != nil {
+		if err := d.Set("lifetime", tunnel.AdvancedSettings.GetLifetime()); err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel lifetime", err)
 		}
-		if err := d.Set("dpd_delay", tunnel.DpdDelay); err != nil {
+		if err := d.Set("dpd_delay", tunnel.AdvancedSettings.GetDpdDelay()); err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel dpd_delay", err)
 		}
-		if err := d.Set("dpd_timeout", tunnel.DpdTimeout); err != nil {
+		if err := d.Set("dpd_timeout", tunnel.AdvancedSettings.GetDpdTimeout()); err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel dpd_timeout", err)
 		}
-		if err := d.Set("phase1", flattenIPSecPhaseConfigV23ToMap(tunnel.Phase1)); err != nil {
+		if err := d.Set("phase1", flattenIPSecPhaseConfigV23ToMap(tunnel.AdvancedSettings.GetPhase1())); err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel phase1", err)
 		}
-		if err := d.Set("phase2", flattenIPSecPhaseConfigV23ToMap(tunnel.Phase2)); err != nil {
+		if err := d.Set("phase2", flattenIPSecPhaseConfigV23ToMap(tunnel.AdvancedSettings.GetPhase2())); err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel phase2", err)
 		}
