@@ -559,30 +559,49 @@ func flattenAdvancedSettingsData(advancedSettingsItem *perimeter81Sdk.IPSecAdvan
 /*
 flattenSharedSettingsData flatten Shared Settings date
   - @param sharedSettingsItem *IpSecSharedSettings - the Ip-Sec Shared settings that need to be flattened
+  - @param priorSharedSettings []interface{} - the previous value of the "shared_settings"
+    attribute (i.e. d.Get("shared_settings") from BEFORE this Read call overwrites it), used to
+    preserve peak_bandwidth across reads — see comment below. Callers MUST pass the prior value;
+    passing nil/empty silently loses any previously-configured peak_bandwidth. Preservation is
+    threaded through the signature (rather than left to the caller to remember at the d.Set call
+    site) specifically so it can't be forgotten by a future call site.
 
 @return []interface{} - the flattened Ip-Sec Shared settings data
 */
-func flattenSharedSettingsData(sharedSettingsItem *perimeter81Sdk.IPSecSharedSettings) []interface{} {
+func flattenSharedSettingsData(sharedSettingsItem *perimeter81Sdk.IPSecSharedSettings, priorSharedSettings []interface{}) []interface{} {
 	if sharedSettingsItem != nil {
 		sharedSettings := make([]interface{}, 1)
 		sharedSettingsData := make(map[string]interface{})
 		sharedSettingsData["p81_gateway_subnets"] = sharedSettingsItem.P81GatewaySubnets
 		sharedSettingsData["remote_gateway_subnets"] = sharedSettingsItem.RemoteGatewaySubnets
 		// v3 dropped the bandwidth field entirely from IPSecSharedSettings —
-		// verified against the SDK: no field of any name carries it anymore.
-		// This flatten helper has no ResourceData to fall back to (it's a
-		// stateless []interface{} builder), so it can no longer populate
-		// "peak_bandwidth" here at all — the key is simply omitted. Its only
-		// caller, resourceIpsecRedundantRead (resource_ipsec_redundant.go),
-		// assigns this return value directly via d.Set("shared_settings",
-		// ...), which will read the omitted key back as the zero value (0),
-		// silently blanking any previously-configured peak_bandwidth. That
-		// call site would need a preserve-prior-state merge, same pattern as
-		// resourceGatewayRead's `name`/`idle` handling in resource_gateway.go,
-		// to avoid the blank-out — but resource_ipsec_redundant.go is out of
-		// scope for Task 12A (it has its own separate v3 port, including an
-		// unrelated compile error on the create side). Flagged for whichever
-		// later phase owns that file.
+		// verified against the SDK: no field of any name carries it anymore,
+		// and nothing on the redundant-tunnel read/create/update surface
+		// replaces it. This flatten helper can no longer populate
+		// "peak_bandwidth" from the API response, so carry forward whatever
+		// was already in state instead of blanking it — same
+		// preserve-prior-state precedent as resourceGatewayRead's
+		// `name`/`idle` handling in resource_gateway.go. A tunnel whose
+		// state never had peak_bandwidth set (e.g. imported outside
+		// Terraform) has nothing to carry forward and falls back to the
+		// schema default via Terraform's normal Default handling.
+		//
+		// The corresponding schema attribute
+		// (checkpointsase_ipsec_redundant's shared_settings.peak_bandwidth,
+		// resource_ipsec_redundant.go) is effectively inert under v3: HCL
+		// can still set it, and it round-trips in state via this
+		// preservation, but it is never transmitted to the API —
+		// IPSecSharedSettingsCreate (and every other IPSecSharedSettings-
+		// family type) dropped the field entirely, with no replacement
+		// anywhere on the redundant-tunnel create/update surface. See the
+		// schema comment on that attribute for the user-facing note.
+		if len(priorSharedSettings) > 0 {
+			if priorMap, ok := priorSharedSettings[0].(map[string]interface{}); ok {
+				if pb, ok := priorMap["peak_bandwidth"].(int); ok {
+					sharedSettingsData["peak_bandwidth"] = pb
+				}
+			}
+		}
 		sharedSettings[0] = sharedSettingsData
 		return sharedSettings
 	}

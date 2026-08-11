@@ -190,6 +190,20 @@ func resourceIpsecRedundant() *schema.Resource {
 								Type: schema.TypeString,
 							},
 						},
+						// v3 migration note (Task 12A): this attribute can still be set in
+						// HCL and round-trips in state (see flattenSharedSettingsData's
+						// preserve-prior-state handling in utils.go), but it is never
+						// transmitted to the v3 API. IPSecSharedSettingsCreate — and
+						// every other IPSecSharedSettings-family type — dropped the
+						// bandwidth field entirely in v3, with no replacement anywhere
+						// on the redundant-tunnel create/update surface. Per the
+						// project's release notes this attribute originally existed
+						// because the downstream service required it; under v3 that
+						// requirement is either defaulted server-side or no longer
+						// enforced. Users setting peak_bandwidth on
+						// checkpointsase_ipsec_redundant will find it has no effect
+						// under v3. Not removed/deprecated here — that would be a
+						// schema change, out of scope for Phase 1 (endpoint-only port).
 						"peak_bandwidth": {
 							Type:        schema.TypeInt,
 							Optional:    true,
@@ -527,7 +541,12 @@ func resourceIpsecRedundantRead(ctx context.Context, d *schema.ResourceData, m i
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set advanced settings", err)
 	}
-	if err := d.Set("shared_settings", flattenSharedSettingsData(tunnel.SharedSettings)); err != nil {
+	// Pass the prior "shared_settings" value (before this Set overwrites it)
+	// so flattenSharedSettingsData can carry forward peak_bandwidth, which
+	// v3 no longer returns on read — see the comment in that function
+	// (utils.go) and on the peak_bandwidth schema attribute below.
+	priorSharedSettings, _ := d.Get("shared_settings").([]interface{})
+	if err := d.Set("shared_settings", flattenSharedSettingsData(tunnel.SharedSettings, priorSharedSettings)); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set shared settings", err)
 	}
