@@ -111,14 +111,18 @@ func resourceObjectAddressesCreate(ctx context.Context, d *schema.ResourceData, 
 	valueType := d.Get("value_type").(string)
 	value := flattenStringsArrayData(d.Get("value").([]interface{}))
 
-	objectAddressesPayload := perimeter81Sdk.ObjectsAddressObj{
-		Name:        name,
+	// v3's Address flips Name/ValueType from required string to *string;
+	// take addresses of the locals rather than inlining type assertions.
+	objectAddressesPayload := perimeter81Sdk.Address{
+		Name:        &name,
 		Description: &description,
-		ValueType:   valueType,
+		ValueType:   &valueType,
 		Value:       value,
 	}
 	// create the Object Addresses and check for errors
-	objectAddresses, _, err := client.ObjectsAPI.CreateAddress(ctx).ObjectsAddressObj(objectAddressesPayload).Execute()
+	// Execute() returns *DBAddress (top-level Id + nested Attributes
+	// Address), not *Address — see model_db_address.go.
+	objectAddresses, _, err := client.ObjectsAPI.CreateAddress(ctx).Address(objectAddressesPayload).Execute()
 
 	if err != nil {
 		d.Partial(true)
@@ -157,7 +161,10 @@ func resourceObjectAddressesRead(ctx context.Context, d *schema.ResourceData, m 
 		return diags
 	}
 
-	if err := d.Set("name", currentObjectAddresses.Name); err != nil {
+	// v3 flipped Name/ValueType from required string to *string; use the
+	// Get* accessors (nil-safe) instead of assigning the pointer itself,
+	// which would otherwise store a pointer value via d.Set instead of a string.
+	if err := d.Set("name", currentObjectAddresses.GetName()); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set object addresses name", err)
 	}
@@ -165,7 +172,7 @@ func resourceObjectAddressesRead(ctx context.Context, d *schema.ResourceData, m 
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set object addresses description", err)
 	}
-	if err := d.Set("value_type", currentObjectAddresses.ValueType); err != nil {
+	if err := d.Set("value_type", currentObjectAddresses.GetValueType()); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set object addresses value_type", err)
 	}
@@ -202,14 +209,14 @@ func resourceObjectAddressesUpdate(ctx context.Context, d *schema.ResourceData, 
 		value := flattenStringsArrayData(d.Get("value").([]interface{}))
 
 		// prepare the object addresses data for the api service
-		updateObjectAddressesPayload := perimeter81Sdk.ObjectsAddressObj{
-			Name:        name,
+		updateObjectAddressesPayload := perimeter81Sdk.Address{
+			Name:        &name,
 			Description: &description,
-			ValueType:   valueType,
+			ValueType:   &valueType,
 			Value:       value,
 		}
 		//update the object addresses and check for errors
-		_, _, err := client.ObjectsAPI.PutObjectsAddresses(ctx, objectAddressesId).ObjectsAddressObj(updateObjectAddressesPayload).Execute()
+		_, _, err := client.ObjectsAPI.UpdateAddress(ctx, objectAddressesId).Address(updateObjectAddressesPayload).Execute()
 		if err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to update object addresses", err)

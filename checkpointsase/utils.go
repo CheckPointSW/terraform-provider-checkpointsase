@@ -131,9 +131,12 @@ func flattenProtocolsData(protocolItems []interface{}) []perimeter81Sdk.ObjectsS
 	protocols := make([]perimeter81Sdk.ObjectsServicesProtocolRequestObj, len(protocolItems))
 	for i, protocolItem := range protocolItems {
 		m := protocolItem.(map[string]interface{})
+		// v3 flipped ValueType to *string; take the address of a local
+		// rather than the (non-addressable) map-index type assertion.
+		valueType := m["value_type"].(string)
 		entry := perimeter81Sdk.ObjectsServicesProtocolRequestObj{
 			Protocol:  m["protocol"].(string),
-			ValueType: m["value_type"].(string),
+			ValueType: &valueType,
 			Value:     flattenIntsArrayData(m["value"].([]interface{})),
 		}
 		protocols[i] = entry
@@ -1303,12 +1306,12 @@ func flattenProtocolsDataSourceData(protocolItems []perimeter81Sdk.ObjectsServic
 
 /*
 getCurrentObjectAddressesInArray get the current object addresses from all the addresses
-  - @param objectsAddresses perimeter81Sdk.ObjectsAddressesResponse - the objects addresses in the system
+  - @param objectsAddresses perimeter81Sdk.AddressList - the objects addresses in the system
   - @param objectAddressesId string - the object addresses id
 
-@return *perimeter81Sdk.ObjectsAddressObj - the result
+@return *perimeter81Sdk.Address - the result
 */
-func getCurrentObjectAddressesInArray(objectsAddresses *perimeter81Sdk.ObjectsAddressesResponse, objectAddressesId string) *perimeter81Sdk.ObjectsAddressObj {
+func getCurrentObjectAddressesInArray(objectsAddresses *perimeter81Sdk.AddressList, objectAddressesId string) *perimeter81Sdk.Address {
 	for i, address := range objectsAddresses.Data {
 		if address.GetId() == objectAddressesId {
 			return &objectsAddresses.Data[i]
@@ -1319,11 +1322,11 @@ func getCurrentObjectAddressesInArray(objectsAddresses *perimeter81Sdk.ObjectsAd
 
 /*
 flattenObjectAddressesData flatten ObjectAddresses data
-  - @param objectAddressesItems []perimeter81Sdk.ObjectsAddressObj - the object services that need to be flattened
+  - @param objectAddressesItems []perimeter81Sdk.Address - the object services that need to be flattened
 
 @return []interface{} - the flattened object addressess data
 */
-func flattenObjectAddressesData(objectAddressesItems []perimeter81Sdk.ObjectsAddressObj) []interface{} {
+func flattenObjectAddressesData(objectAddressesItems []perimeter81Sdk.Address) []interface{} {
 	if objectAddressesItems != nil {
 		objectAddresses := make([]interface{}, len(objectAddressesItems))
 		for i, objectAddressesItem := range objectAddressesItems {
@@ -1331,11 +1334,14 @@ func flattenObjectAddressesData(objectAddressesItems []perimeter81Sdk.ObjectsAdd
 			if objectAddressesItem.Id != nil {
 				objectAddress["id"] = *objectAddressesItem.Id
 			}
-			objectAddress["name"] = objectAddressesItem.Name
+			// v3 flipped Name/ValueType from required string to *string;
+			// use the Get* accessors (nil-safe) rather than assigning the
+			// pointer itself, which would break d.Set.
+			objectAddress["name"] = objectAddressesItem.GetName()
 			if objectAddressesItem.Description != nil {
 				objectAddress["description"] = *objectAddressesItem.Description
 			}
-			objectAddress["value_type"] = objectAddressesItem.ValueType
+			objectAddress["value_type"] = objectAddressesItem.GetValueType()
 			objectAddress["value"] = objectAddressesItem.Value
 			objectAddresses[i] = objectAddress
 		}

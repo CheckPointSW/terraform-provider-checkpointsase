@@ -94,9 +94,9 @@ func dataSourceRouteTableRead(ctx context.Context, d *schema.ResourceData, m int
 }
 
 /*
-flattenRouteTableData flattens a list of GetRouteTable200ResponseInner SDK models to a Terraform-compatible list.
+flattenRouteTableData flattens a list of StandardGetRouteTable200ResponseInner SDK models to a Terraform-compatible list.
 */
-func flattenRouteTableData(routes []perimeter81Sdk.GetRouteTable200ResponseInner) []interface{} {
+func flattenRouteTableData(routes []perimeter81Sdk.StandardGetRouteTable200ResponseInner) []interface{} {
 	if routes == nil {
 		return make([]interface{}, 0)
 	}

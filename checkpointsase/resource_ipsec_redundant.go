@@ -387,7 +387,12 @@ func resourceIpsecRedundantCreate(ctx context.Context, d *schema.ResourceData, m
 	sharedSettingsData := d.Get("shared_settings").([]interface{})[0].(map[string]interface{})
 	p81GatewaySubnets := flattenStringsArrayData(sharedSettingsData["p81_gateway_subnets"].([]interface{}))
 	remoteGatewaySubnets := flattenStringsArrayData(sharedSettingsData["remote_gateway_subnets"].([]interface{}))
-	peakBandwidth := int32(sharedSettingsData["peak_bandwidth"].(int))
+	// peak_bandwidth is intentionally not read into the create payload here.
+	// v3 removed the bandwidth field entirely from IPSecSharedSettingsCreate
+	// (and every other IPSecSharedSettings-family type) — see the schema
+	// comment above and flattenSharedSettingsData in utils.go for the
+	// read-side preserve-prior-state handling this pairs with.
+	// peakBandwidth := int32(sharedSettingsData["peak_bandwidth"].(int))
 	advancedSettingsData := d.Get("advanced_settings").([]interface{})[0].(map[string]interface{})
 	keyExchange := advancedSettingsData["key_exchange"].(string)
 	dpdTimeout := advancedSettingsData["dpd_timeout"].(string)
@@ -430,7 +435,9 @@ func resourceIpsecRedundantCreate(ctx context.Context, d *schema.ResourceData, m
 		SharedSettings: perimeter81Sdk.IPSecSharedSettingsCreate{
 			P81GatewaySubnets:    p81GatewaySubnets,
 			RemoteGatewaySubnets: remoteGatewaySubnets,
-			PeakBandwidth:        &peakBandwidth,
+			// PeakBandwidth omitted; v3 removed this field entirely from
+			// IPSecSharedSettingsCreate (see comment on the peakBandwidth
+			// read above). There is no replacement field to send it on.
 			// P81ASN omitted; public-api DTO marks it @IsOptional on both
 			// v2.1 and v2.2 redundant-tunnel paths (BUG-26 / P81-124405).
 			// Adding an HCL surface for it is tracked as a follow-up.
