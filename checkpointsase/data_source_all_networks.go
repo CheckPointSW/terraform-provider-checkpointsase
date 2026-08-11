@@ -2,8 +2,6 @@ package checkpointsase
 
 import (
 	"context"
-	"strconv"
-	"time"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
@@ -12,13 +10,14 @@ import (
 )
 
 /*
-dataSourceAllNetworks Query all networks (both standard and enhanced) via the generic /v2.3/networks endpoint.
+dataSourceAllNetworks Query all networks (both standard and enhanced) by merging the v3
+/networks/standard and /networks/enhanced list endpoints client-side.
 
 @return &schema.Resource
 */
 func dataSourceAllNetworks() *schema.Resource {
 	return &schema.Resource{
-		Description: "List all networks (both standard and enhanced) in Check Point SASE. Uses the generic /v2.3/networks endpoint.",
+		Description: "List all networks (both standard and enhanced) in Check Point SASE. The v3 API has no combined networks endpoint, so this data source merges GET /v3/networks/standard and GET /v3/networks/enhanced.",
 		ReadContext: dataSourceAllNetworksRead,
 		Schema: map[string]*schema.Schema{
 			"networks": {
@@ -78,6 +77,11 @@ func dataSourceAllNetworks() *schema.Resource {
 							Computed:    true,
 							Description: "The last update timestamp.",
 						},
+						"network_kind": {
+							Type:        schema.TypeString,
+							Computed:    true,
+							Description: "Which list this network came from: standard or enhanced. Added in v3, where the combined /networks endpoint no longer exists.",
+						},
 					},
 				},
 			},
@@ -85,38 +89,101 @@ func dataSourceAllNetworks() *schema.Resource {
 	}
 }
 
+// allNetworkRow is the common projection of a standard or enhanced network,
+// decoupling the flatten logic from the two different SDK response types so it
+// can be unit-tested without an API.
+type allNetworkRow struct {
+	ID         string
+	Name       string
+	Tags       []string
+	DNS        string
+	Subnet     string
+	AccessType string
+	IsDefault  bool
+	TenantID   string
+	CreatedAt  string
+	UpdatedAt  string
+}
+
+// flattenAllNetworks merges the standard and enhanced lists into the flat shape
+// this data source has always exposed, tagging each row with its origin.
+func flattenAllNetworks(standard, enhanced []allNetworkRow) []interface{} {
+	out := make([]interface{}, 0, len(standard)+len(enhanced))
+	for _, group := range []struct {
+		kind string
+		rows []allNetworkRow
+	}{{"standard", standard}, {"enhanced", enhanced}} {
+		for _, r := range group.rows {
+			tags := r.Tags
+			if tags == nil {
+				tags = []string{}
+			}
+			out = append(out, map[string]interface{}{
+				"id":           r.ID,
+				"name":         r.Name,
+				"tags":         tags,
+				"dns":          r.DNS,
+				"subnet":       r.Subnet,
+				"access_type":  r.AccessType,
+				"is_default":   r.IsDefault,
+				"tenant_id":    r.TenantID,
+				"created_at":   r.CreatedAt,
+				"updated_at":   r.UpdatedAt,
+				"network_kind": group.kind,
+			})
+		}
+	}
+	return out
+}
+
 func dataSourceAllNetworksRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
-	networks, _, err := client.NetworksAPI.GetNetworks(ctx).Execute()
+	// v3 deletes GET /networks (the combined list), so this data source fans out
+	// to the two surviving list endpoints and merges them, preserving the HCL
+	// contract customers already depend on.
+	standardNetworks, _, err := client.StandardNetworksAPI.StandardGetNetworks(ctx).Execute()
 	if err != nil {
 		d.Partial(true)
-		return appendErrorDiags(diags, "Unable to get networks", err)
+		return appendErrorDiags(diags, "Unable to list standard networks", err)
+	}
+	enhancedNetworks, _, err := client.EnhancedNetworksAPI.GetEnhancedNetworks(ctx).Execute()
+	if err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to list enhanced networks", err)
 	}
 
-	flatNetworks := make([]interface{}, len(networks))
-	for i, n := range networks {
-		network := make(map[string]interface{})
-		network["id"] = n.GetId()
-		network["name"] = n.GetName()
-		network["tags"] = n.GetTags()
-		network["dns"] = n.GetDns()
-		network["subnet"] = n.GetSubnet()
-		network["access_type"] = n.GetAccessType()
-		network["is_default"] = n.GetIsDefault()
-		network["tenant_id"] = n.GetTenantId()
-		network["created_at"] = n.GetCreatedAt().String()
-		network["updated_at"] = n.GetUpdatedAt().String()
-		flatNetworks[i] = network
+	standardRows := make([]allNetworkRow, 0, len(standardNetworks))
+	for _, n := range standardNetworks {
+		standardRows = append(standardRows, allNetworkRow{
+			ID: n.GetId(), Name: n.GetName(), Tags: n.GetTags(), DNS: n.GetDns(),
+			Subnet: n.GetSubnet(), AccessType: n.GetAccessType(),
+			IsDefault: n.GetIsDefault(), TenantID: n.GetTenantId(),
+			CreatedAt: n.GetCreatedAt().String(), UpdatedAt: n.GetUpdatedAt().String(),
+		})
+	}
+	// EnhancedNetwork carries the same shared fields as Network (verified against
+	// model_enhanced_network.go), so every row is fully populated here too —
+	// leaving dns/access_type/is_default at zero value would silently corrupt
+	// half of the merged list's rows.
+	enhancedRows := make([]allNetworkRow, 0, len(enhancedNetworks))
+	for _, n := range enhancedNetworks {
+		enhancedRows = append(enhancedRows, allNetworkRow{
+			ID: n.GetId(), Name: n.GetName(), Tags: n.GetTags(), DNS: n.GetDns(),
+			Subnet: n.GetSubnet(), AccessType: n.GetAccessType(),
+			IsDefault: n.GetIsDefault(), TenantID: n.GetTenantId(),
+			CreatedAt: n.GetCreatedAt().String(), UpdatedAt: n.GetUpdatedAt().String(),
+		})
 	}
 
-	if err := d.Set("networks", flatNetworks); err != nil {
+	if err := d.Set("networks", flattenAllNetworks(standardRows, enhancedRows)); err != nil {
 		d.Partial(true)
 		return diag.FromErr(err)
 	}
 
-	d.SetId(strconv.FormatInt(time.Now().Unix(), 10))
+	// A stable ID, not a timestamp: a changing ID makes the data source appear
+	// to change on every plan.
+	d.SetId("checkpointsase_all_networks")
 	return diags
 }
