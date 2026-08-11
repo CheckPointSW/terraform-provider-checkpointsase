@@ -3,7 +3,7 @@ module terraform-provider-checkpointsase
 go 1.26.2
 
 require (
-	github.com/CheckPointSW/perimeter-81-client-sdk/v2 v2.3.0
+	github.com/CheckPointSW/perimeter-81-client-sdk/v3 v3.0.0
 	github.com/hashicorp/terraform-plugin-docs v0.25.0
 	github.com/hashicorp/terraform-plugin-sdk/v2 v2.26.1
 )
@@ -78,7 +78,9 @@ require (
 	google.golang.org/genproto v0.0.0-20230410155749-daa745c078e1 // indirect
 	google.golang.org/grpc v1.56.3 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
-	gopkg.in/validator.v2 v2.0.1 // indirect
+	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/yaml.v2 v2.3.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/CheckPointSW/perimeter-81-client-sdk/v3 => ../perimeter-81-client-sdk
