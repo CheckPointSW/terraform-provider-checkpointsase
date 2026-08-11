@@ -250,7 +250,7 @@ func resourceNetworkRead(ctx context.Context, d *schema.ResourceData, m interfac
 	}
 
 	// get the regions data and check for errors
-	regionsData, _, err := client.RegionsAPI.StandardNetworksControllerV2GetRegions(ctx).Execute()
+	regionsData, _, err := client.StandardRegionsAPI.StandardNetworksControllerV2GetRegions(ctx).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to get CpRegions", err)

@@ -91,7 +91,7 @@ func dataSourceObjectServicesRead(ctx context.Context, d *schema.ResourceData, m
 		ctx = context.Background()
 	}
 
-	objectServices, _, err := client.ObjectsServicesAPI.GetObjectsServices(ctx).Execute()
+	objectServices, _, err := client.ObjectsAPI.GetObjectsServices(ctx).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to get object services", err)

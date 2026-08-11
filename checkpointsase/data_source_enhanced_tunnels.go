@@ -220,7 +220,7 @@ func flattenEnhancedTunnelsData(tunnels []perimeter81Sdk.EnhancedTunnel) []inter
 			"remote_id":              tunnel.GetRemoteID(),
 			"description":            tunnel.GetDescription(),
 			"routing_type":           string(tunnel.GetRoutingType()),
-			"peak_bandwidth":         int(tunnel.GetPeakBandwidth()),
+			"peak_bandwidth":         int(tunnel.GetPeakBandwidthMbps()),
 			"p81_gateway_subnets":    tunnel.GetP81GatewaySubnets(),
 			"remote_gateway_subnets": tunnel.GetRemoteGatewaySubnets(),
 		}

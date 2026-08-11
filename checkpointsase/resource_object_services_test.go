@@ -60,7 +60,7 @@ func testAccCheckObjectServicesExists(n string, objectServices *perimeter81Sdk.O
 		}
 		conn := testAccProvider.Meta().(*perimeter81Sdk.APIClient)
 		ctx := context.Background()
-		objectsServices, _, err := conn.ObjectsServicesAPI.GetObjectsServices(ctx).Execute()
+		objectsServices, _, err := conn.ObjectsAPI.GetObjectsServices(ctx).Execute()
 		if err != nil {
 			return fmt.Errorf("No ObjectServices found")
 		}

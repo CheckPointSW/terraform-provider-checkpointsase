@@ -288,8 +288,7 @@ func flattenDynamicTunnelDetails(tunnelItems []interface{}) []perimeter81Sdk.Dyn
 		detail := perimeter81Sdk.DynamicTunnelDetails{
 			RegionID: regionId,
 		}
-		asn := perimeter81Sdk.ASN(int32(tunnelMap["remote_asn"].(int)))
-		detail.RemoteASN = &asn
+		detail.RemoteASN = int32(tunnelMap["remote_asn"].(int))
 		if v, ok := tunnelMap["auth_type"].(string); ok && v != "" {
 			detail.AuthType = &v
 		}
@@ -354,7 +353,7 @@ func resourceEnhancedDynamicTunnelCreate(ctx context.Context, d *schema.Resource
 	phase2 := flattenIPSecPhaseConfigV23(d.Get("phase2").([]interface{}))
 	tunnels := flattenDynamicTunnelDetails(d.Get("tunnel").([]interface{}))
 
-	leftASN := perimeter81Sdk.RemoteASN(int32(d.Get("left_asn").(int)))
+	leftASN := int32(d.Get("left_asn").(int))
 	sharedSettings := perimeter81Sdk.EnhancedIPSecSharedSettingsCreate{
 		P81GatewaySubnets:    p81GatewaySubnets,
 		RemoteGatewaySubnets: remoteGatewaySubnets,

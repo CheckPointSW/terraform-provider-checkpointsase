@@ -13,13 +13,13 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 )
 
-// parseASNString converts a user-supplied ASN string (e.g. "65010") to the
-// SDK's RemoteASN type. Invalid input returns 0; the API validator catches
-// out-of-range values. Used by resources whose HCL schema declares the ASN
-// as a string (historical reasons) — newer resources use TypeInt directly.
-func parseASNString(s string) perimeter81Sdk.RemoteASN {
+// parseASNString converts a user-supplied ASN string (e.g. "65010") to an
+// int32. Invalid input returns 0; the API validator catches out-of-range
+// values. Used by resources whose HCL schema declares the ASN as a string
+// (historical reasons) — newer resources use TypeInt directly.
+func parseASNString(s string) int32 {
 	n, _ := strconv.Atoi(strings.TrimSpace(s))
-	return perimeter81Sdk.RemoteASN(int32(n))
+	return int32(n)
 }
 
 /*

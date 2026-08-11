@@ -344,7 +344,7 @@ func resourceEnhancedStaticTunnelCreate(ctx context.Context, d *schema.ResourceD
 	}
 	if v, ok := d.GetOk("peak_bandwidth"); ok {
 		pb := int32(v.(int))
-		payload.PeakBandwidth = &pb
+		payload.PeakBandwidthMbps = &pb
 	}
 
 	status, _, err := client.EnhancedTunnelsAPI.CreateStaticTunnel(ctx, networkId).StaticTunnelCreate(payload).Execute()
@@ -478,8 +478,8 @@ func resourceEnhancedStaticTunnelRead(ctx context.Context, d *schema.ResourceDat
 			return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel description", err)
 		}
 	}
-	if tunnelData.PeakBandwidth != nil {
-		if err := d.Set("peak_bandwidth", int(*tunnelData.PeakBandwidth)); err != nil {
+	if tunnelData.PeakBandwidthMbps != nil {
+		if err := d.Set("peak_bandwidth", int(*tunnelData.PeakBandwidthMbps)); err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel peak_bandwidth", err)
 		}

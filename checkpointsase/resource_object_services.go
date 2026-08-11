@@ -126,7 +126,7 @@ func resourceObjectServicesCreate(ctx context.Context, d *schema.ResourceData, m
 		Description: &description,
 		Protocols:   protocolsPayload,
 	}
-	newObjectServices, _, err := client.ObjectsServicesAPI.PostObjectsServices(ctx).ObjectsServicesRequestObj(createObjectsServicesPayload).Execute()
+	newObjectServices, _, err := client.ObjectsAPI.PostObjectsServices(ctx).ObjectsServicesRequestObj(createObjectsServicesPayload).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to create Object Services", err)
@@ -152,7 +152,7 @@ func resourceObjectServicesRead(ctx context.Context, d *schema.ResourceData, m i
 	// Look up by id, not by name. On terraform import only d.Id() is seeded,
 	// so a by-name lookup would panic; it also misbehaves if the service is
 	// renamed server-side.
-	objectsServices, _, err := client.ObjectsServicesAPI.GetObjectsServices(ctx).Execute()
+	objectsServices, _, err := client.ObjectsAPI.GetObjectsServices(ctx).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to fetch object services", err)
@@ -210,7 +210,7 @@ func resourceObjectServicesUpdate(ctx context.Context, d *schema.ResourceData, m
 			Description: &description,
 			Protocols:   protocolsPayload,
 		}
-		if _, _, err := client.ObjectsServicesAPI.PutObjectsServices(ctx, objectServicesId).ObjectsServicesRequestObj(updateObjectServicesPayload).Execute(); err != nil {
+		if _, _, err := client.ObjectsAPI.PutObjectsServices(ctx, objectServicesId).ObjectsServicesRequestObj(updateObjectServicesPayload).Execute(); err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to update object services", err)
 		}
@@ -234,7 +234,7 @@ func resourceObjectServicesDelete(ctx context.Context, d *schema.ResourceData, m
 	ctx = context.Background()
 
 	// delete the object services and check for errors
-	_, err := client.ObjectsServicesAPI.DeleteObjectsServices(ctx, d.Id()).Execute()
+	_, err := client.ObjectsAPI.DeleteObjectsServices(ctx, d.Id()).Execute()
 
 	if err != nil {
 		d.Partial(true)

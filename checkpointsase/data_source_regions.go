@@ -88,7 +88,7 @@ func dataSourceRegionsRead(ctx context.Context, d *schema.ResourceData, m interf
 	ctx = context.Background()
 
 	// call the api and check if there is an error
-	regionsData, _, err := client.RegionsAPI.StandardNetworksControllerV2GetRegions(ctx).Execute()
+	regionsData, _, err := client.StandardRegionsAPI.StandardNetworksControllerV2GetRegions(ctx).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to get Regions data", err)

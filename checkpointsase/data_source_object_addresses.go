@@ -87,7 +87,7 @@ func dataSourceObjectAddressesRead(ctx context.Context, d *schema.ResourceData, 
 	}
 
 	// call the api and check if there is an error
-	objectAddresses, _, err := client.ObjectsAddressesAPI.GetObjectsAddresses(ctx).Execute()
+	objectAddresses, _, err := client.ObjectsAPI.GetAddresses(ctx).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to get object addresses", err)

@@ -60,7 +60,7 @@ func testAccCheckObjectAddressExists(n string, objectAddress *perimeter81Sdk.Obj
 		}
 		conn := testAccProvider.Meta().(*perimeter81Sdk.APIClient)
 		ctx := context.Background()
-		objectsAddresses, _, err := conn.ObjectsAddressesAPI.GetObjectsAddresses(ctx).Execute()
+		objectsAddresses, _, err := conn.ObjectsAPI.GetAddresses(ctx).Execute()
 		if err != nil {
 			return fmt.Errorf("No ObjectAddresses found")
 		}

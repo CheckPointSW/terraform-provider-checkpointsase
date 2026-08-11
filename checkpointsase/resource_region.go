@@ -29,7 +29,7 @@ func resourceRegionCreate(ctx context.Context, networkId string, oldRegions []St
 				HarmonySaseRegionId: newRegion.CpRegionId,
 				Idle:                newRegion.Idle,
 			}
-			_, _, err := client.RegionsAPI.StandardNetworksControllerV2AddNetworkRegion(ctx, networkId).CreateRegionInNetworkPayload(regionPayload).Execute()
+			_, _, err := client.StandardRegionsAPI.StandardNetworksControllerV2AddNetworkRegion(ctx, networkId).CreateRegionInNetworkPayload(regionPayload).Execute()
 			if err != nil {
 				d.Partial(true)
 				return "", newRegion.CpRegionId, err
@@ -58,7 +58,7 @@ func resourceRegionDelete(ctx context.Context, networkId string, oldRegions []St
 		// If the region does not exist in the new regions, delete it
 		if !regionExistsInArray(oldRegion.CpRegionId, newRegions) {
 			// Delete the region from the network
-			_, _, err := client.RegionsAPI.StandardNetworksControllerV2DeleteNetworkRegion(ctx, networkId).RemoveRegionDTO(perimeter81Sdk.RemoveRegionDTO{RegionId: oldRegion.RegionID}).Execute()
+			_, _, err := client.StandardRegionsAPI.StandardNetworksControllerV2DeleteNetworkRegion(ctx, networkId).RemoveRegionDTO(perimeter81Sdk.RemoveRegionDTO{RegionId: oldRegion.RegionID}).Execute()
 			if err != nil {
 				d.Partial(true)
 				return "", oldRegion.RegionID, err

@@ -118,7 +118,7 @@ func resourceObjectAddressesCreate(ctx context.Context, d *schema.ResourceData, 
 		Value:       value,
 	}
 	// create the Object Addresses and check for errors
-	objectAddresses, _, err := client.ObjectsAddressesAPI.PostObjectsAddresses(ctx).ObjectsAddressObj(objectAddressesPayload).Execute()
+	objectAddresses, _, err := client.ObjectsAPI.CreateAddress(ctx).ObjectsAddressObj(objectAddressesPayload).Execute()
 
 	if err != nil {
 		d.Partial(true)
@@ -144,7 +144,7 @@ func resourceObjectAddressesRead(ctx context.Context, d *schema.ResourceData, m 
 	ctx = context.Background()
 
 	// get the object addresses and check for errors
-	objectsAddresses, _, err := client.ObjectsAddressesAPI.GetObjectsAddresses(ctx).Execute()
+	objectsAddresses, _, err := client.ObjectsAPI.GetAddresses(ctx).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to find object addresses", err)
@@ -209,7 +209,7 @@ func resourceObjectAddressesUpdate(ctx context.Context, d *schema.ResourceData, 
 			Value:       value,
 		}
 		//update the object addresses and check for errors
-		_, _, err := client.ObjectsAddressesAPI.PutObjectsAddresses(ctx, objectAddressesId).ObjectsAddressObj(updateObjectAddressesPayload).Execute()
+		_, _, err := client.ObjectsAPI.PutObjectsAddresses(ctx, objectAddressesId).ObjectsAddressObj(updateObjectAddressesPayload).Execute()
 		if err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to update object addresses", err)
@@ -234,7 +234,7 @@ func resourceObjectAddressesDelete(ctx context.Context, d *schema.ResourceData, 
 	ctx = context.Background()
 
 	// delete the object Addresses and check for errors
-	_, err := client.ObjectsAddressesAPI.DeleteObjectsAddresses(ctx, d.Id()).Execute()
+	_, err := client.ObjectsAPI.DeleteObjectsAddresses(ctx, d.Id()).Execute()
 
 	if err != nil {
 		d.Partial(true)

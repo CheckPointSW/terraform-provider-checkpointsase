@@ -208,7 +208,7 @@ func resourceApplicationCreate(ctx context.Context, d *schema.ResourceData, m in
 		return appendErrorDiags(diags, "Unsupported application type", fmt.Errorf("type must be 'http', 'https', or 'rdp', got: %s", appType))
 	}
 
-	status, _, err := client.ApplicationAPI.CreateApplication(ctx).CreateApplicationRequest(payload).Execute()
+	status, _, err := client.ApplicationsAPI.CreateApplication(ctx).CreateApplicationRequest(payload).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to create Application", err)
@@ -217,7 +217,7 @@ func resourceApplicationCreate(ctx context.Context, d *schema.ResourceData, m in
 	statusId := getIdFromUrl(status.GetStatusUrl())
 	var applicationId string
 	for {
-		appStatus, _, statusErr := client.ApplicationAPI.GetApplicationStatus(ctx, statusId).Execute()
+		appStatus, _, statusErr := client.ApplicationsAPI.GetApplicationStatus(ctx, statusId).Execute()
 		if statusErr != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to get Application status", statusErr)
@@ -230,7 +230,7 @@ func resourceApplicationCreate(ctx context.Context, d *schema.ResourceData, m in
 				// Async result didn't carry a resource URL. Fall back to
 				// listing applications and finding by name.
 				appName := d.Get("name").(string)
-				resp, _, lerr := client.ApplicationAPI.GetApplications(ctx).Execute()
+				resp, _, lerr := client.ApplicationsAPI.GetApplications(ctx).Execute()
 				if lerr == nil && resp != nil {
 					for _, a := range resp.Data {
 						if a.Name == appName {
@@ -268,7 +268,7 @@ func resourceApplicationRead(ctx context.Context, d *schema.ResourceData, m inte
 	ctx = context.Background()
 
 	applicationId := d.Id()
-	appData, _, err := client.ApplicationAPI.GetApplicationById(ctx, applicationId).Execute()
+	appData, _, err := client.ApplicationsAPI.GetApplicationById(ctx, applicationId).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to find Application", err)

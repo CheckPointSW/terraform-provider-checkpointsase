@@ -77,7 +77,7 @@ func dataSourceRouteTableRead(ctx context.Context, d *schema.ResourceData, m int
 
 	networkId := d.Get("network_id").(string)
 
-	routes, _, err := client.RouteTableAPI.StandardGetRouteTable(ctx, networkId).Execute()
+	routes, _, err := client.StandardRouteTablesAPI.StandardGetRouteTable(ctx, networkId).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to get Route Table", err)
