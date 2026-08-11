@@ -289,8 +289,12 @@ func flattenObjectServicesProtocols(protocolItems []perimeter81Sdk.ObjectsServic
 	protocols := make([]interface{}, len(protocolItems))
 	for i, protocolItem := range protocolItems {
 		protocols[i] = map[string]interface{}{
-			"protocol":   protocolItem.Protocol,
-			"value_type": protocolItem.ValueType,
+			"protocol": protocolItem.Protocol,
+			// ValueType is *string in v3; GetValueType() nil-checks the
+			// receiver and returns the zero value, so it's safe under
+			// omitempty absence. Assigning the pointer directly would
+			// store the pointer, not the string, in the flattened map.
+			"value_type": protocolItem.GetValueType(),
 			"value":      protocolItem.Value,
 		}
 	}
@@ -1296,8 +1300,12 @@ func flattenProtocolsDataSourceData(protocolItems []perimeter81Sdk.ObjectsServic
 	protocols := make([]interface{}, len(protocolItems))
 	for i, protocolItem := range protocolItems {
 		protocols[i] = map[string]interface{}{
-			"protocol":   protocolItem.Protocol,
-			"value_type": protocolItem.ValueType,
+			"protocol": protocolItem.Protocol,
+			// ValueType is *string in v3; GetValueType() nil-checks the
+			// receiver and returns the zero value, so it's safe under
+			// omitempty absence. Assigning the pointer directly would
+			// store the pointer, not the string, in the flattened map.
+			"value_type": protocolItem.GetValueType(),
 			"value":      protocolItem.Value,
 		}
 	}
