@@ -234,7 +234,7 @@ func resourceObjectAddressesDelete(ctx context.Context, d *schema.ResourceData, 
 	ctx = context.Background()
 
 	// delete the object Addresses and check for errors
-	_, err := client.ObjectsAPI.DeleteObjectsAddresses(ctx, d.Id()).Execute()
+	_, err := client.ObjectsAPI.DeleteAddress(ctx, d.Id()).Execute()
 
 	if err != nil {
 		d.Partial(true)
