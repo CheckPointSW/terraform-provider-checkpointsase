@@ -26,7 +26,7 @@ func TestAccObjectAddresses_basic(t *testing.T) {
 					testAccCheckObjectAddressesAttributes(&objectAddress, &testAccObjectAddressExpectedAttributes{
 						Name:        "test-os",
 						Description: "10.30.0.90/16",
-						ValueType:   "single",
+						ValueType:   "ip",
 						Value:       []string{"193.168.3.1"},
 					}),
 				),
@@ -108,7 +108,7 @@ func testAccObjectAddressConfig() string {
 resource "checkpointsase_object_addresses" "os" {
   name = "test-os"
   description = "10.30.0.90/16"
-  value_type = "single"
+  value_type = "ip"
   value = ["193.168.3.1"]
 }
   `

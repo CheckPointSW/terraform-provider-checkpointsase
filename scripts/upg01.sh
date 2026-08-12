@@ -268,6 +268,20 @@ build_current
 write_cli_config
 write_fixture "${BASELINE_VERSION}"
 
+# Drop any provider lock and plugin cache left by a previous run, BEFORE the
+# first init. Both provider binaries are rebuilt from source on every
+# invocation, so their h1: hashes differ every time; a lock file recorded by an
+# earlier run therefore never matches, and `terraform init` fails with "the
+# local package ... doesn't match any of the checksums previously recorded in
+# the dependency lock file". Without this the harness works exactly once and
+# then wedges permanently.
+#
+# This must NOT move into write_fixture(): that is called a second time for the
+# 3.0.0 re-pin, and the whole point of the exercise is to carry the SAME state
+# across the version swap. terraform.tfstate is deliberately left untouched
+# here, and the later `init -upgrade` refreshes the lock for 3.0.0 by itself.
+rm -rf "${FIXTURE_DIR}/.terraform" "${FIXTURE_DIR}/.terraform.lock.hcl"
+
 log "terraform init (pinned to v${BASELINE_VERSION}, filesystem mirror only, no direct/registry lookups)"
 terraform -chdir="${FIXTURE_DIR}" init -input=false
 
