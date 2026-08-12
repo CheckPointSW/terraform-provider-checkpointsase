@@ -910,7 +910,7 @@ func addGatewayToRegion(ctx context.Context, client *perimeter81Sdk.APIClient, g
 		var gatewayId string
 		var gatewayDns string
 		var gatewayIp string
-		if err := pollStandardNetworkStatus(ctx, client, statusId); err != nil {
+		if err := pollStandardNetworkStatus(ctx, client, statusId, standardNetworkPollInterval); err != nil {
 			diags = appendErrorDiags(diags, "Unable to create gateway", err)
 			return diags, err
 		}

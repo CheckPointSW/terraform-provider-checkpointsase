@@ -176,29 +176,20 @@ func resourceWireguardCreate(ctx context.Context, d *schema.ResourceData, m inte
 	var wireguardTunnelId string
 	statusId := getIdFromUrl(status.GetStatusUrl())
 
-	// check the status of the wireguard tunnel creation
-	for {
-		// check the status of the wireguard tunnel creation and check for errors
-		networkStatus, diags, err := checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		// if the status is completed, get the tunnel id and break the loop
-		if networkStatus.GetCompleted() {
-			baseTunnelBody := perimeter81Sdk.BaseTunnelValues{
-				RegionID:   regionId,
-				GatewayID:  gatewayId,
-				TunnelName: tunnelName,
-			}
-			wireguardTunnelId, diags = getTunnelId(ctx, networkId, baseTunnelBody, *client, diags)
-			if wireguardTunnelId == "" {
-				return diags
-			}
-			break
-		}
-		// sleep for 20 seconds and check the status again
-		time.Sleep(20 * time.Second)
+	// check the status of the wireguard tunnel creation and check for errors
+	if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to create Wireguard tunnel", err)
+	}
+	// get the tunnel id
+	baseTunnelBody := perimeter81Sdk.BaseTunnelValues{
+		RegionID:   regionId,
+		GatewayID:  gatewayId,
+		TunnelName: tunnelName,
+	}
+	wireguardTunnelId, diags = getTunnelId(ctx, networkId, baseTunnelBody, *client, diags)
+	if wireguardTunnelId == "" {
+		return diags
 	}
 	d.SetId(wireguardTunnelId)
 
@@ -331,20 +322,10 @@ func resourceWireguardUpdate(ctx context.Context, d *schema.ResourceData, m inte
 
 		// get the status id from the status url
 		statusId := getIdFromUrl(status.GetStatusUrl())
-		// check the status of the wireguard tunnel update
-		for {
-			// check the status of the wireguard tunnel update and check for errors
-			networkStatus, diags, err := checkNetworkStatus(ctx, statusId, *client, diags)
-			if err != nil {
-				d.Partial(true)
-				return diags
-			}
-			// if the status is completed, break the loop
-			if networkStatus.GetCompleted() {
-				break
-			}
-			// sleep for 20 seconds and check the status again
-			time.Sleep(20 * time.Second)
+		// check the status of the wireguard tunnel update and check for errors
+		if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to update wireguard Tunnel", err)
 		}
 		d.Set("last_updated", time.Now().Format(time.RFC850))
 	}
@@ -379,20 +360,10 @@ func resourceWireguardDelete(ctx context.Context, d *schema.ResourceData, m inte
 
 	// get the status id from the status url
 	statusId := getIdFromUrl(status.GetStatusUrl())
-	// check the status of the wireguard tunnel deletion
-	for {
-		// check the status of the wireguard tunnel deletion and check for errors
-		networkStatus, diags, err := checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		// if the status is completed, break the loop
-		if networkStatus.GetCompleted() {
-			break
-		}
-		// sleep for 20 seconds and check the status again
-		time.Sleep(20 * time.Second)
+	// check the status of the wireguard tunnel deletion and check for errors
+	if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to delete wireguard tunnel", err)
 	}
 	d.SetId("")
 	return diags

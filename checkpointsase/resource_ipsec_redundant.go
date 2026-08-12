@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"time"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
@@ -471,29 +470,20 @@ func resourceIpsecRedundantCreate(ctx context.Context, d *schema.ResourceData, m
 	var ipSecRedundantTunnelId string
 	statusId := getIdFromUrl(status.GetStatusUrl())
 
-	// check the status of the ipsec-redundant tunnel creation
-	for {
-		// check the status of the network that contains the ipsec-redundant tunnel and check for errors
-		networkStatus, diags, err := checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		// if the network status is completed, get the ipsec-redundant tunnel id and break the loop
-		if networkStatus.GetCompleted() {
-			baseTunnelBody := perimeter81Sdk.BaseTunnelValues{
-				RegionID:   regionId,
-				GatewayID:  gatewayId1,
-				TunnelName: tunnelName,
-			}
-			ipSecRedundantTunnelId, diags = getRedundantTunnelId(ctx, networkId, baseTunnelBody, *client, diags)
-			if ipSecRedundantTunnelId == "" {
-				return diags
-			}
-			break
-		}
-		// delay for 20 seconds before checking the status again
-		time.Sleep(20 * time.Second)
+	// check the status of the network that contains the ipsec-redundant tunnel and check for errors
+	if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to create ipsec-redundant tunnel", err)
+	}
+	// get the ipsec-redundant tunnel id
+	baseTunnelBody := perimeter81Sdk.BaseTunnelValues{
+		RegionID:   regionId,
+		GatewayID:  gatewayId1,
+		TunnelName: tunnelName,
+	}
+	ipSecRedundantTunnelId, diags = getRedundantTunnelId(ctx, networkId, baseTunnelBody, *client, diags)
+	if ipSecRedundantTunnelId == "" {
+		return diags
 	}
 	d.SetId(ipSecRedundantTunnelId)
 
@@ -609,19 +599,10 @@ func resourceIpsecRedundantDelete(ctx context.Context, d *schema.ResourceData, m
 
 	// get the status id of the ipsec-redundant tunnel deletion
 	statusId := getIdFromUrl(status.GetStatusUrl())
-	for {
-		// check the status of the network that contains the ipsec-redundant tunnel and check for errors
-		networkStatus, diags, err := checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		// if the network status is completed, break the loop
-		if networkStatus.GetCompleted() {
-			break
-		}
-		// delay for 20 seconds before checking the status again
-		time.Sleep(20 * time.Second)
+	// check the status of the network that contains the ipsec-redundant tunnel and check for errors
+	if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to delete ipsec-redundant tunnel", err)
 	}
 	d.SetId("")
 	return diags

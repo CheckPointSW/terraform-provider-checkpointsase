@@ -96,20 +96,26 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 }
 
 const (
-	// standardNetworkPollInterval matches the 60s time.Sleep the hand-rolled
-	// polling loops used, so this migration changes correctness, not timing.
+	// standardNetworkPollInterval is the cadence the network create/update
+	// loops used before this migration.
 	standardNetworkPollInterval = 60 * time.Second
+	// standardTunnelPollInterval is the cadence the tunnel loops used. It is
+	// deliberately different from the network cadence: preserving each call
+	// site's original timing keeps this migration a correctness-only change.
+	standardTunnelPollInterval = 20 * time.Second
 	// standardNetworkTransientBudget allows two 5xx/EOF blips per operation.
 	standardNetworkTransientBudget = 2
 )
 
-// pollStandardNetworkStatus polls the standard-networks async status endpoint
-// until the operation completes, fails, or ctx expires.
+// pollStandardNetworkStatusForResource polls the standard-networks async status
+// endpoint and additionally returns result.resource, which create paths need in
+// order to learn the new object's ID.
 //
-// It replaces checkNetworkStatus, which failed only on statusCode 500 and so
-// reported a 400 or 409 completion to Terraform as a successful apply.
-func pollStandardNetworkStatus(ctx context.Context, client *perimeter81Sdk.APIClient, statusId string) error {
-	return pollAsync(ctx, func(ctx context.Context) (asyncResult, *http.Response, error) {
+// pollAsync returns only an error, so the resource is captured from the closure
+// on the completing poll rather than threaded through asyncResult.
+func pollStandardNetworkStatusForResource(ctx context.Context, client *perimeter81Sdk.APIClient, statusId string, interval time.Duration) (string, error) {
+	var resource string
+	err := pollAsync(ctx, func(ctx context.Context) (asyncResult, *http.Response, error) {
 		status, resp, err := client.StandardNetworksAPI.StandardNetworksControllerV2Status(ctx, statusId).Execute()
 		if err != nil {
 			return asyncResult{}, resp, err
@@ -118,7 +124,21 @@ func pollStandardNetworkStatus(ctx context.Context, client *perimeter81Sdk.APICl
 		if r := status.Result; r != nil {
 			out.StatusCode = int(r.GetStatusCode())
 			out.Reasons = r.GetReason()
+			resource = r.GetResource()
 		}
 		return out, resp, nil
-	}, standardNetworkPollInterval, standardNetworkTransientBudget)
+	}, interval, standardNetworkTransientBudget)
+	return resource, err
+}
+
+// pollStandardNetworkStatus polls the standard-networks async status endpoint
+// until the operation completes, fails, or ctx expires, discarding the result
+// resource. Use pollStandardNetworkStatusForResource when the caller needs the
+// created object's ID.
+//
+// It replaces checkNetworkStatus, which failed only on statusCode 500 and so
+// reported a 400 or 409 completion to Terraform as a successful apply.
+func pollStandardNetworkStatus(ctx context.Context, client *perimeter81Sdk.APIClient, statusId string, interval time.Duration) error {
+	_, err := pollStandardNetworkStatusForResource(ctx, client, statusId, interval)
+	return err
 }

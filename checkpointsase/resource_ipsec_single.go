@@ -316,29 +316,20 @@ func resourceIpsecSingleCreate(ctx context.Context, d *schema.ResourceData, m in
 	var ipSecSingleTunnelId string
 	statusId := getIdFromUrl(status.GetStatusUrl())
 
-	// check the status of the ipsec-redundant tunnel creation
-	for {
-		// check the status of the network that contains the ipsec-redundant tunnel and check for errors
-		networkStatus, diags, err := checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		// if the network status is completed, get the ipsec-single tunnel id and break the loop
-		if networkStatus.GetCompleted() {
-			baseTunnelBody := perimeter81Sdk.BaseTunnelValues{
-				RegionID:   regionId,
-				GatewayID:  gatewayId,
-				TunnelName: tunnelName,
-			}
-			ipSecSingleTunnelId, diags = getTunnelId(ctx, networkId, baseTunnelBody, *client, diags)
-			if ipSecSingleTunnelId == "" {
-				return diags
-			}
-			break
-		}
-		// delay for 20 seconds before checking the status again
-		time.Sleep(20 * time.Second)
+	// check the status of the network that contains the ipsec-single tunnel and check for errors
+	if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to create IpsecSingle tunnel", err)
+	}
+	// get the ipsec-single tunnel id
+	baseTunnelBody := perimeter81Sdk.BaseTunnelValues{
+		RegionID:   regionId,
+		GatewayID:  gatewayId,
+		TunnelName: tunnelName,
+	}
+	ipSecSingleTunnelId, diags = getTunnelId(ctx, networkId, baseTunnelBody, *client, diags)
+	if ipSecSingleTunnelId == "" {
+		return diags
 	}
 	d.SetId(ipSecSingleTunnelId)
 
@@ -537,19 +528,9 @@ func resourceIpsecSingleUpdate(ctx context.Context, d *schema.ResourceData, m in
 		statusId := getIdFromUrl(status.GetStatusUrl())
 
 		// check the status of the ipsec-single tunnel and check for errors
-		for {
-			// check the status of the ipsec-single tunnel and check for errors
-			networkStatus, diags, err := checkNetworkStatus(ctx, statusId, *client, diags)
-			if err != nil {
-				d.Partial(true)
-				return diags
-			}
-			// if the ipsec-single tunnel status is completed break the loop
-			if networkStatus.GetCompleted() {
-				break
-			}
-			// sleep for 20 seconds
-			time.Sleep(20 * time.Second)
+		if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to update ipsec-single Tunnel", err)
 		}
 		d.Set("last_updated", time.Now().Format(time.RFC850))
 	}
@@ -585,19 +566,9 @@ func resourceIpsecSingleDelete(ctx context.Context, d *schema.ResourceData, m in
 	// get the status id from the status url
 	statusId := getIdFromUrl(status.GetStatusUrl())
 	// check the status of the ipsec-single tunnel and check for errors
-	for {
-		// check the status of the ipsec-single tunnel and check for errors
-		networkStatus, diags, err := checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		// if the ipsec-single tunnel status is completed break the loop
-		if networkStatus.GetCompleted() {
-			break
-		}
-		// sleep for 20 seconds
-		time.Sleep(20 * time.Second)
+	if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to delete ipsec-single tunnel", err)
 	}
 	d.SetId("")
 	return diags

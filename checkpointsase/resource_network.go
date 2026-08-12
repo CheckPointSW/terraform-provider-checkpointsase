@@ -191,35 +191,25 @@ func resourceNetworkCreate(ctx context.Context, d *schema.ResourceData, m interf
 
 	// get the status id from the status url
 	statusId := getIdFromUrl(status.GetStatusUrl())
-	var networkId string
-	// check the status of the network creation
-	for {
-		// check the status of the network creation and check for errors
-		var networkStatus perimeter81Sdk.AsyncOperationStatus
-		networkStatus, diags, err = checkNetworkStatus(ctx, statusId, *client, diags)
+	// check the status of the network creation and check for errors
+	resource, err := pollStandardNetworkStatusForResource(ctx, client, statusId, standardNetworkPollInterval)
+	if err != nil {
+		diags = appendErrorDiags(diags, "Unable to Create Network", err)
+		networks, _, err := client.StandardNetworksAPI.StandardGetNetworks(ctx).Execute()
 		if err != nil {
-			networks, _, err := client.StandardNetworksAPI.StandardGetNetworks(ctx).Execute()
-			if err != nil {
-				d.Partial(true)
-				return appendErrorDiags(diags, "Unable to Create Network", err)
-			}
-			for _, networkData := range networks {
-				if networkData.Name == name {
-					d.SetId(networkData.Id)
-					return resourceNetworkRead(ctx, d, m)
-				}
-			}
 			d.Partial(true)
-			return diags
+			return appendErrorDiags(diags, "Unable to Create Network", err)
 		}
-		// if the network creation is completed, get the network id and break the loop
-		if networkStatus.GetCompleted() {
-			networkId = getIdFromUrl(networkStatus.Result.GetResource())
-			break
+		for _, networkData := range networks {
+			if networkData.Name == name {
+				d.SetId(networkData.Id)
+				return resourceNetworkRead(ctx, d, m)
+			}
 		}
-		// sleep for 60 seconds and check the status again
-		time.Sleep(60 * time.Second)
+		d.Partial(true)
+		return diags
 	}
+	networkId := getIdFromUrl(resource)
 
 	d.SetId(networkId)
 
@@ -340,20 +330,10 @@ func resourceNetworkUpdate(ctx context.Context, d *schema.ResourceData, m interf
 		d.Set("last_updated", time.Now().Format(time.RFC850))
 		// wait for the network to be updated with the regions (if a status id is available)
 		if statusId != "" {
-			for {
-				// check the network status and check for errors
-				var networkStatus perimeter81Sdk.AsyncOperationStatus
-				networkStatus, diags, err = checkNetworkStatus(ctx, statusId, *client, diags)
-				if err != nil {
-					d.Partial(true)
-					return diags
-				}
-				// if the network status is completed break the loop
-				if networkStatus.GetCompleted() {
-					break
-				}
-				// wait for 60 seconds and check again
-				time.Sleep(60 * time.Second)
+			// check the network status and check for errors
+			if err := pollStandardNetworkStatus(ctx, client, statusId, standardNetworkPollInterval); err != nil {
+				d.Partial(true)
+				return appendErrorDiags(diags, "Unable to update network regions", err)
 			}
 		}
 	}

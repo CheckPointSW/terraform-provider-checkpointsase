@@ -144,7 +144,7 @@ func TestPollStandardNetworkStatusFailsOnCompletedNonTwoXX(t *testing.T) {
 
 	client := perimeter81Sdk.NewAPIClient(perimeter81Sdk.NewConfiguration("test-key", server.URL))
 
-	err := pollStandardNetworkStatus(context.Background(), client, "status-id")
+	err := pollStandardNetworkStatus(context.Background(), client, "status-id", testInterval)
 	if err == nil {
 		t.Fatal("pollStandardNetworkStatus() = nil, want an error for a 409 completion")
 	}
@@ -163,7 +163,24 @@ func TestPollStandardNetworkStatusSucceedsOnCompletedTwoHundred(t *testing.T) {
 
 	client := perimeter81Sdk.NewAPIClient(perimeter81Sdk.NewConfiguration("test-key", server.URL))
 
-	if err := pollStandardNetworkStatus(context.Background(), client, "status-id"); err != nil {
+	if err := pollStandardNetworkStatus(context.Background(), client, "status-id", testInterval); err != nil {
 		t.Fatalf("pollStandardNetworkStatus() = %v, want nil for a completed 200 response", err)
+	}
+}
+
+// pollStandardNetworkStatusForResource is what create paths use to learn the
+// new object's ID. A silent regression that dropped result.resource would
+// leave those paths writing an empty ID to state without any test catching it.
+func TestPollStandardNetworkStatusForResourceReturnsResourceOnCompletedTwoHundred(t *testing.T) {
+	server := standardNetworkStatusServer(t, `{"completed":true,"result":{"statusCode":200,"resource":"/networks/standard/net-123"}}`)
+
+	client := perimeter81Sdk.NewAPIClient(perimeter81Sdk.NewConfiguration("test-key", server.URL))
+
+	resource, err := pollStandardNetworkStatusForResource(context.Background(), client, "status-id", testInterval)
+	if err != nil {
+		t.Fatalf("pollStandardNetworkStatusForResource() error = %v, want nil for a completed 200 response", err)
+	}
+	if resource != "/networks/standard/net-123" {
+		t.Errorf("pollStandardNetworkStatusForResource() resource = %q, want %q", resource, "/networks/standard/net-123")
 	}
 }
