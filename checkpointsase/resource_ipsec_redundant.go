@@ -201,13 +201,16 @@ func resourceIpsecRedundant() *schema.Resource {
 						// requirement is either defaulted server-side or no longer
 						// enforced. Users setting peak_bandwidth on
 						// checkpointsase_ipsec_redundant will find it has no effect
-						// under v3. Not removed/deprecated here — that would be a
-						// schema change, out of scope for Phase 1 (endpoint-only port).
+						// under v3. Marked Deprecated below rather than removed, since
+						// removing it would be a breaking schema change; ForceNew is
+						// intentionally not added because replacement would not send
+						// the value either, making it destructive for no benefit.
 						"peak_bandwidth": {
 							Type:        schema.TypeInt,
 							Optional:    true,
 							Default:     1000,
-							Description: "Expected peak throughput of the tunnel pair in Mbps. Defaults to 1000. Required by the downstream service even though the public-api DTO marks it optional.",
+							Deprecated:  "Has no effect on this resource in v3. Retained only for configuration compatibility.",
+							Description: "Expected peak throughput of the tunnel pair in Mbps. Defaults to 1000. Not sent to the v3 server — the value is retained only for configuration compatibility with prior provider versions.",
 						},
 					}},
 			},

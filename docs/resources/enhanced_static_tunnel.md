@@ -77,7 +77,7 @@ resource "checkpointsase_enhanced_static_tunnel" "example" {
 - `description` (String) Optional description for the static tunnel.
 - `last_updated` (String) Timestamp of the last update to this resource.
 - `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication (8-64 characters). Required when auth_type is 'psk'.
-- `peak_bandwidth` (Number) Expected peak throughput of the tunnel communication in Mbps. Allowed range is 10–8000. Defaults to 1000.
+- `peak_bandwidth` (Number) Expected peak throughput of the tunnel communication in Mbps. Allowed range is 10–8000. Defaults to 1000. Settable only at creation: v3's update endpoint has no bandwidth field, so changing this value replaces the tunnel (destroy and re-create) rather than updating it in place.
 - `remote_id` (String) The remote gateway ID. When omitted, the server defaults this to `remote_public_ip`; the provider reads the server-assigned value back into state.
 - `remote_public_ip` (String) The remote gateway public IP address.
 

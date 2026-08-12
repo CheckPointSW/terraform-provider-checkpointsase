@@ -81,7 +81,7 @@ resource "checkpointsase_enhanced_dynamic_tunnel" "example" {
 
 - `description` (String) Optional description for the dynamic tunnel.
 - `last_updated` (String) Timestamp of the last update to this resource.
-- `peak_bandwidth` (Number) Expected peak throughput of the tunnel communication in Mbps. Allowed range is 10–8000. Defaults to 1000.
+- `peak_bandwidth` (Number, Deprecated) Expected peak throughput of the tunnel communication in Mbps. Allowed range is 10–8000. Defaults to 1000. Not sent to the v3 server — the value is retained only for configuration compatibility with prior provider versions.
 
 ### Read-Only
 

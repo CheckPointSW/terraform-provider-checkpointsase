@@ -94,10 +94,12 @@ func resourceEnhancedStaticTunnel() *schema.Resource {
 				Description: "Optional description for the static tunnel.",
 			},
 			"peak_bandwidth": {
-				Type:         schema.TypeInt,
-				Optional:     true,
-				Default:      1000,
-				Description:  "Expected peak throughput of the tunnel communication in Mbps. Allowed range is 10–8000. Defaults to 1000.",
+				Type:     schema.TypeInt,
+				Optional: true,
+				Default:  1000,
+				ForceNew: true,
+				Description: "Expected peak throughput of the tunnel communication in Mbps. Allowed range is 10–8000. Defaults to 1000. " +
+					"Settable only at creation: v3's update endpoint has no bandwidth field, so changing this value replaces the tunnel (destroy and re-create) rather than updating it in place.",
 				ValidateFunc: validation.IntBetween(10, 8000),
 			},
 			"key_exchange": {

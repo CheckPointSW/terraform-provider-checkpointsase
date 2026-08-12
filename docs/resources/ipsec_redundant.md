@@ -133,7 +133,7 @@ Required:
 
 Optional:
 
-- `peak_bandwidth` (Number) Expected peak throughput of the tunnel pair in Mbps. Defaults to 1000. Required by the downstream service even though the public-api DTO marks it optional.
+- `peak_bandwidth` (Number, Deprecated) Expected peak throughput of the tunnel pair in Mbps. Defaults to 1000. Not sent to the v3 server — the value is retained only for configuration compatibility with prior provider versions.
 
 
 <a id="nestedblock--tunnel1"></a>

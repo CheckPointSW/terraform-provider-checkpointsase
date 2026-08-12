@@ -143,7 +143,8 @@ func resourceEnhancedDynamicTunnel() *schema.Resource {
 				Type:         schema.TypeInt,
 				Optional:     true,
 				Default:      1000,
-				Description:  "Expected peak throughput of the tunnel communication in Mbps. Allowed range is 10–8000. Defaults to 1000.",
+				Deprecated:   "Has no effect on this resource in v3. Retained only for configuration compatibility.",
+				Description:  "Expected peak throughput of the tunnel communication in Mbps. Allowed range is 10–8000. Defaults to 1000. Not sent to the v3 server — the value is retained only for configuration compatibility with prior provider versions.",
 				ValidateFunc: validation.IntBetween(10, 8000),
 			},
 			"key_exchange": {
