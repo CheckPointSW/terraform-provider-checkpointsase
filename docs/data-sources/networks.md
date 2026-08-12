@@ -23,7 +23,7 @@ data "checkpointsase_networks" "all" {}
 ### Read-Only
 
 - `id` (String) The ID of this resource.
-- `networks` (List of Object) (see [below for nested schema](#nestedatt--networks))
+- `networks` (List of Object) The list of standard networks, in the legacy nested shape (see the deprecation note above). (see [below for nested schema](#nestedatt--networks))
 
 <a id="nestedatt--networks"></a>
 ### Nested Schema for `networks`

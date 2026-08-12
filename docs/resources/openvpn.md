@@ -43,7 +43,7 @@ resource "checkpointsase_openvpn" "example" {
 
 ### Read-Only
 
-- `access_key_id` (String) Server-assigned credential ID for the OpenVPN client. Rotated when `version` changes.
+- `access_key_id` (String, Sensitive) Server-assigned credential ID for the OpenVPN client. Rotated when `version` changes.
 - `id` (String) The ID of this resource.
 - `secret_access_key` (String, Sensitive) Server-assigned credential secret for the OpenVPN client. Returned on create and on each rotation; the API does not allow re-fetching this value later, so the terraform state is the only durable copy.
 - `type` (String) Tunnel type (always `openvpn` server-side).

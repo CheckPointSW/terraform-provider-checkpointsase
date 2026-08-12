@@ -120,7 +120,7 @@ Required:
 Optional:
 
 - `auth_type` (String) Authentication type for this tunnel endpoint. Must be `psk` or `cert`.
-- `customer_root_ca` (String) Customer root certificate authority. Required when auth_type is 'cert'.
+- `customer_root_ca` (String, Sensitive) Customer root certificate authority. Required when auth_type is 'cert'.
 - `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).
 - `remote_id` (String) The remote gateway ID. Server defaults to `remote_public_ip` when omitted.
 - `remote_public_ip` (String) The remote gateway public IP address.

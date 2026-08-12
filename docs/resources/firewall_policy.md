@@ -3,12 +3,12 @@
 page_title: "checkpointsase_firewall_policy Resource - checkpointsase"
 subcategory: ""
 description: |-
-  Manages the auto-created firewall policy of a checkpointsase_network or checkpointsase_enhanced_network. This is an adopt-style resource: the firewall policy is created server-side automatically when the network is provisioned, so terraform create here actually adopts the existing policy and applies your config; destroy simply releases the policy from terraform state without removing it server-side (the policy continues to exist for the lifetime of its parent network). Use this resource to manage the policy's enabled / allowed defaults and to declare policy_rules. network_id is immutable — changing it forces resource replacement.
+  Manages the firewall policy of a Check Point SASE standard network. Adopt-style: the policy is created automatically with its parent network, so this resource reads the existing policy and applies your configuration to it; destroying it releases it from Terraform state without deleting it. On the v3 API the update is asynchronous, so applies take longer than a single request.
 ---
 
 # checkpointsase_firewall_policy (Resource)
 
-Manages the auto-created firewall policy of a `checkpointsase_network` or `checkpointsase_enhanced_network`. **This is an adopt-style resource**: the firewall policy is created server-side automatically when the network is provisioned, so terraform `create` here actually *adopts* the existing policy and applies your config; `destroy` simply releases the policy from terraform state without removing it server-side (the policy continues to exist for the lifetime of its parent network). Use this resource to manage the policy's `enabled` / `allowed` defaults and to declare `policy_rules`. **`network_id` is immutable** — changing it forces resource replacement.
+Manages the firewall policy of a Check Point SASE standard network. Adopt-style: the policy is created automatically with its parent network, so this resource reads the existing policy and applies your configuration to it; destroying it releases it from Terraform state without deleting it. On the v3 API the update is asynchronous, so applies take longer than a single request.
 
 ## Example Usage
 
@@ -64,6 +64,7 @@ Required:
 Optional:
 
 - `id` (String) The unique ID of the policy rule.
+- `log_enabled` (Boolean) Whether logging is enabled for this rule. Required by the v3 /networks/{networkId}/firewall-policy endpoint; defaults to false so configurations written against v2.3 keep working unchanged.
 - `services` (List of String) List of service object IDs to match in this rule.
 
 ## Import

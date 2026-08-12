@@ -73,7 +73,7 @@ resource "checkpointsase_enhanced_static_tunnel" "example" {
 ### Optional
 
 - `auth_type` (String) Authentication type. Must be `psk` (pre-shared key, requires `passphrase`) or `cert` (certificate, requires `customer_root_ca`).
-- `customer_root_ca` (String) Customer root certificate authority. Required when auth_type is 'cert'.
+- `customer_root_ca` (String, Sensitive) Customer root certificate authority. Required when auth_type is 'cert'.
 - `description` (String) Optional description for the static tunnel.
 - `last_updated` (String) Timestamp of the last update to this resource.
 - `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication (8-64 characters). Required when auth_type is 'psk'.
