@@ -156,20 +156,12 @@ func resourceEnhancedRouteTableCreate(ctx context.Context, d *schema.ResourceDat
 	}
 
 	statusId := getIdFromUrl(status.GetStatusUrl())
-	var routeId string
-	for {
-		var networkStatus perimeter81Sdk.AsyncOperationStatus
-		networkStatus, diags, err = checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		if networkStatus.GetCompleted() {
-			routeId = getIdFromUrl(networkStatus.Result.GetResource())
-			break
-		}
-		time.Sleep(60 * time.Second)
+	resource, err := pollStandardNetworkStatusForResource(ctx, client, statusId, standardNetworkPollInterval)
+	if err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to create Enhanced Route Table entry", err)
 	}
+	routeId := getIdFromUrl(resource)
 
 	d.SetId(routeId)
 	return resourceEnhancedRouteTableRead(ctx, d, m)
@@ -269,17 +261,9 @@ func resourceEnhancedRouteTableDelete(ctx context.Context, d *schema.ResourceDat
 	}
 
 	statusId := getIdFromUrl(status.GetStatusUrl())
-	for {
-		var networkStatus perimeter81Sdk.AsyncOperationStatus
-		networkStatus, diags, err = checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		if networkStatus.GetCompleted() {
-			break
-		}
-		time.Sleep(60 * time.Second)
+	if err := pollStandardNetworkStatus(ctx, client, statusId, standardNetworkPollInterval); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to delete Enhanced Route Table entry", err)
 	}
 
 	d.SetId("")

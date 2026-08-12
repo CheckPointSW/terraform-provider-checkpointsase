@@ -165,31 +165,24 @@ func resourceEnhancedNetworkCreate(ctx context.Context, d *schema.ResourceData, 
 	}
 
 	statusId := getIdFromUrl(status.GetStatusUrl())
-	var networkId string
-	for {
-		var networkStatus perimeter81Sdk.AsyncOperationStatus
-		networkStatus, diags, err = checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			networks, _, listErr := client.EnhancedNetworksAPI.GetEnhancedNetworks(ctx).Execute()
-			if listErr != nil {
-				d.Partial(true)
-				return appendErrorDiags(diags, "Unable to create Enhanced Network", listErr)
-			}
-			for _, networkData := range networks {
-				if networkData.Name == name {
-					d.SetId(networkData.Id)
-					return resourceEnhancedNetworkRead(ctx, d, m)
-				}
-			}
+	resource, err := pollStandardNetworkStatusForResource(ctx, client, statusId, standardNetworkPollInterval)
+	if err != nil {
+		diags = appendErrorDiags(diags, "Unable to create Enhanced Network", err)
+		networks, _, listErr := client.EnhancedNetworksAPI.GetEnhancedNetworks(ctx).Execute()
+		if listErr != nil {
 			d.Partial(true)
-			return diags
+			return appendErrorDiags(diags, "Unable to create Enhanced Network", listErr)
 		}
-		if networkStatus.GetCompleted() {
-			networkId = getIdFromUrl(networkStatus.Result.GetResource())
-			break
+		for _, networkData := range networks {
+			if networkData.Name == name {
+				d.SetId(networkData.Id)
+				return resourceEnhancedNetworkRead(ctx, d, m)
+			}
 		}
-		time.Sleep(60 * time.Second)
+		d.Partial(true)
+		return diags
 	}
+	networkId := getIdFromUrl(resource)
 
 	d.SetId(networkId)
 	return resourceEnhancedNetworkRead(ctx, d, m)
@@ -337,17 +330,9 @@ func resourceEnhancedNetworkDelete(ctx context.Context, d *schema.ResourceData, 
 	}
 
 	statusId := getIdFromUrl(status.GetStatusUrl())
-	for {
-		var networkStatus perimeter81Sdk.AsyncOperationStatus
-		networkStatus, diags, err = checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		if networkStatus.GetCompleted() {
-			break
-		}
-		time.Sleep(60 * time.Second)
+	if err := pollStandardNetworkStatus(ctx, client, statusId, standardNetworkPollInterval); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to delete Enhanced Network", err)
 	}
 
 	d.SetId("")

@@ -30,9 +30,10 @@ type pollFunc func(ctx context.Context) (asyncResult, *http.Response, error)
 //
 // Three things it does that the previous per-resource polling loops did not:
 //
-//  1. Requires a 2xx result.statusCode, not merely completed == true. The old
-//     checkNetworkStatus only failed on 500, so a 400 or 409 completion was
-//     reported to Terraform as success.
+//  1. Requires a 2xx result.statusCode, not merely completed == true.
+//     checkNetworkStatus, the per-resource polling helper this replaced, only
+//     failed on 500, so a 400 or 409 completion was reported to Terraform as
+//     success.
 //  2. Retries transient errors (5xx, EOF, connection reset) within
 //     transientBudget. A single transient EOF previously failed the whole
 //     resource and orphaned the backend object from state.
@@ -113,6 +114,10 @@ const (
 //
 // pollAsync returns only an error, so the resource is captured from the closure
 // on the completing poll rather than threaded through asyncResult.
+//
+// The returned resource string is meaningful only when err is nil: a
+// completed-but-failed status (e.g. a 409) can still carry a non-empty
+// result.resource, so callers must not derive an ID from it on the error path.
 func pollStandardNetworkStatusForResource(ctx context.Context, client *perimeter81Sdk.APIClient, statusId string, interval time.Duration) (string, error) {
 	var resource string
 	err := pollAsync(ctx, func(ctx context.Context) (asyncResult, *http.Response, error) {
@@ -136,7 +141,7 @@ func pollStandardNetworkStatusForResource(ctx context.Context, client *perimeter
 // resource. Use pollStandardNetworkStatusForResource when the caller needs the
 // created object's ID.
 //
-// It replaces checkNetworkStatus, which failed only on statusCode 500 and so
+// It replaced checkNetworkStatus, which failed only on statusCode 500 and so
 // reported a 400 or 409 completion to Terraform as a successful apply.
 func pollStandardNetworkStatus(ctx context.Context, client *perimeter81Sdk.APIClient, statusId string, interval time.Duration) error {
 	_, err := pollStandardNetworkStatusForResource(ctx, client, statusId, interval)

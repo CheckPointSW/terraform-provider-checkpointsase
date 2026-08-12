@@ -860,28 +860,6 @@ func setNetworkRegionInfos(regionsData []perimeter81Sdk.Region, networkData *per
 }
 
 /*
-checkNetworkStatus check the network status
-  - @param ctx context.Context - the context
-  - @param statusId string - the status id
-  - @param client perimeter81Sdk.APIClient - the client
-  - @param diags diag.Diagnostics - the diagnostics
-
-@return perimeter81Sdk.AsyncOperationStatus, diag.Diagnostics, error - the network status, the diagnostics, the error
-*/
-func checkNetworkStatus(ctx context.Context, statusId string, client perimeter81Sdk.APIClient, diags diag.Diagnostics) (perimeter81Sdk.AsyncOperationStatus, diag.Diagnostics, error) {
-	networkStatus, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2Status(ctx, statusId).Execute()
-	if err != nil {
-		diags = appendErrorDiags(diags, "Unable to get Network Status", err)
-		return perimeter81Sdk.AsyncOperationStatus{}, diags, err
-	}
-	if networkStatus.Result != nil && networkStatus.Result.StatusCode != nil && *networkStatus.Result.StatusCode == 500 {
-		diags = appendErrorDiags(diags, "Unable to get Network Status", fmt.Errorf("%s", strings.Join(networkStatus.Result.Reason, " | ")))
-		return *networkStatus, diags, fmt.Errorf("network status error")
-	}
-	return *networkStatus, diags, err
-}
-
-/*
 addGatewayToRegion add the gateway to region
   - @param ctx context.Context - the context
   - @param client *perimeter81Sdk.APIClient - the client

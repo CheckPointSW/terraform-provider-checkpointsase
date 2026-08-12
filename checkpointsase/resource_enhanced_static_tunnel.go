@@ -365,39 +365,31 @@ func resourceEnhancedStaticTunnelCreate(ctx context.Context, d *schema.ResourceD
 	}
 
 	statusId := getIdFromUrl(status.GetStatusUrl())
-	var tunnelId string
-	for {
-		var networkStatus perimeter81Sdk.AsyncOperationStatus
-		networkStatus, diags, err = checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		if networkStatus.GetCompleted() {
-			tunnelId = getIdFromUrl(networkStatus.Result.GetResource())
-			if tunnelId == "" {
-				// Async result didn't carry a resource URL (the API
-				// sometimes completes without populating result.resource).
-				// Fall back to listing tunnels by network and finding by
-				// our tunnel_name.
-				resp, _, lerr := client.EnhancedTunnelsAPI.GetEnhancedRegionTunnelsPerNetwork(ctx, networkId).Execute()
-				if lerr == nil && resp != nil {
-					for _, t := range resp.Data {
-						if t.TunnelName == tunnelName {
-							tunnelId = t.Id
-							break
-						}
-					}
-				}
-				if tunnelId == "" {
-					d.Partial(true)
-					return appendErrorDiags(diags, "Unable to extract Enhanced Static Tunnel id post-Create",
-						fmt.Errorf("async status completed but result.resource was empty and list-by-name found no match for tunnel_name=%s", tunnelName))
+	resource, err := pollStandardNetworkStatusForResource(ctx, client, statusId, standardNetworkPollInterval)
+	if err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to create Enhanced Static Tunnel", err)
+	}
+	tunnelId := getIdFromUrl(resource)
+	if tunnelId == "" {
+		// Async result didn't carry a resource URL (the API
+		// sometimes completes without populating result.resource).
+		// Fall back to listing tunnels by network and finding by
+		// our tunnel_name.
+		resp, _, lerr := client.EnhancedTunnelsAPI.GetEnhancedRegionTunnelsPerNetwork(ctx, networkId).Execute()
+		if lerr == nil && resp != nil {
+			for _, t := range resp.Data {
+				if t.TunnelName == tunnelName {
+					tunnelId = t.Id
+					break
 				}
 			}
-			break
 		}
-		time.Sleep(60 * time.Second)
+		if tunnelId == "" {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to extract Enhanced Static Tunnel id post-Create",
+				fmt.Errorf("async status completed but result.resource was empty and list-by-name found no match for tunnel_name=%s", tunnelName))
+		}
 	}
 
 	d.SetId(tunnelId)
@@ -625,17 +617,9 @@ func resourceEnhancedStaticTunnelDelete(ctx context.Context, d *schema.ResourceD
 	}
 
 	statusId := getIdFromUrl(status.GetStatusUrl())
-	for {
-		var networkStatus perimeter81Sdk.AsyncOperationStatus
-		networkStatus, diags, err = checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		if networkStatus.GetCompleted() {
-			break
-		}
-		time.Sleep(60 * time.Second)
+	if err := pollStandardNetworkStatus(ctx, client, statusId, standardNetworkPollInterval); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to delete Enhanced Static Tunnel", err)
 	}
 
 	d.SetId("")
