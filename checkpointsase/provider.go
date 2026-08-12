@@ -105,6 +105,6 @@ var descriptions map[string]string
 func init() {
 	descriptions = map[string]string{
 		"api_key":  "The API key for the Check Point SASE Public API.",
-		"base_url": "The base URL for the Check Point SASE REST API. Defaults to the US endpoint if not set.",
+		"base_url": "The base URL for the Check Point SASE REST API. Defaults to the US endpoint. Valid values: https://api.perimeter81.com/api/rest (US), https://api.eu.sase.checkpoint.com/api/rest (EU), https://api.au.sase.checkpoint.com/api/rest (AU), https://api.in.sase.checkpoint.com/api/rest (IN), https://api.ca.sase.checkpoint.com/api/rest (CA, added in v3).",
 	}
 }

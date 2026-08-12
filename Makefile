@@ -1,10 +1,10 @@
 TEST?=$$(go list ./... | grep -v 'vendor')
-HOSTNAME=hashicorp.com
-NAMESPACE=edu
-NAME=perimeter81
+HOSTNAME=registry.terraform.io
+NAMESPACE=CheckPointSW
+NAME=checkpointsase
 BINARY=terraform-provider-${NAME}
-VERSION=0.1
-OS_ARCH=darwin_amd64
+VERSION=3.0.0
+OS_ARCH=$(shell go env GOOS)_$(shell go env GOARCH)
 
 default: install
 
@@ -33,5 +33,9 @@ test:
 	go test -i $(TEST) || exit 1                                                   
 	echo $(TEST) | xargs -t -n4 go test $(TESTARGS) -timeout=30s -parallel=12                  
 
-testacc: 
-	TF_ACC=1 go test $(TEST) -v $(TESTARGS) -timeout 120m   
+testacc:
+	TF_ACC=1 go test $(TEST) -v $(TESTARGS) -timeout 120m
+
+# Tier 1: no API calls. Must pass with CHECKPOINT_SASE_API_KEY unset.
+testunit:
+	go test ./checkpointsase/
