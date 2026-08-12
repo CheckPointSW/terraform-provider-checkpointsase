@@ -184,3 +184,55 @@ func TestPollStandardNetworkStatusForResourceReturnsResourceOnCompletedTwoHundre
 		t.Errorf("pollStandardNetworkStatusForResource() resource = %q, want %q", resource, "/networks/standard/net-123")
 	}
 }
+
+// applicationStatusServer stands up a fake applications status endpoint that
+// always answers with body on the first request, so
+// pollApplicationStatusForResource never has to sleep between polls.
+func applicationStatusServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// This is the falsifiable proof of the migration: the old resourceApplicationCreate
+// loop checked only GetCompleted() and never inspected result.statusCode, so a
+// 409 completion fell through to the list-by-name fallback instead of failing
+// the apply. pollApplicationStatusForResource must not.
+func TestPollApplicationStatusFailsOnCompletedNonTwoXX(t *testing.T) {
+	server := applicationStatusServer(t, `{"completed":true,"result":{"statusCode":409,"reason":["application with this name already exists"]}}`)
+
+	client := perimeter81Sdk.NewAPIClient(perimeter81Sdk.NewConfiguration("test-key", server.URL))
+
+	_, err := pollApplicationStatusForResource(context.Background(), client, "status-id", testInterval)
+	if err == nil {
+		t.Fatal("pollApplicationStatusForResource() error = nil, want an error for a 409 completion")
+	}
+	if !strings.Contains(err.Error(), "409") {
+		t.Errorf("error %q should include the status code", err)
+	}
+	if !strings.Contains(err.Error(), "application with this name already exists") {
+		t.Errorf("error %q should include the API's reason", err)
+	}
+}
+
+// Companion case: a completed + 200 response carrying a resource must return
+// it with a nil error, so the test above cannot pass by having
+// pollApplicationStatusForResource always error.
+func TestPollApplicationStatusForResourceReturnsResourceOnCompletedTwoHundred(t *testing.T) {
+	server := applicationStatusServer(t, `{"completed":true,"result":{"statusCode":200,"resource":"/applications/app-123"}}`)
+
+	client := perimeter81Sdk.NewAPIClient(perimeter81Sdk.NewConfiguration("test-key", server.URL))
+
+	resource, err := pollApplicationStatusForResource(context.Background(), client, "status-id", testInterval)
+	if err != nil {
+		t.Fatalf("pollApplicationStatusForResource() error = %v, want nil for a completed 200 response", err)
+	}
+	if resource != "/applications/app-123" {
+		t.Errorf("pollApplicationStatusForResource() resource = %q, want %q", resource, "/applications/app-123")
+	}
+}

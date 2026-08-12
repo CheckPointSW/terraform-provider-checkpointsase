@@ -106,6 +106,11 @@ const (
 	standardTunnelPollInterval = 20 * time.Second
 	// standardNetworkTransientBudget allows two 5xx/EOF blips per operation.
 	standardNetworkTransientBudget = 2
+	// applicationPollInterval is the cadence resourceApplicationCreate used before
+	// this migration.
+	applicationPollInterval = 30 * time.Second
+	// applicationTransientBudget allows two 5xx/EOF blips per operation.
+	applicationTransientBudget = 2
 )
 
 // pollStandardNetworkStatusForResource polls the standard-networks async status
@@ -146,4 +151,32 @@ func pollStandardNetworkStatusForResource(ctx context.Context, client *perimeter
 func pollStandardNetworkStatus(ctx context.Context, client *perimeter81Sdk.APIClient, statusId string, interval time.Duration) error {
 	_, err := pollStandardNetworkStatusForResource(ctx, client, statusId, interval)
 	return err
+}
+
+// pollApplicationStatusForResource polls the applications async status
+// endpoint and additionally returns result.resource, which the create path
+// needs in order to learn the new application's ID.
+//
+// pollAsync returns only an error, so the resource is captured from the
+// closure on the completing poll rather than threaded through asyncResult.
+//
+// The returned resource string is meaningful only when err is nil: a
+// completed-but-failed status (e.g. a 409) can still carry a non-empty
+// result.resource, so callers must not derive an ID from it on the error path.
+func pollApplicationStatusForResource(ctx context.Context, client *perimeter81Sdk.APIClient, statusId string, interval time.Duration) (string, error) {
+	var resource string
+	err := pollAsync(ctx, func(ctx context.Context) (asyncResult, *http.Response, error) {
+		status, resp, err := client.ApplicationsAPI.GetApplicationStatus(ctx, statusId).Execute()
+		if err != nil {
+			return asyncResult{}, resp, err
+		}
+		out := asyncResult{Completed: status.GetCompleted()}
+		if r := status.Result; r != nil {
+			out.StatusCode = int(r.GetStatusCode())
+			out.Reasons = r.GetReason()
+			resource = r.GetResource()
+		}
+		return out, resp, nil
+	}, interval, applicationTransientBudget)
+	return resource, err
 }
