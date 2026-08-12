@@ -195,6 +195,15 @@ func resourceNetworkCreate(ctx context.Context, d *schema.ResourceData, m interf
 	resource, err := pollStandardNetworkStatusForResource(ctx, client, statusId, standardNetworkPollInterval)
 	if err != nil {
 		diags = appendErrorDiags(diags, "Unable to Create Network", err)
+		if isAsyncConflict(err) {
+			// A 409 means the name-match loop below is guaranteed to find the
+			// very network that caused the conflict. Adopting it would point
+			// Terraform state at a network this apply never created, and a
+			// later destroy would delete someone else's network. Fail the
+			// apply instead of adopting.
+			d.Partial(true)
+			return diags
+		}
 		networks, _, err := client.StandardNetworksAPI.StandardGetNetworks(ctx).Execute()
 		if err != nil {
 			d.Partial(true)
@@ -203,7 +212,10 @@ func resourceNetworkCreate(ctx context.Context, d *schema.ResourceData, m interf
 		for _, networkData := range networks {
 			if networkData.Name == name {
 				d.SetId(networkData.Id)
-				return resourceNetworkRead(ctx, d, m)
+				diags = appendWarningDiags(diags, "Adopted existing Network after failed create",
+					fmt.Sprintf("The create request's async poll failed, but an existing network named %q (id %s) was found and adopted into Terraform state. Confirm this is the network you intended to manage.", name, networkData.Id))
+				diags = append(diags, resourceNetworkRead(ctx, d, m)...)
+				return diags
 			}
 		}
 		d.Partial(true)

@@ -122,6 +122,78 @@ func TestPollAsyncHonoursContextDeadline(t *testing.T) {
 	}
 }
 
+// TestAsyncFailedErrorMessage pins asyncFailedError's Error() string to the
+// exact text pollAsync produced before it existed as a typed error. Every
+// other test in this file that asserts on substrings of a pollAsync /
+// pollStandardNetworkStatus / pollApplicationStatusForResource error message
+// depends on this string staying put.
+func TestAsyncFailedErrorMessage(t *testing.T) {
+	err := &asyncFailedError{StatusCode: 409, Reasons: []string{"subnet overlaps an existing network"}}
+	want := "async operation failed with status 409: subnet overlaps an existing network"
+	if got := err.Error(); got != want {
+		t.Errorf("asyncFailedError.Error() = %q, want %q", got, want)
+	}
+}
+
+// TestPollAsyncFailsOnCompletedNonTwoXX (above) already checks the message
+// text; this checks that the error pollAsync returns for a completed-but-failed
+// operation is specifically an *asyncFailedError carrying the status code, so
+// callers (isAsyncConflict, and eventually the adopt-on-failure sites) can
+// branch on it via errors.As instead of parsing the message.
+func TestPollAsyncReturnsAsyncFailedErrorOnCompletedNonTwoXX(t *testing.T) {
+	poll := func(ctx context.Context) (asyncResult, *http.Response, error) {
+		return asyncResult{
+			Completed:  true,
+			StatusCode: 409,
+			Reasons:    []string{"name already in use"},
+		}, resp(200), nil
+	}
+	err := pollAsync(context.Background(), poll, testInterval, 2)
+	var failed *asyncFailedError
+	if !errors.As(err, &failed) {
+		t.Fatalf("pollAsync() error = %v (%T), want an *asyncFailedError", err, err)
+	}
+	if failed.StatusCode != 409 {
+		t.Errorf("asyncFailedError.StatusCode = %d, want 409", failed.StatusCode)
+	}
+}
+
+func TestIsAsyncConflict(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "409 conflict",
+			err:  &asyncFailedError{StatusCode: 409, Reasons: []string{"name already in use"}},
+			want: true,
+		},
+		{
+			name: "500 completed failure is not a conflict",
+			err:  &asyncFailedError{StatusCode: 500, Reasons: []string{"internal server error"}},
+			want: false,
+		},
+		{
+			name: "transport error is not a conflict",
+			err:  io.ErrUnexpectedEOF,
+			want: false,
+		},
+		{
+			name: "nil error is not a conflict",
+			err:  nil,
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isAsyncConflict(tt.err); got != tt.want {
+				t.Errorf("isAsyncConflict(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 // standardNetworkStatusServer stands up a fake standard-networks status
 // endpoint that always answers with body on the first request, so
 // pollStandardNetworkStatus never has to sleep between polls.

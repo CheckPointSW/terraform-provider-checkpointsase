@@ -1000,6 +1000,23 @@ func appendErrorDiags(diags diag.Diagnostics, summary string, err error) diag.Di
 }
 
 /*
+appendWarningDiags append a warning diagnostic
+  - @param diags diag.Diagnostics - the diagnostics
+  - @param summary string - the summary
+  - @param detail string - the detail
+
+@return diag.Diagnostics - the diagnostics
+*/
+func appendWarningDiags(diags diag.Diagnostics, summary string, detail string) diag.Diagnostics {
+	diags = append(diags, diag.Diagnostic{
+		Severity: diag.Warning,
+		Summary:  summary,
+		Detail:   detail,
+	})
+	return diags
+}
+
+/*
 testComparableArraiesEq test if the arraies are equal
   - @param a []Type - the a
   - @param b []Type - the b

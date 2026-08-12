@@ -2,6 +2,7 @@ package checkpointsase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -61,14 +62,41 @@ func pollAsync(ctx context.Context, poll pollFunc, interval time.Duration, trans
 			if isSuccessStatus(result.StatusCode) {
 				return nil
 			}
-			return fmt.Errorf("async operation failed with status %d: %s",
-				result.StatusCode, joinReasons(result.Reasons))
+			return &asyncFailedError{StatusCode: result.StatusCode, Reasons: result.Reasons}
 		}
 
 		if waitErr := sleepCtx(ctx, interval); waitErr != nil {
 			return waitErr
 		}
 	}
+}
+
+// asyncFailedError is returned when the backend completes an operation with a
+// non-2xx status. It carries the status code so callers can distinguish a
+// conflict -- where recovery by name lookup would adopt someone else's object --
+// from a transient or server-side failure.
+type asyncFailedError struct {
+	StatusCode int
+	Reasons    []string
+}
+
+func (e *asyncFailedError) Error() string {
+	return fmt.Sprintf("async operation failed with status %d: %s",
+		e.StatusCode, joinReasons(e.Reasons))
+}
+
+// isAsyncConflict reports whether err is an async completion the server refused
+// as a conflict (409). Adoption-by-name is never safe in that case: the
+// conflicting object is exactly what a name lookup will find.
+//
+// Delegates to classifyAPIError so the conflict definition stays in one
+// place (errKindConflict, currently 409 only) instead of being re-decided here.
+func isAsyncConflict(err error) bool {
+	var failed *asyncFailedError
+	if !errors.As(err, &failed) {
+		return false
+	}
+	return classifyAPIError(&http.Response{StatusCode: failed.StatusCode}, err) == errKindConflict
 }
 
 // isSuccessStatus treats 0 as success because the API omits statusCode on some
