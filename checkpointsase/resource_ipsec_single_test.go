@@ -174,7 +174,7 @@ resource "checkpointsase_network" "n3" {
     tags = ["test"]
   }
   region {
-    cpregion_id = "Xv3BREC4QI"
+    cpregion_id = "%s"
     idle = true
   }
 }
@@ -219,7 +219,7 @@ resource "checkpointsase_ipsec_single" "ipss1" {
   remote_public_ip = "198.51.100.41"
 }
   `
-	return fmt.Sprintf(config, randNameIpsecSignle)
+	return fmt.Sprintf(config, randNameIpsecSignle, testAccRegionID())
 }
 
 func testAccIpsecSingleUpdateConfig() string {
@@ -230,7 +230,7 @@ resource "checkpointsase_network" "n3" {
     tags = ["test"]
   }
   region {
-    cpregion_id = "Xv3BREC4QI"
+    cpregion_id = "%s"
     idle = true
   }
 }
@@ -275,5 +275,5 @@ resource "checkpointsase_ipsec_single" "ipss1" {
   remote_public_ip = "198.51.100.42"
 }
   `
-	return fmt.Sprintf(config, randNameIpsecSignle)
+	return fmt.Sprintf(config, randNameIpsecSignle, testAccRegionID())
 }

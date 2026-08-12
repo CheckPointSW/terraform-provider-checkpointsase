@@ -83,7 +83,7 @@ resource "checkpointsase_network" "n2" {
     tags = ["test"]
   }
   region {
-    cpregion_id = "Xv3BREC4QI"
+    cpregion_id = "%s"
     idle = true
   }
 }
@@ -110,7 +110,7 @@ resource "checkpointsase_openvpn" "ovpn2" {
   version = 1
 }
   `
-	return fmt.Sprintf(config, randNameOpenVpn)
+	return fmt.Sprintf(config, randNameOpenVpn, testAccRegionID())
 }
 
 func testAccOpenvpnUpdateConfig() string {
@@ -121,7 +121,7 @@ resource "checkpointsase_network" "n2" {
     tags = ["test"]
   }
   region {
-    cpregion_id = "Xv3BREC4QI"
+    cpregion_id = "%s"
     idle = true
   }
 }
@@ -148,5 +148,5 @@ resource "checkpointsase_openvpn" "ovpn2" {
   version = 2
 }
   `
-	return fmt.Sprintf(config, randNameOpenVpn)
+	return fmt.Sprintf(config, randNameOpenVpn, testAccRegionID())
 }

@@ -148,7 +148,7 @@ resource "checkpointsase_network" "n4" {
     tags = ["test"]
   }
   region {
-    cpregion_id = "Xv3BREC4QI"
+    cpregion_id = "%s"
     idle = true
   }
 }
@@ -222,5 +222,5 @@ resource "checkpointsase_ipsec_redundant" "ipsr1" {
   }
 }
   `
-	return fmt.Sprintf(config, randStringBytesRmndr())
+	return fmt.Sprintf(config, randStringBytesRmndr(), testAccRegionID())
 }

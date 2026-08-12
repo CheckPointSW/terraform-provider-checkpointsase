@@ -95,7 +95,7 @@ resource "checkpointsase_network" "n1" {
     tags = ["test"]
   }
   region {
-    cpregion_id = "Xv3BREC4QI"
+    cpregion_id = "%s"
     idle = true
   }
 }
@@ -123,7 +123,7 @@ resource "checkpointsase_wireguard" "wgd1" {
   remote_subnets = ["192.177.255.255/32"]
 }
   `
-	return fmt.Sprintf(config, randNameWireguard)
+	return fmt.Sprintf(config, randNameWireguard, testAccRegionID())
 }
 
 func testAccWireguardUpdateConfig() string {
@@ -134,7 +134,7 @@ resource "checkpointsase_network" "n1" {
     tags = ["test"]
   }
   region {
-    cpregion_id = "Xv3BREC4QI"
+    cpregion_id = "%s"
     idle = true
   }
 }
@@ -162,5 +162,5 @@ resource "checkpointsase_wireguard" "wgd1" {
   remote_subnets = ["192.178.255.255/32"]
 }
   `
-	return fmt.Sprintf(config, randNameWireguard)
+	return fmt.Sprintf(config, randNameWireguard, testAccRegionID())
 }

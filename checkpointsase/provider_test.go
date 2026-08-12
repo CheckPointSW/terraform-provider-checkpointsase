@@ -41,4 +41,38 @@ func testAccPreCheck(t *testing.T) {
 	if v := os.Getenv("CHECKPOINT_SASE_API_KEY"); v == "" {
 		t.Fatal("CHECKPOINT_SASE_API_KEY must be set for acceptance tests")
 	}
+	if v := os.Getenv("CHECKPOINT_SASE_TEST_REGION_ID"); v == "" {
+		t.Fatal("CHECKPOINT_SASE_TEST_REGION_ID must be set for acceptance tests. " +
+			"Harmony SASE region IDs are tenant-specific; list the valid IDs for the " +
+			"target tenant via the checkpointsase_regions data source or " +
+			"GET /v3/networks/standard/harmony-sase-regions.")
+	}
+}
+
+// testAccPreCheckSecondaryRegion is required by tests that exercise two
+// distinct regions (e.g. adding/removing a region from a network). It is
+// intentionally separate from testAccPreCheck so tests that only need one
+// region don't require CHECKPOINT_SASE_TEST_REGION_ID_2 to be set.
+func testAccPreCheckSecondaryRegion(t *testing.T) {
+	if v := os.Getenv("CHECKPOINT_SASE_TEST_REGION_ID_2"); v == "" {
+		t.Fatal("CHECKPOINT_SASE_TEST_REGION_ID_2 must be set for acceptance tests " +
+			"that require a second, distinct region. Harmony SASE region IDs are " +
+			"tenant-specific; list the valid IDs for the target tenant via the " +
+			"checkpointsase_regions data source or GET /v3/networks/standard/harmony-sase-regions.")
+	}
+}
+
+// testAccRegionID returns the Harmony SASE region ID used by acceptance
+// tests that create networks/regions. It is tenant-specific, so it is
+// sourced from the environment rather than hardcoded; testAccPreCheck
+// enforces that it is set before any test runs.
+func testAccRegionID() string {
+	return os.Getenv("CHECKPOINT_SASE_TEST_REGION_ID")
+}
+
+// testAccRegionID2 returns a second, distinct Harmony SASE region ID for
+// acceptance tests that need two regions. testAccPreCheckSecondaryRegion
+// enforces that it is set before any such test runs.
+func testAccRegionID2() string {
+	return os.Getenv("CHECKPOINT_SASE_TEST_REGION_ID_2")
 }

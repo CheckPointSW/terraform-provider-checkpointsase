@@ -95,12 +95,12 @@ resource "checkpointsase_network" "n" {
 		tags = ["test"]
 	}
 	region {
-		cpregion_id = "r2Epw6OJsx"
+		cpregion_id = "%s"
 		idle = true
 	}
 }
   `
-	return fmt.Sprintf(config, randNameNetwork)
+	return fmt.Sprintf(config, randNameNetwork, testAccRegionID())
 }
 
 func testAccNetworkUpdateConfig() string {
@@ -111,10 +111,10 @@ resource "checkpointsase_network" "n" {
 		tags = ["test", "updated"]
 	}
 	region {
-		cpregion_id = "r2Epw6OJsx"
+		cpregion_id = "%s"
 		idle = true
 	}
 }
   `
-	return fmt.Sprintf(config, randNameNetworkUpdated)
+	return fmt.Sprintf(config, randNameNetworkUpdated, testAccRegionID())
 }

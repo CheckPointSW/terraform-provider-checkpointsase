@@ -63,7 +63,7 @@ resource "checkpointsase_network" "n6" {
 		tags = ["test"]
 	}
 	region {
-		cpregion_id = "r2Epw6OJsx"
+		cpregion_id = "%s"
 		idle = true
 	}
 }
@@ -89,7 +89,7 @@ resource "checkpointsase_gateway"  "g1"{
   }[checkpointsase_network.n6.id]
 }
   `
-	return fmt.Sprintf(config, randNameGateway, randNameGateway)
+	return fmt.Sprintf(config, randNameGateway, testAccRegionID(), randNameGateway)
 }
 
 func testAccGatewaysUpdate1Config() string {
@@ -100,7 +100,7 @@ resource "checkpointsase_network" "n6" {
 		tags = ["test"]
 	}
 	region {
-		cpregion_id = "r2Epw6OJsx"
+		cpregion_id = "%s"
 		idle = true
 	}
 }
@@ -121,7 +121,7 @@ resource "checkpointsase_gateway"  "g1"{
   }[checkpointsase_network.n6.id]
 }
   `
-	return fmt.Sprintf(config, randNameGateway)
+	return fmt.Sprintf(config, randNameGateway, testAccRegionID())
 }
 func testAccGatewaysUpdate2Config() string {
 	config := `
@@ -131,7 +131,7 @@ resource "checkpointsase_network" "n6" {
 		tags = ["test"]
 	}
 	region {
-		cpregion_id = "r2Epw6OJsx"
+		cpregion_id = "%s"
 		idle = true
 	}
 }
@@ -157,5 +157,5 @@ resource "checkpointsase_gateway"  "g1"{
   }[checkpointsase_network.n6.id]
 }
   `
-	return fmt.Sprintf(config, randNameGateway, randNameGateway)
+	return fmt.Sprintf(config, randNameGateway, testAccRegionID(), randNameGateway)
 }
