@@ -71,6 +71,49 @@ func pollAsync(ctx context.Context, poll pollFunc, interval time.Duration, trans
 	}
 }
 
+// convergePollFunc re-reads the object's own list/get endpoint and reports
+// whether the caller's predicate over it currently holds.
+type convergePollFunc func(ctx context.Context) (bool, *http.Response, error)
+
+// pollUntilConverged polls poll until it reports true, the transient-error
+// budget is exhausted, or ctx expires.
+//
+// pollAsync polls a status endpoint that itself reports completion of a
+// long-running operation. pollUntilConverged is for a different shape: a
+// write endpoint that returns its result inline with no status URL at all,
+// so the only way to know the write is visible is to re-read the object's
+// own list/get endpoint and check the caller's condition against it. what
+// names that condition (e.g. "region eu-west to appear in network net-123")
+// so a budget or deadline failure states what it was waiting for instead of
+// failing silently.
+func pollUntilConverged(ctx context.Context, poll convergePollFunc, interval time.Duration, transientBudget int, what string) error {
+	remaining := transientBudget
+	backoff := interval
+
+	for {
+		ok, resp, err := poll(ctx)
+		if err != nil {
+			if classifyAPIError(resp, err) == errKindTransient && remaining > 0 {
+				remaining--
+				if waitErr := sleepCtx(ctx, backoff); waitErr != nil {
+					return fmt.Errorf("waiting for %s: %w", what, waitErr)
+				}
+				backoff *= 2
+				continue
+			}
+			return fmt.Errorf("waiting for %s: %w", what, err)
+		}
+
+		if ok {
+			return nil
+		}
+
+		if waitErr := sleepCtx(ctx, interval); waitErr != nil {
+			return fmt.Errorf("waiting for %s: %w", what, waitErr)
+		}
+	}
+}
+
 // asyncFailedError is returned when the backend completes an operation with a
 // non-2xx status. It carries the status code so callers can distinguish a
 // conflict -- where recovery by name lookup would adopt someone else's object --
@@ -139,6 +182,16 @@ const (
 	applicationPollInterval = 30 * time.Second
 	// applicationTransientBudget allows two 5xx/EOF blips per operation.
 	applicationTransientBudget = 2
+
+	// convergencePollInterval is the cadence for pollUntilConverged. The
+	// standard*/applicationPollInterval constants above time a backend
+	// provisioning job, so they are tens of seconds; this instead waits out
+	// eventual consistency on a cheap list/get read after a write that
+	// already returned, so a few seconds is enough without hammering the API.
+	convergencePollInterval = 3 * time.Second
+	// convergenceTransientBudget allows two 5xx/EOF blips per convergence
+	// wait, matching the transient budgets above.
+	convergenceTransientBudget = 2
 
 	// asyncResourceTimeout is the default Create/Update/Delete timeout
 	// declared via `Timeouts` on every resource whose lifecycle polls an

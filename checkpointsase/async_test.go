@@ -231,6 +231,120 @@ func TestIsAsyncConflict(t *testing.T) {
 	}
 }
 
+// TestPollUntilConvergedSucceedsOnFirstPoll covers the case a poll that is
+// unnecessary in principle but harmless in practice: the predicate is
+// already true on the very first read.
+func TestPollUntilConvergedSucceedsOnFirstPoll(t *testing.T) {
+	calls := 0
+	poll := func(ctx context.Context) (bool, *http.Response, error) {
+		calls++
+		return true, resp(200), nil
+	}
+	if err := pollUntilConverged(context.Background(), poll, testInterval, 2, "thing to converge"); err != nil {
+		t.Fatalf("pollUntilConverged() = %v, want nil", err)
+	}
+	if calls != 1 {
+		t.Errorf("poll called %d times, want 1", calls)
+	}
+}
+
+// TestPollUntilConvergedSucceedsOnLaterPoll is the shape both call sites hit
+// in production: the write already returned, but the object it changed is
+// not observable on the list/get endpoint for a couple of reads afterwards.
+func TestPollUntilConvergedSucceedsOnLaterPoll(t *testing.T) {
+	calls := 0
+	poll := func(ctx context.Context) (bool, *http.Response, error) {
+		calls++
+		return calls >= 3, resp(200), nil
+	}
+	if err := pollUntilConverged(context.Background(), poll, testInterval, 2, "thing to converge"); err != nil {
+		t.Fatalf("pollUntilConverged() = %v, want nil", err)
+	}
+	if calls != 3 {
+		t.Errorf("poll called %d times, want 3", calls)
+	}
+}
+
+// TestPollUntilConvergedHonoursContextDeadline is the case a caller-side bug
+// (or a backend that never converges) must not hang Terraform forever: the
+// predicate never turns true, so pollUntilConverged must give up once ctx
+// expires, and the error must name the awaited condition and wrap
+// context.DeadlineExceeded so callers can distinguish it from other failures.
+func TestPollUntilConvergedHonoursContextDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	poll := func(ctx context.Context) (bool, *http.Response, error) {
+		return false, resp(200), nil
+	}
+	err := pollUntilConverged(ctx, poll, 5*time.Millisecond, 2, "region us-east to appear in network net-123")
+	if err == nil {
+		t.Fatal("pollUntilConverged() = nil, want a deadline error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error %v should wrap context.DeadlineExceeded", err)
+	}
+	if !strings.Contains(err.Error(), "region us-east to appear in network net-123") {
+		t.Errorf("error %q should name what it was waiting for", err)
+	}
+}
+
+// TestPollUntilConvergedRetriesTransientErrorsWithinBudget mirrors
+// TestPollAsyncRetriesTransientErrorsWithinBudget: a blip on the list/get
+// read must not fail the whole wait if it clears within the budget.
+func TestPollUntilConvergedRetriesTransientErrorsWithinBudget(t *testing.T) {
+	calls := 0
+	poll := func(ctx context.Context) (bool, *http.Response, error) {
+		calls++
+		if calls <= 2 {
+			return false, nil, io.ErrUnexpectedEOF
+		}
+		return true, resp(200), nil
+	}
+	if err := pollUntilConverged(context.Background(), poll, testInterval, 2, "thing to converge"); err != nil {
+		t.Fatalf("pollUntilConverged() = %v, want nil after 2 transient errors within budget", err)
+	}
+	if calls != 3 {
+		t.Errorf("poll called %d times, want 3", calls)
+	}
+}
+
+// TestPollUntilConvergedFailsWhenTransientBudgetExhausted mirrors
+// TestPollAsyncFailsWhenTransientBudgetExhausted: once the budget for
+// transient blips is spent, pollUntilConverged must fail rather than retry
+// forever, and the error must still name what it was waiting for.
+func TestPollUntilConvergedFailsWhenTransientBudgetExhausted(t *testing.T) {
+	poll := func(ctx context.Context) (bool, *http.Response, error) {
+		return false, nil, io.ErrUnexpectedEOF
+	}
+	err := pollUntilConverged(context.Background(), poll, testInterval, 2, "gateway removal to take effect")
+	if err == nil {
+		t.Fatal("pollUntilConverged() = nil, want an error once the transient budget is spent")
+	}
+	if !strings.Contains(err.Error(), "unexpected EOF") {
+		t.Errorf("error %q should retain the underlying cause", err)
+	}
+	if !strings.Contains(err.Error(), "gateway removal to take effect") {
+		t.Errorf("error %q should name what it was waiting for", err)
+	}
+}
+
+// TestPollUntilConvergedDoesNotRetryNonTransientErrors mirrors
+// TestPollAsyncDoesNotRetryNonTransientErrors: a non-transient error (e.g. a
+// 400) must fail immediately, not be retried under the transient budget.
+func TestPollUntilConvergedDoesNotRetryNonTransientErrors(t *testing.T) {
+	calls := 0
+	poll := func(ctx context.Context) (bool, *http.Response, error) {
+		calls++
+		return false, resp(http.StatusBadRequest), errors.New("bad request")
+	}
+	if err := pollUntilConverged(context.Background(), poll, testInterval, 5, "thing to converge"); err == nil {
+		t.Fatal("pollUntilConverged() = nil, want an error for a 400")
+	}
+	if calls != 1 {
+		t.Errorf("poll called %d times, want 1 — a 400 must not be retried", calls)
+	}
+}
+
 // standardNetworkStatusServer stands up a fake standard-networks status
 // endpoint that always answers with body on the first request, so
 // pollStandardNetworkStatus never has to sleep between polls.
