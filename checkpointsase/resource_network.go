@@ -178,9 +178,19 @@ func resourceNetworkCreate(ctx context.Context, d *schema.ResourceData, m interf
 
 	// create the network payload
 	CreateNetworkPayload := perimeter81Sdk.CreateNetworkPayload{
-		Name:   name,
-		Tags:   tags,
-		Subnet: &subnet,
+		Name: name,
+		Tags: tags,
+	}
+	// subnet is Optional+Computed and its description promises "if omitted, the
+	// server assigns one". That was never true before: assigning &subnet
+	// unconditionally sends a pointer to "" when the user omits the attribute,
+	// and `omitempty` on a *string omits only nil, so the wire carried
+	// "subnet": "" and the server rejected it with a regex validation error.
+	// v3 is the first version able to express the documented behaviour --
+	// CreateNetworkPayload.Subnet is *string with omitempty, whereas v2.3's was
+	// a non-pointer string that always serialized. Leave it nil when unset.
+	if subnet != "" {
+		CreateNetworkPayload.Subnet = &subnet
 	}
 	DeployNetworkPayload := perimeter81Sdk.DeployNetworkPayload{
 		Network: CreateNetworkPayload,
