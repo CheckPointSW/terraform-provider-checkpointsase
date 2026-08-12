@@ -626,7 +626,7 @@ func flattenTunnelData(tunnelItem *perimeter81Sdk.IPSecRedundantTunnel) []interf
 	if tunnelItem != nil {
 		tunnel := make([]interface{}, 1)
 		tunnelData := make(map[string]interface{})
-		tunnelData["passphrase"] = tunnelItem.Passphrase
+		tunnelData["passphrase"] = tunnelItem.GetPassphrase()
 		tunnelData["gateway_id"] = tunnelItem.GatewayID
 		// RemoteID is a union type wrapping *string
 		if tunnelItem.RemoteID.String != nil {

@@ -174,7 +174,7 @@ func resourceObjectServicesRead(ctx context.Context, d *schema.ResourceData, m i
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set object services name", err)
 	}
-	if err := d.Set("description", match.Description); err != nil {
+	if err := d.Set("description", match.GetDescription()); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set object services description", err)
 	}
