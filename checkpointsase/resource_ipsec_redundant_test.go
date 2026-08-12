@@ -65,7 +65,7 @@ func testAccCheckIpsecRedundantExists(n string, tunnel *perimeter81Sdk.IPSecRedu
 		conn := testAccProvider.Meta().(*perimeter81Sdk.APIClient)
 		ctx := context.Background()
 		networkId := rs.Primary.Attributes["network_id"]
-		gotIpsecRedundant, _, err := conn.IPSecRedundantAPI.StandardGetIPSecRedundantTunnel(ctx, networkId, tunnelId).Execute()
+		gotIpsecRedundant, _, err := conn.StandardTunnelsAPI.StandardGetIPSecRedundantTunnel(ctx, networkId, tunnelId).Execute()
 		if err != nil {
 			return err
 		}

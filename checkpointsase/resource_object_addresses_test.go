@@ -13,7 +13,7 @@ import (
 
 func TestAccObjectAddresses_basic(t *testing.T) {
 	t.Parallel()
-	var objectAddress perimeter81Sdk.ObjectsAddressObj
+	var objectAddress perimeter81Sdk.Address
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:  func() { testAccPreCheck(t) },
@@ -47,7 +47,7 @@ func TestAccObjectAddresses_basic(t *testing.T) {
 	})
 }
 
-func testAccCheckObjectAddressExists(n string, objectAddress *perimeter81Sdk.ObjectsAddressObj) resource.TestCheckFunc {
+func testAccCheckObjectAddressExists(n string, objectAddress *perimeter81Sdk.Address) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		rs, ok := s.RootModule().Resources[n]
 		if !ok {
@@ -81,18 +81,18 @@ type testAccObjectAddressExpectedAttributes struct {
 	Value       []string
 }
 
-func testAccCheckObjectAddressesAttributes(objectAddress *perimeter81Sdk.ObjectsAddressObj, want *testAccObjectAddressExpectedAttributes) resource.TestCheckFunc {
+func testAccCheckObjectAddressesAttributes(objectAddress *perimeter81Sdk.Address, want *testAccObjectAddressExpectedAttributes) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
-		if objectAddress.Name != want.Name {
-			return fmt.Errorf("got name %q; want %q", objectAddress.Name, want.Name)
+		if objectAddress.GetName() != want.Name {
+			return fmt.Errorf("got name %q; want %q", objectAddress.GetName(), want.Name)
 		}
 
 		if objectAddress.GetDescription() != want.Description {
 			return fmt.Errorf("got description %q; want %q", objectAddress.GetDescription(), want.Description)
 		}
 
-		if objectAddress.ValueType != want.ValueType {
-			return fmt.Errorf("got value type %q; want %q", objectAddress.ValueType, want.ValueType)
+		if objectAddress.GetValueType() != want.ValueType {
+			return fmt.Errorf("got value type %q; want %q", objectAddress.GetValueType(), want.ValueType)
 		}
 
 		if !testComparableArraiesEq(objectAddress.Value, want.Value) {

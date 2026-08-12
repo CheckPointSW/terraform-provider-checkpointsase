@@ -53,7 +53,7 @@ func testAccCheckOpenvpnExists(n string, tunnel *perimeter81Sdk.OpenVPNTunnel, a
 		ctx := context.Background()
 		networkId := rs.Primary.Attributes["network_id"]
 		version := rs.Primary.Attributes["version"]
-		gotOpenvpn, _, err := conn.OpenVPNAPI.StandardGetOpenVPNTunnel(ctx, networkId, tunnelId).Execute()
+		gotOpenvpn, _, err := conn.StandardTunnelsAPI.StandardGetOpenVPNTunnel(ctx, networkId, tunnelId).Execute()
 		if err != nil {
 			return err
 		}

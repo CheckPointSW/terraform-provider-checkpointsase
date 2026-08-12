@@ -92,7 +92,7 @@ func testAccCheckIpsecSingleExists(n string, tunnel *perimeter81Sdk.IPSecSingleT
 		conn := testAccProvider.Meta().(*perimeter81Sdk.APIClient)
 		ctx := context.Background()
 		networkId := rs.Primary.Attributes["network_id"]
-		gotIpsecSingle, _, err := conn.IPSecSingleAPI.StandardGetIPSecSingleTunnel(ctx, networkId, tunnelId).Execute()
+		gotIpsecSingle, _, err := conn.StandardTunnelsAPI.StandardGetIPSecSingleTunnel(ctx, networkId, tunnelId).Execute()
 		if err != nil {
 			return err
 		}

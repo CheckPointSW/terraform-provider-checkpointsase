@@ -98,7 +98,7 @@ func testAccCheckObjectServicesAttributes(objectServices *perimeter81Sdk.Objects
 		}
 
 		proto := objectServices.Protocols[0]
-		gotValueType := proto.ValueType
+		gotValueType := proto.GetValueType()
 		gotValue := proto.Value
 
 		if gotValueType != want.ValueType {
