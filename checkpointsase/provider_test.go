@@ -10,10 +10,19 @@ import (
 var testAccProviders map[string]*schema.Provider
 var testAccProvider *schema.Provider
 
+// testAccProviderFactories is required by any test step that mixes an
+// ExternalProviders step with a local-build step.
+var testAccProviderFactories map[string]func() (*schema.Provider, error)
+
 func init() {
 	testAccProvider = Provider()
+	// The local name must match the resource prefix, otherwise configurations
+	// in acceptance tests cannot resolve checkpointsase_* types.
 	testAccProviders = map[string]*schema.Provider{
-		"sase": testAccProvider,
+		"checkpointsase": testAccProvider,
+	}
+	testAccProviderFactories = map[string]func() (*schema.Provider, error){
+		"checkpointsase": func() (*schema.Provider, error) { return Provider(), nil },
 	}
 }
 
