@@ -58,7 +58,11 @@
 #       real thing.
 #
 #   UPG01_WORK_DIR=/some/path scripts/upg01.sh
-#       Use a different work directory instead of <repo>/.upg01-work.
+#       Use a different work directory instead of <repo>/.upg01-work. Only
+#       the default location is covered by this repo's .gitignore -- if you
+#       point UPG01_WORK_DIR at another path inside the repository, you are
+#       responsible for gitignoring it yourself, because the work directory
+#       holds Terraform state containing tenant data.
 #
 # EXIT CODES
 #   0  UPG-01 PASS (empty plan), or a completed --dry-run
@@ -168,6 +172,11 @@ build_provider() {
 }
 
 build_baseline() {
+  # A prior interrupted run can leave a registered-but-missing worktree entry
+  # under .git/worktrees, which makes `git worktree add` fail at the same path.
+  # Pruning is a no-op when nothing is stale.
+  git -C "${REPO_ROOT}" worktree prune
+
   rm -rf "${BASELINE_WORKTREE}"
   log "creating detached worktree at ${BASELINE_SHA} (v2.3 API baseline)"
   git -C "${REPO_ROOT}" worktree add --detach "${BASELINE_WORKTREE}" "${BASELINE_SHA}"
