@@ -3,6 +3,8 @@ package checkpointsase
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"time"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
@@ -19,16 +21,12 @@ the existing policy. There is no Create or Delete operation — only Read and Up
 */
 func resourceFirewallPolicy() *schema.Resource {
 	return &schema.Resource{
-		Description: "Manages the auto-created firewall policy of a `checkpointsase_network` " +
-			"or `checkpointsase_enhanced_network`. " +
-			"**This is an adopt-style resource**: the firewall policy is created server-side " +
-			"automatically when the network is provisioned, so terraform `create` here " +
-			"actually *adopts* the existing policy and applies your config; `destroy` simply " +
-			"releases the policy from terraform state without removing it server-side " +
-			"(the policy continues to exist for the lifetime of its parent network). " +
-			"Use this resource to manage the policy's `enabled` / `allowed` defaults and to " +
-			"declare `policy_rules`. " +
-			"**`network_id` is immutable** — changing it forces resource replacement.",
+		Description: "Manages the firewall policy of a Check Point SASE standard network. " +
+			"Adopt-style: the policy is created automatically with its parent network, " +
+			"so this resource reads the existing policy and applies your configuration to " +
+			"it; destroying it releases it from Terraform state without deleting it. " +
+			"On the v3 API the update is asynchronous, so applies take longer than a " +
+			"single request.",
 		CreateContext: resourceFirewallPolicyCreate,
 		ReadContext:   resourceFirewallPolicyRead,
 		UpdateContext: resourceFirewallPolicyUpdate,
@@ -88,6 +86,12 @@ func resourceFirewallPolicy() *schema.Resource {
 							Description: "List of service object IDs to match in this rule.",
 							Elem:        &schema.Schema{Type: schema.TypeString},
 						},
+						"log_enabled": {
+							Type:        schema.TypeBool,
+							Optional:    true,
+							Default:     false,
+							Description: "Whether logging is enabled for this rule. Required by the v3 /networks/{networkId}/firewall-policy endpoint; defaults to false so configurations written against v2.3 keep working unchanged.",
+						},
 					},
 				},
 			},
@@ -145,7 +149,7 @@ func resourceFirewallPolicyCreate(ctx context.Context, d *schema.ResourceData, m
 	// terraform-plugin-sdk's d.Get prefers a recent d.Set over the diff/config,
 	// so any pre-Update Set would clobber the HCL values and Update would push
 	// the server's existing values back instead of the user's configuration.
-	if _, _, err := client.FirewallPolicyAPI.GetFirewallPolicy(ctx, networkId).Execute(); err != nil {
+	if _, _, err := client.FirewallPolicyAPI.GetGranularFirewallPolicy(ctx, networkId).Execute(); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to read Firewall Policy for adoption", err)
 	}
@@ -169,7 +173,7 @@ func resourceFirewallPolicyRead(ctx context.Context, d *schema.ResourceData, m i
 
 	networkId := d.Get("network_id").(string)
 
-	policyData, _, err := client.FirewallPolicyAPI.GetFirewallPolicy(ctx, networkId).Execute()
+	policyData, _, err := client.FirewallPolicyAPI.GetGranularFirewallPolicy(ctx, networkId).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to find Firewall Policy", err)
@@ -190,30 +194,32 @@ func resourceFirewallPolicyRead(ctx context.Context, d *schema.ResourceData, m i
 		return appendErrorDiags(diags, "Unable to set Firewall Policy rules", err)
 	}
 
-	if policyData.Trace != nil {
-		if err := d.Set("trace", *policyData.Trace); err != nil {
-			d.Partial(true)
-			return appendErrorDiags(diags, "Unable to set Firewall Policy trace", err)
-		}
+	// v3's GranularFirewallPolicy declares policyLoggingEnabled required, so
+	// it is always present on the response — no nil guard needed. The SDK
+	// maps our `trace` attribute onto that field.
+	if err := d.Set("trace", policyData.PolicyLoggingEnabled); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to set Firewall Policy trace", err)
 	}
 
 	return diags
 }
 
 /*
-flattenFirewallPolicyRules converts a list of FirewallPolicyRule SDK models to a Terraform-compatible list.
+flattenFirewallPolicyRules converts a list of GranularFirewallPolicyRule SDK models to a Terraform-compatible list.
 */
-func flattenFirewallPolicyRules(rules []perimeter81Sdk.FirewallPolicyRule) []interface{} {
+func flattenFirewallPolicyRules(rules []perimeter81Sdk.GranularFirewallPolicyRule) []interface{} {
 	if rules == nil {
 		return make([]interface{}, 0)
 	}
 	result := make([]interface{}, len(rules))
 	for i, rule := range rules {
 		ruleMap := map[string]interface{}{
-			"name":     rule.Name,
-			"enabled":  rule.Enabled,
-			"allowed":  rule.Allowed,
-			"services": rule.Services,
+			"name":        rule.Name,
+			"enabled":     rule.Enabled,
+			"allowed":     rule.Allowed,
+			"services":    rule.Services,
+			"log_enabled": rule.LogEnabled,
 		}
 		if rule.Id != nil {
 			ruleMap["id"] = *rule.Id
@@ -241,7 +247,7 @@ func resourceFirewallPolicyUpdate(ctx context.Context, d *schema.ResourceData, m
 	networkId := d.Get("network_id").(string)
 
 	// Read current policy to get the policy ID
-	policyData, _, err := client.FirewallPolicyAPI.GetFirewallPolicy(ctx, networkId).Execute()
+	policyData, _, err := client.FirewallPolicyAPI.GetGranularFirewallPolicy(ctx, networkId).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to read Firewall Policy for update", err)
@@ -252,13 +258,14 @@ func resourceFirewallPolicyUpdate(ctx context.Context, d *schema.ResourceData, m
 
 	// Build policy rules from schema
 	policyRulesRaw := d.Get("policy_rules").([]interface{})
-	policyRules := make([]perimeter81Sdk.FirewallPolicyRule, len(policyRulesRaw))
+	policyRules := make([]perimeter81Sdk.GranularFirewallPolicyRule, len(policyRulesRaw))
 	for i, ruleRaw := range policyRulesRaw {
 		ruleMap := ruleRaw.(map[string]interface{})
-		rule := perimeter81Sdk.FirewallPolicyRule{
-			Name:    ruleMap["name"].(string),
-			Enabled: ruleMap["enabled"].(bool),
-			Allowed: ruleMap["allowed"].(bool),
+		rule := perimeter81Sdk.GranularFirewallPolicyRule{
+			Name:       ruleMap["name"].(string),
+			Enabled:    ruleMap["enabled"].(bool),
+			Allowed:    ruleMap["allowed"].(bool),
+			LogEnabled: ruleMap["log_enabled"].(bool),
 			// Sources and Destinations are not yet managed by this resource —
 			// keep them as zero values to leave them unchanged.
 			Sources:      perimeter81Sdk.SourcesAndDestinations{},
@@ -273,22 +280,41 @@ func resourceFirewallPolicyUpdate(ctx context.Context, d *schema.ResourceData, m
 		policyRules[i] = rule
 	}
 
-	updatePayload := perimeter81Sdk.FirewallPolicy{
+	updatePayload := perimeter81Sdk.GranularFirewallPolicy{
 		Id:          policyData.Id,
 		Enabled:     enabled,
 		Allowed:     allowed,
 		PolicyRules: policyRules,
 	}
 
-	if v, ok := d.GetOk("trace"); ok {
-		trace := v.(bool)
-		updatePayload.Trace = &trace
-	}
+	// v3's GranularFirewallPolicy declares policyLoggingEnabled required, so
+	// it is always sent. The SDK maps our `trace` attribute onto that field.
+	updatePayload.SetPolicyLoggingEnabled(d.Get("trace").(bool))
 
-	_, _, err = client.FirewallPolicyAPI.UpdateFirewallPolicy(ctx, networkId).FirewallPolicy(updatePayload).Execute()
+	asyncResp, httpResp, err := client.FirewallPolicyAPI.UpdateGranularFirewallPolicy(ctx, networkId).
+		GranularFirewallPolicy(updatePayload).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to update Firewall Policy", err)
+	}
+	_ = httpResp
+
+	statusId := getIdFromUrl(asyncResp.GetStatusUrl())
+	pollErr := pollAsync(ctx, func(ctx context.Context) (asyncResult, *http.Response, error) {
+		status, resp, err := client.NetworksAPI.NetworksControllerV2Status(ctx, statusId).Execute()
+		if err != nil {
+			return asyncResult{}, resp, err
+		}
+		out := asyncResult{Completed: status.GetCompleted()}
+		if r := status.Result; r != nil {
+			out.StatusCode = int(r.GetStatusCode())
+			out.Reasons = r.GetReason()
+		}
+		return out, resp, nil
+	}, 10*time.Second, 2)
+	if pollErr != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Firewall Policy update did not complete", pollErr)
 	}
 
 	return resourceFirewallPolicyRead(ctx, d, m)
