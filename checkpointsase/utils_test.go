@@ -6,25 +6,29 @@ import (
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 )
 
-// TestFlattenTunnelDataDoesNotLeakPointers guards against a *string SDK field
-// being assigned straight into the map[string]interface{} that flattenTunnelData
-// returns, which corrupts Terraform state (the pointer's address gets diffed
-// instead of the value). It exercises both the present and omitted cases,
-// since a raw dereference would panic on the latter.
+// TestFlattenTunnelDataDoesNotLeakPointers is a regression test for two bugs in
+// flattenTunnelData:
+//   - Passphrase (*string) was assigned straight into the map[string]interface{}
+//     that flattenTunnelData returns, corrupting Terraform state with a pointer
+//     instead of the value.
+//   - RemoteID is a union type wrapping *string, and the outer *RemoteID pointer
+//     was dereferenced without a nil check, panicking whenever the server omits
+//     remoteID.
+//
+// The "present" and "omitted" cases leave RemoteID unset (nil), which is exactly
+// the shape that panicked before the fix. The third case covers the other half of
+// the two-level nil check: a non-nil RemoteID wrapper with a nil inner string.
 func TestFlattenTunnelDataDoesNotLeakPointers(t *testing.T) {
 	pass := "super-secret-psk"
-	remoteID := "remote-id-fixture"
-	// RemoteID is unrelated to the passphrase leak under test, but flattenTunnelData
-	// dereferences tunnelItem.RemoteID.String unconditionally, so it must be non-nil
-	// here or every case panics before reaching the passphrase assertion below.
-	remote := perimeter81Sdk.RemoteID{String: &remoteID}
 	for _, tc := range []struct {
-		name string
-		in   *perimeter81Sdk.IPSecRedundantTunnel
-		want string
+		name           string
+		in             *perimeter81Sdk.IPSecRedundantTunnel
+		wantPassphrase string
+		wantRemoteID   string
 	}{
-		{"present", &perimeter81Sdk.IPSecRedundantTunnel{Passphrase: &pass, RemoteID: &remote}, pass},
-		{"omitted", &perimeter81Sdk.IPSecRedundantTunnel{RemoteID: &remote}, ""},
+		{"present", &perimeter81Sdk.IPSecRedundantTunnel{Passphrase: &pass}, pass, ""},
+		{"omitted", &perimeter81Sdk.IPSecRedundantTunnel{}, "", ""},
+		{"remote id wrapper present but inner string omitted", &perimeter81Sdk.IPSecRedundantTunnel{RemoteID: &perimeter81Sdk.RemoteID{}}, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := flattenTunnelData(tc.in)
@@ -35,12 +39,19 @@ func TestFlattenTunnelDataDoesNotLeakPointers(t *testing.T) {
 			if !ok {
 				t.Fatalf("entry is %T, want map[string]interface{}", out[0])
 			}
-			got, ok := m["passphrase"].(string)
+			gotPassphrase, ok := m["passphrase"].(string)
 			if !ok {
 				t.Fatalf("passphrase is %T, want string — a pointer here corrupts state", m["passphrase"])
 			}
-			if got != tc.want {
-				t.Errorf("passphrase = %q, want %q", got, tc.want)
+			if gotPassphrase != tc.wantPassphrase {
+				t.Errorf("passphrase = %q, want %q", gotPassphrase, tc.wantPassphrase)
+			}
+			gotRemoteID, ok := m["remote_id"].(string)
+			if !ok {
+				t.Fatalf("remote_id is %T, want string", m["remote_id"])
+			}
+			if gotRemoteID != tc.wantRemoteID {
+				t.Errorf("remote_id = %q, want %q", gotRemoteID, tc.wantRemoteID)
 			}
 		})
 	}
