@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
 // parseASNString converts a user-supplied ASN string (e.g. "65010") to an
@@ -20,6 +22,35 @@ import (
 func parseASNString(s string) int32 {
 	n, _ := strconv.Atoi(strings.TrimSpace(s))
 	return int32(n)
+}
+
+/*
+setIfPresent writes value to the ResourceData attribute key only when present
+is true. present is expected to be the SDK model's nil-safety check for the
+field being written (e.g. tunnel.HasSecretAccessKey()) — a no-op otherwise.
+
+Several credential-bearing attributes across this provider (OpenVPN's
+access_key_id/secret_access_key, IPSec's passphrase) are write-once: the v3
+API returns them on create or rotation but omits them on a plain read. The
+SDK's nil-safe Get*() getters turn that omission into a zero value ("") with
+no way for a caller to tell "the API sent an empty string" apart from "the
+API sent nothing" — so an unconditional d.Set(key, tunnel.GetX()) after a
+plain read would overwrite the terraform state's only durable copy of the
+value with "". setIfPresent exists so Read functions can't do that by
+accident: when present is false, this is a no-op and whatever is already in
+state is left untouched.
+  - @param d *schema.ResourceData - the terraform resource data
+  - @param key string - the schema attribute to (maybe) write
+  - @param value string - the value to write when present
+  - @param present bool - whether the API actually returned a value for key
+
+@return error - any error from the underlying d.Set
+*/
+func setIfPresent(d *schema.ResourceData, key string, value string, present bool) error {
+	if !present {
+		return nil
+	}
+	return d.Set(key, value)
 }
 
 /*
@@ -619,14 +650,34 @@ func flattenSharedSettingsData(sharedSettingsItem *perimeter81Sdk.IPSecSharedSet
 /*
 flattenTunnelData flatten Tunnel date
   - @param tunnelItem *IPSecRedundantTunnel - the tunnel that need to be flattened
+  - @param priorTunnelData []interface{} - the previous value of the "tunnel1"/"tunnel2"
+    attribute (i.e. d.Get("tunnel1") / d.Get("tunnel2") from BEFORE this Read call overwrites
+    it). passphrase is a write-once credential — same pattern as OpenVPN's secret_access_key
+    (see setIfPresent above): v3 does not return the pre-shared key on a plain read, and this
+    resource has no in-place update path (tunnel1/tunnel2 are ForceNew), so blanking passphrase
+    here would surface as a diff on a ForceNew field and force a destroy/recreate of a live
+    tunnel pair on every refresh. When tunnelItem carries no passphrase, carry forward whatever
+    was already in state instead — same preserve-prior-state precedent as
+    flattenSharedSettingsData's peak_bandwidth handling below. Callers MUST pass the prior
+    value; passing nil/empty degrades to "" for a tunnel the API never reported a passphrase
+    for (e.g. straight after import).
 
 @return []interface{} - the flattened tunnel data
 */
-func flattenTunnelData(tunnelItem *perimeter81Sdk.IPSecRedundantTunnel) []interface{} {
+func flattenTunnelData(tunnelItem *perimeter81Sdk.IPSecRedundantTunnel, priorTunnelData []interface{}) []interface{} {
 	if tunnelItem != nil {
 		tunnel := make([]interface{}, 1)
 		tunnelData := make(map[string]interface{})
-		tunnelData["passphrase"] = tunnelItem.GetPassphrase()
+		tunnelData["passphrase"] = ""
+		if tunnelItem.HasPassphrase() {
+			tunnelData["passphrase"] = tunnelItem.GetPassphrase()
+		} else if len(priorTunnelData) > 0 {
+			if priorMap, ok := priorTunnelData[0].(map[string]interface{}); ok {
+				if prior, ok := priorMap["passphrase"].(string); ok {
+					tunnelData["passphrase"] = prior
+				}
+			}
+		}
 		tunnelData["gateway_id"] = tunnelItem.GatewayID
 		// RemoteID is a union type wrapping an optional string
 		if tunnelItem.RemoteID != nil && tunnelItem.RemoteID.String != nil {
@@ -924,17 +975,53 @@ func deleteGatewayFromRegion(ctx context.Context, client *perimeter81Sdk.APIClie
 		},
 	}
 
+	removedIds := make(map[string]bool, len(gateways))
 	for _, gateway := range gateways {
 		id := gateway.Id
+		removedIds[id] = true
 		gatewaysForDelete.Regions[0].Instances = append(gatewaysForDelete.Regions[0].Instances, perimeter81Sdk.RemoveInstancePayload{
 			Id: &id,
 		})
 	}
-	// DeleteNetworkInstance is synchronous — returns AsyncOperationResult (no status URL to poll)
-	_, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2DeleteNetworkInstance(ctx, network_id).RemoveRegionInstance(gatewaysForDelete).Execute()
+	// DeleteNetworkInstance returns its AsyncOperationResult inline — there is
+	// no status URL to poll — so a non-2xx result.statusCode is the only
+	// signal that the delete was rejected.
+	result, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2DeleteNetworkInstance(ctx, network_id).RemoveRegionInstance(gatewaysForDelete).Execute()
 	if err != nil {
 		diags = appendErrorDiags(diags, "Unable to delete gateways", err)
 		return diags, err
+	}
+	if !isSuccessStatus(int(result.GetStatusCode())) {
+		err := &asyncFailedError{StatusCode: int(result.GetStatusCode()), Reasons: result.GetReason()}
+		diags = appendErrorDiags(diags, "Unable to delete gateways", err)
+		return diags, err
+	}
+
+	// The delete responded 2xx, but the gateway can still be listed in the
+	// network for a moment afterwards: it is eventually consistent. Callers
+	// read the network right after this function returns, so wait until none
+	// of the removed gateway ids are listed under this region any more —
+	// otherwise Read observes stale state.
+	what := fmt.Sprintf("gateway removal to take effect in region %s of network %s", region_id, network_id)
+	if pollErr := pollUntilConverged(ctx, func(ctx context.Context) (bool, *http.Response, error) {
+		network, resp, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkFind(ctx, network_id).Execute()
+		if err != nil {
+			return false, resp, err
+		}
+		for _, region := range network.Regions {
+			if region.Id != region_id {
+				continue
+			}
+			for _, instance := range region.Instances {
+				if removedIds[instance.Id] {
+					return false, resp, nil
+				}
+			}
+		}
+		return true, resp, nil
+	}, convergencePollInterval, convergenceTransientBudget, what); pollErr != nil {
+		diags = appendErrorDiags(diags, "Unable to delete gateways", pollErr)
+		return diags, pollErr
 	}
 	return diags, nil
 }

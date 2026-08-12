@@ -243,11 +243,22 @@ func resourceOpenvpnRead(ctx context.Context, d *schema.ResourceData, m interfac
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set gateway id", err)
 	}
-	if err := d.Set("access_key_id", tunnel.GetAccessKeyId()); err != nil {
+	// access_key_id and secret_access_key are write-once credentials: the API
+	// only returns them on create and on rotation (see secret_access_key's
+	// schema description above). A plain read gets neither back, and the
+	// SDK's nil-safe GetAccessKeyId()/GetSecretAccessKey() turn that absence
+	// into "" — so setting them unconditionally here would overwrite the
+	// terraform state's only durable copy of the tunnel's credentials with
+	// an empty string on every refresh. Only write when the API actually
+	// returned a value; otherwise leave whatever is already in state alone.
+	// Guarded independently (not "if either is present, set both") because
+	// the two are not guaranteed to arrive together. Do not "simplify" this
+	// back to an unconditional d.Set — that's the bug this guards against.
+	if err := setIfPresent(d, "access_key_id", tunnel.GetAccessKeyId(), tunnel.HasAccessKeyId()); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set access key id", err)
 	}
-	if err := d.Set("secret_access_key", tunnel.GetSecretAccessKey()); err != nil {
+	if err := setIfPresent(d, "secret_access_key", tunnel.GetSecretAccessKey(), tunnel.HasSecretAccessKey()); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set secret access key", err)
 	}

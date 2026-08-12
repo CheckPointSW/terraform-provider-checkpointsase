@@ -553,11 +553,17 @@ func resourceIpsecRedundantRead(ctx context.Context, d *schema.ResourceData, m i
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set shared settings", err)
 	}
-	if err := d.Set("tunnel1", flattenTunnelData(tunnel.Tunnel1)); err != nil {
+	// Pass the prior "tunnel1"/"tunnel2" value (before this Set overwrites it) so
+	// flattenTunnelData can carry forward passphrase, which v3 does not return on
+	// a plain read — see the comment on flattenTunnelData (utils.go) and on
+	// setIfPresent, which guards the analogous OpenVPN credential fields.
+	priorTunnel1, _ := d.Get("tunnel1").([]interface{})
+	if err := d.Set("tunnel1", flattenTunnelData(tunnel.Tunnel1, priorTunnel1)); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set tunnel1", err)
 	}
-	if err := d.Set("tunnel2", flattenTunnelData(tunnel.Tunnel2)); err != nil {
+	priorTunnel2, _ := d.Get("tunnel2").([]interface{})
+	if err := d.Set("tunnel2", flattenTunnelData(tunnel.Tunnel2, priorTunnel2)); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set tunnel2", err)
 	}

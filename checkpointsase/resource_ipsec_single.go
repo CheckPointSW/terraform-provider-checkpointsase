@@ -411,7 +411,12 @@ func resourceIpsecSingleRead(ctx context.Context, d *schema.ResourceData, m inte
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set Dpd timeout", err)
 	}
-	if err := d.Set("passphrase", tunnel.GetPassphrase()); err != nil {
+	// passphrase is a write-once credential, same pattern as OpenVPN's
+	// secret_access_key (see setIfPresent in utils.go): v3 does not return the
+	// pre-shared key on a plain read, so setting it unconditionally here would
+	// overwrite the terraform state's only copy with "" on every refresh. Only
+	// write it when the API actually returned it.
+	if err := setIfPresent(d, "passphrase", tunnel.GetPassphrase(), tunnel.HasPassphrase()); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set passphrase", err)
 	}
