@@ -35,13 +35,13 @@ func TestAccIpsecSingle_basic(t *testing.T) {
 						Passphrase:           "tnEgVbTJE23",
 						RemotePublicIP:       "198.51.100.41",
 						Phase1: perimeter81Sdk.IPSecPhaseConfig{
-							Auth:       []string{"3des"},
-							Encryption: []string{"sha256"},
+							Auth:       []string{"sha256"},
+							Encryption: []string{"3des"},
 							Dh:         []int32{14},
 						},
 						Phase2: perimeter81Sdk.IPSecPhaseConfig{
-							Auth:       []string{"3des"},
-							Encryption: []string{"sha256"},
+							Auth:       []string{"sha256"},
+							Encryption: []string{"3des"},
 							Dh:         []int32{14},
 						},
 					}),
@@ -62,13 +62,13 @@ func TestAccIpsecSingle_basic(t *testing.T) {
 						Passphrase:           "tnEgVbTJE23123",
 						RemotePublicIP:       "198.51.100.42",
 						Phase1: perimeter81Sdk.IPSecPhaseConfig{
-							Auth:       []string{"blowfish256"},
-							Encryption: []string{"md5"},
+							Auth:       []string{"md5"},
+							Encryption: []string{"blowfish256"},
 							Dh:         []int32{19},
 						},
 						Phase2: perimeter81Sdk.IPSecPhaseConfig{
-							Auth:       []string{"blowfish256"},
-							Encryption: []string{"md5"},
+							Auth:       []string{"md5"},
+							Encryption: []string{"blowfish256"},
 							Dh:         []int32{19},
 						},
 					}),
@@ -206,13 +206,13 @@ resource "checkpointsase_ipsec_single" "ipss1" {
   dpd_delay = "20s"
   dpd_timeout = "40s"
   phase1 {
-    auth = ["3des"]
-    encryption = ["sha256"]
+    auth = ["sha256"]
+    encryption = ["3des"]
     dh = [14]
   }
   phase2 {
-    auth = ["3des"]
-    encryption = ["sha256"]
+    auth = ["sha256"]
+    encryption = ["3des"]
     dh = [14]
   }
   passphrase = "tnEgVbTJE23"
@@ -262,13 +262,13 @@ resource "checkpointsase_ipsec_single" "ipss1" {
   dpd_delay = "30s"
   dpd_timeout = "50s"
   phase1 {
-    auth = ["blowfish256"]
-    encryption = ["md5"]
+    auth = ["md5"]
+    encryption = ["blowfish256"]
     dh = [19]
   }
   phase2 {
-    auth = ["blowfish256"]
-    encryption = ["md5"]
+    auth = ["md5"]
+    encryption = ["blowfish256"]
     dh = [19]
   }
   passphrase = "tnEgVbTJE23123"

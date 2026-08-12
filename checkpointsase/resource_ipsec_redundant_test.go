@@ -34,13 +34,13 @@ func TestAccIpsecRedundant_basic(t *testing.T) {
 							DpdDelay:    "10s",
 							DpdTimeout:  "30s",
 							Phase1: perimeter81Sdk.IPSecPhaseConfig{
-								Auth:       []string{"3des"},
-								Encryption: []string{"sha256"},
+								Auth:       []string{"sha256"},
+								Encryption: []string{"3des"},
 								Dh:         []int32{14},
 							},
 							Phase2: perimeter81Sdk.IPSecPhaseConfig{
-								Auth:       []string{"3des"},
-								Encryption: []string{"sha256"},
+								Auth:       []string{"sha256"},
+								Encryption: []string{"3des"},
 								Dh:         []int32{14},
 							},
 						},
@@ -181,6 +181,7 @@ resource "checkpointsase_ipsec_redundant" "ipsr1" {
       remote_gwinternal_ip = "169.254.100.5"
       remote_public_ip = "169.254.100.7"
       remote_asn = "65323"
+      remote_id = "tunnelOneRemoteId"
       gateway_id = {
 		for network in data.checkpointsase_networks.all4.networks :
 		network.id => network.regions[0].instances[0].id
@@ -193,6 +194,7 @@ resource "checkpointsase_ipsec_redundant" "ipsr1" {
       remote_gwinternal_ip = "169.254.100.14"
       remote_public_ip = "169.254.100.16"
       remote_asn = "65324"
+      remote_id = "tunnelTwoRemoteId"
       gateway_id = {
 		for network in data.checkpointsase_networks.all4.networks :
 		network.id => network.regions[0].instances[1].id
@@ -210,13 +212,13 @@ resource "checkpointsase_ipsec_redundant" "ipsr1" {
     dpd_delay = "10s"
     dpd_timeout = "30s"
     phase1 {
-      auth = ["3des"]
-      encryption = ["sha256"]
+      auth = ["sha256"]
+      encryption = ["3des"]
       dh = [14]
     }
     phase2 {
-      auth = ["3des"]
-      encryption = ["sha256"]
+      auth = ["sha256"]
+      encryption = ["3des"]
       dh = [14]
     }
   }
