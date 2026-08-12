@@ -52,6 +52,19 @@ func TestSchemaEveryAttributeHasADescription(t *testing.T) {
 	}
 }
 
+// normalizeAttributeName lowercases a schema attribute name and strips
+// underscores and hyphens, so that "requestconfigtoken", "request_config_token"
+// and "requestConfigToken" all collapse to the same key. This lets secretNames
+// be written in whichever style is most readable without changing what the
+// lookup catches - the leaf name extracted from a schema is compared against
+// this same normalized form, not against the literal set keys.
+func normalizeAttributeName(s string) string {
+	s = strings.ToLower(s)
+	s = strings.ReplaceAll(s, "_", "")
+	s = strings.ReplaceAll(s, "-", "")
+	return s
+}
+
 // Terraform writes Sensitive attributes to state in plaintext; the marker only
 // redacts CLI and log output. Two attributes shipped without it in v2.3 and
 // leaked WireGuard private key material into provider logs.
@@ -61,6 +74,10 @@ func TestSchemaSecretAttributesAreMarkedSensitive(t *testing.T) {
 		"vault": true, "private_key": true, "api_key": true,
 		"customer_root_ca": true, "request_config_token": true,
 	}
+	normalizedSecretNames := make(map[string]bool, len(secretNames))
+	for name := range secretNames {
+		normalizedSecretNames[normalizeAttributeName(name)] = true
+	}
 	var unmarked []string
 	for owner, s := range allRegistered() {
 		walkSchema("", s, func(path string, attr *schema.Schema) {
@@ -68,7 +85,9 @@ func TestSchemaSecretAttributesAreMarkedSensitive(t *testing.T) {
 			if i := strings.LastIndex(path, "."); i >= 0 {
 				leaf = path[i+1:]
 			}
-			if secretNames[leaf] && !attr.Sensitive {
+			if normalizedSecretNames[normalizeAttributeName(leaf)] && !attr.Sensitive {
+				// Report the original attribute path, not the normalized
+				// form, so the failure message stays actionable.
 				unmarked = append(unmarked, fmt.Sprintf("%s: %s", owner, path))
 			}
 		})

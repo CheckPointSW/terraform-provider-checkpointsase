@@ -222,7 +222,7 @@ func dataSourceNetworks() *schema.Resource {
 																Type:        schema.TypeList,
 																Computed:    true,
 																Optional:    true,
-																Description: "The list of allowed IP ranges on the local (left-side) endpoint of the tunnel.",
+																Description: "The list of allowed IP ranges on the local (left-side) endpoint of the tunnel. Only populated for WireGuard tunnels; IPsec and OpenVPN entries read back as an empty list.",
 																Elem: &schema.Schema{
 																	Type: schema.TypeString,
 																},
@@ -230,7 +230,7 @@ func dataSourceNetworks() *schema.Resource {
 															"leftendpoint": {
 																Type:        schema.TypeString,
 																Optional:    true,
-																Description: "The local (left-side) endpoint address of the tunnel.",
+																Description: "The local (left-side) endpoint address of the tunnel. Only populated for WireGuard tunnels; IPsec and OpenVPN entries read back as an empty string.",
 															},
 															"network": {
 																Type:        schema.TypeString,
@@ -245,7 +245,8 @@ func dataSourceNetworks() *schema.Resource {
 															"requestconfigtoken": {
 																Type:        schema.TypeString,
 																Optional:    true,
-																Description: "Server-assigned token for retrieving the tunnel's client configuration.",
+																Sensitive:   true,
+																Description: "Server-assigned token for retrieving the tunnel's client configuration. Only populated for WireGuard tunnels; IPsec and OpenVPN entries read back as an empty string.",
 															},
 															"type": {
 																Type:        schema.TypeString,
