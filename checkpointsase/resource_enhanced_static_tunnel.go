@@ -85,6 +85,7 @@ func resourceEnhancedStaticTunnel() *schema.Resource {
 			"customer_root_ca": {
 				Type:        schema.TypeString,
 				Optional:    true,
+				Sensitive:   true,
 				Description: "Customer root certificate authority. Required when auth_type is 'cert'.",
 			},
 			"description": {

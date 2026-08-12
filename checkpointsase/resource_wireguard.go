@@ -77,11 +77,13 @@ func resourceWireguard() *schema.Resource {
 			"vault": {
 				Type:        schema.TypeString,
 				Computed:    true,
+				Sensitive:   true,
 				Description: "Server-assigned opaque identifier for the tunnel's config storage. Used together with `request_config_token` to retrieve the WireGuard client config from the SASE management console.",
 			},
 			"request_config_token": {
 				Type:        schema.TypeString,
 				Computed:    true,
+				Sensitive:   true,
 				Description: "Server-assigned token for retrieving the WireGuard client configuration. Pair with `vault` to fetch the config blob.",
 			},
 			"updated_at": {

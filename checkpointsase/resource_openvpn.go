@@ -72,6 +72,7 @@ func resourceOpenvpn() *schema.Resource {
 			"access_key_id": {
 				Type:        schema.TypeString,
 				Computed:    true,
+				Sensitive:   true,
 				Description: "Server-assigned credential ID for the OpenVPN client. Rotated when `version` changes.",
 			},
 			"secret_access_key": {
