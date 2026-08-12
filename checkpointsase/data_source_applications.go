@@ -83,7 +83,6 @@ dataSourceApplicationsRead Use the SDK to query all Applications.
 func dataSourceApplicationsRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	response, _, err := client.ApplicationsAPI.GetApplications(ctx).Execute()
 	if err != nil {

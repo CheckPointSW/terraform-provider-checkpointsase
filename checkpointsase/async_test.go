@@ -122,6 +122,43 @@ func TestPollAsyncHonoursContextDeadline(t *testing.T) {
 	}
 }
 
+// TestPollAsyncReturnsPromptlyOnAlreadyCancelledContext covers the half of
+// ctx handling that TestPollAsyncHonoursContextDeadline (above) does not: a
+// context cancelled *before* pollAsync is ever invoked — the shape a
+// Terraform SIGINT/Ctrl-C produces once ctx propagates all the way down from
+// the CRUD entry point — rather than one that expires mid-poll. pollAsync
+// must observe the cancellation via sleepCtx's ctx.Done() case and return
+// immediately, without calling poll a second time.
+//
+// This test would have passed in isolation even before the ctx-propagation
+// fix in this change: pollAsync itself always honoured ctx correctly. What
+// was broken is that every CRUD entry point reassigned ctx to
+// context.Background() before calling down into this code, so a cancelled
+// or deadlined Terraform context could never reach here in production. That
+// is exactly why this gap needed a test written against the real call
+// path (not just pollAsync in isolation) to be caught earlier.
+func TestPollAsyncReturnsPromptlyOnAlreadyCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancelled before pollAsync is ever called
+
+	calls := 0
+	poll := func(ctx context.Context) (asyncResult, *http.Response, error) {
+		calls++
+		return asyncResult{Completed: false}, resp(200), nil
+	}
+
+	err := pollAsync(ctx, poll, 20*time.Millisecond, 2)
+	if err == nil {
+		t.Fatal("pollAsync() = nil, want an error for an already-cancelled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error %v should wrap context.Canceled", err)
+	}
+	if calls != 1 {
+		t.Errorf("poll called %d times, want 1 — pollAsync must not call poll again once it observes the cancellation", calls)
+	}
+}
+
 // TestAsyncFailedErrorMessage pins asyncFailedError's Error() string to the
 // exact text pollAsync produced before it existed as a typed error. Every
 // other test in this file that asserts on substrings of a pollAsync /

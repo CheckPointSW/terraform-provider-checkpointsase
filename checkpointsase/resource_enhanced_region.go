@@ -60,6 +60,11 @@ func resourceEnhancedRegion() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceEnhancedRegionImportState,
 		},
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(asyncResourceTimeout),
+			Update: schema.DefaultTimeout(asyncResourceTimeout),
+			Delete: schema.DefaultTimeout(asyncResourceTimeout),
+		},
 	}
 }
 
@@ -134,7 +139,6 @@ resourceEnhancedRegionCreate Create an Enhanced Region in an Enhanced Network.
 func resourceEnhancedRegionCreate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	harmonySaseRegionId := d.Get("harmony_sase_region_id").(string)
@@ -176,7 +180,6 @@ resourceEnhancedRegionRead Read an Enhanced Region.
 func resourceEnhancedRegionRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	regionId := d.Id()
@@ -213,7 +216,6 @@ resourceEnhancedRegionUpdate Update an Enhanced Region's scale units.
 func resourceEnhancedRegionUpdate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	if !d.HasChange("scale_units") {
 		return resourceEnhancedRegionRead(ctx, d, m)
@@ -289,7 +291,6 @@ resourceEnhancedRegionDelete Delete an Enhanced Region from an Enhanced Network.
 func resourceEnhancedRegionDelete(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	regionId := d.Id()

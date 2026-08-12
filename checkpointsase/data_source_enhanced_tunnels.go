@@ -159,7 +159,6 @@ dataSourceEnhancedTunnelsRead Use the SDK to query all tunnels in an enhanced ne
 func dataSourceEnhancedTunnelsRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 

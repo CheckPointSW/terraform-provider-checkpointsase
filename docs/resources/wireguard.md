@@ -41,6 +41,7 @@ resource "checkpointsase_wireguard" "example" {
 
 - `created_at` (String) Timestamp when the tunnel was created (server-assigned).
 - `last_updated` (String) Timestamp of the last update to this resource.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 - `updated_at` (String) Timestamp when the tunnel was last updated server-side.
 
 ### Read-Only
@@ -48,6 +49,15 @@ resource "checkpointsase_wireguard" "example" {
 - `id` (String) The ID of this resource.
 - `request_config_token` (String, Sensitive) Server-assigned token for retrieving the WireGuard client configuration. Pair with `vault` to fetch the config blob.
 - `vault` (String, Sensitive) Server-assigned opaque identifier for the tunnel's config storage. Used together with `request_config_token` to retrieve the WireGuard client config from the SASE management console.
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
+- `update` (String)
 
 ## Import
 

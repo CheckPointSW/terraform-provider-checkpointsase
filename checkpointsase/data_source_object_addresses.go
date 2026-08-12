@@ -82,9 +82,6 @@ func dataSourceObjectAddressesRead(ctx context.Context, d *schema.ResourceData, 
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	if ctx == nil {
-		ctx = context.Background()
-	}
 
 	// call the api and check if there is an error
 	objectAddresses, _, err := client.ObjectsAPI.GetAddresses(ctx).Execute()

@@ -46,6 +46,7 @@ resource "checkpointsase_firewall_policy" "example" {
 ### Optional
 
 - `policy_rules` (Block List) List of firewall policy rules. (see [below for nested schema](#nestedblock--policy_rules))
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 - `trace` (Boolean) Whether the policy is traced.
 
 ### Read-Only
@@ -66,6 +67,16 @@ Optional:
 - `id` (String) The unique ID of the policy rule.
 - `log_enabled` (Boolean) Whether logging is enabled for this rule. Required by the v3 /networks/{networkId}/firewall-policy endpoint; defaults to false so configurations written against v2.3 keep working unchanged.
 - `services` (List of String) List of service object IDs to match in this rule.
+
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
+- `update` (String)
 
 ## Import
 

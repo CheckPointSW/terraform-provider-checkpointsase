@@ -103,7 +103,6 @@ func resourceObjectAddressesCreate(ctx context.Context, d *schema.ResourceData, 
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the object services data from the terraform resource data and flatten what need to be flattened for the api
 	name := d.Get("name").(string)
@@ -145,7 +144,6 @@ func resourceObjectAddressesRead(ctx context.Context, d *schema.ResourceData, m 
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the object addresses and check for errors
 	objectsAddresses, _, err := client.ObjectsAPI.GetAddresses(ctx).Execute()
@@ -197,7 +195,6 @@ func resourceObjectAddressesUpdate(ctx context.Context, d *schema.ResourceData, 
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	if d.HasChanges("value", "description", "name", "ip_version", "value_type") {
 
@@ -238,7 +235,6 @@ func resourceObjectAddressesDelete(ctx context.Context, d *schema.ResourceData, 
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// delete the object Addresses and check for errors
 	_, err := client.ObjectsAPI.DeleteAddress(ctx, d.Id()).Execute()

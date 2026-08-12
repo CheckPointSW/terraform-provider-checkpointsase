@@ -82,6 +82,11 @@ func resourceEnhancedRouteTable() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceEnhancedRouteTableImportState,
 		},
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(asyncResourceTimeout),
+			Update: schema.DefaultTimeout(asyncResourceTimeout),
+			Delete: schema.DefaultTimeout(asyncResourceTimeout),
+		},
 	}
 }
 
@@ -116,7 +121,6 @@ resourceEnhancedRouteTableCreate Create an Enhanced Route Table entry.
 func resourceEnhancedRouteTableCreate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	routeType := d.Get("type").(string)
@@ -178,7 +182,6 @@ resourceEnhancedRouteTableRead Read an Enhanced Route Table entry.
 func resourceEnhancedRouteTableRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	routeId := d.Id()
@@ -216,7 +219,6 @@ resourceEnhancedRouteTableUpdate Update an Enhanced Route Table entry.
 func resourceEnhancedRouteTableUpdate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	if d.HasChange("subnets") {
 		networkId := d.Get("network_id").(string)
@@ -249,7 +251,6 @@ resourceEnhancedRouteTableDelete Delete an Enhanced Route Table entry.
 func resourceEnhancedRouteTableDelete(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	routeId := d.Id()

@@ -87,9 +87,6 @@ dataSourceObjectServicesRead Use the SDK to query all ObjectServices
 func dataSourceObjectServicesRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	if ctx == nil {
-		ctx = context.Background()
-	}
 
 	objectServices, _, err := client.ObjectsAPI.GetObjectsServices(ctx).Execute()
 	if err != nil {

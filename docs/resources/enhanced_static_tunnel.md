@@ -80,6 +80,7 @@ resource "checkpointsase_enhanced_static_tunnel" "example" {
 - `peak_bandwidth` (Number) Expected peak throughput of the tunnel communication in Mbps. Allowed range is 10–8000. Defaults to 1000. Settable only at creation: v3's update endpoint has no bandwidth field, so changing this value replaces the tunnel (destroy and re-create) rather than updating it in place.
 - `remote_id` (String) The remote gateway ID. When omitted, the server defaults this to `remote_public_ip`; the provider reads the server-assigned value back into state.
 - `remote_public_ip` (String) The remote gateway public IP address.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
 
@@ -103,6 +104,16 @@ Required:
 - `auth` (List of String) List of phase 2 authentication algorithms.
 - `encryption` (List of String) List of phase 2 encryption algorithms.
 - `key_exchange_method` (List of String) List of phase 2 key exchange methods (Diffie-Hellman groups).
+
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
+- `update` (String)
 
 ## Import
 

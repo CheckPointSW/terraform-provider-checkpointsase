@@ -94,6 +94,11 @@ func resourceEnhancedNetwork() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceEnhancedNetworkImportState,
 		},
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(asyncResourceTimeout),
+			Update: schema.DefaultTimeout(asyncResourceTimeout),
+			Delete: schema.DefaultTimeout(asyncResourceTimeout),
+		},
 	}
 }
 
@@ -128,7 +133,6 @@ resourceEnhancedNetworkCreate Create an Enhanced Network.
 func resourceEnhancedNetworkCreate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	name := d.Get("name").(string)
 	subnet := d.Get("subnet").(string)
@@ -211,7 +215,6 @@ resourceEnhancedNetworkRead Read an Enhanced Network.
 func resourceEnhancedNetworkRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Id()
 	networkData, _, err := client.EnhancedNetworksAPI.GetEnhancedNetwork(ctx, networkId).Execute()
@@ -296,7 +299,6 @@ resourceEnhancedNetworkUpdate Update an Enhanced Network.
 func resourceEnhancedNetworkUpdate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	if d.HasChanges("name", "tags") {
 		networkId := d.Id()
@@ -332,7 +334,6 @@ resourceEnhancedNetworkDelete Delete an Enhanced Network.
 func resourceEnhancedNetworkDelete(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Id()
 	status, _, err := client.EnhancedNetworksAPI.DeleteEnhancedNetwork(ctx, networkId).Execute()

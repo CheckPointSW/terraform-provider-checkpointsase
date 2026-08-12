@@ -41,6 +41,7 @@ resource "checkpointsase_network" "example" {
 
 - `last_updated` (String) Timestamp of the last update to this resource.
 - `network` (Block List) Network metadata: name, subnet, and tags. (see [below for nested schema](#nestedblock--network))
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
 
@@ -80,6 +81,16 @@ Optional:
 Read-Only:
 
 - `dns` (String) DNS suffix assigned to the network (server-assigned).
+
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
+- `update` (String)
 
 ## Import
 

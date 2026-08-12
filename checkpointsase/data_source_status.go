@@ -43,7 +43,6 @@ dataSourceStatusRead Use the SDK to query the API status.
 func dataSourceStatusRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	status, _, err := client.NetworksAPI.GetStatus(ctx).Execute()
 	if err != nil {

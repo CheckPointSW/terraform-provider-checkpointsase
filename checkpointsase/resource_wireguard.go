@@ -105,6 +105,11 @@ func resourceWireguard() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceWireguardImportState,
 		},
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(asyncResourceTimeout),
+			Update: schema.DefaultTimeout(asyncResourceTimeout),
+			Delete: schema.DefaultTimeout(asyncResourceTimeout),
+		},
 	}
 }
 
@@ -146,7 +151,6 @@ func resourceWireguardCreate(ctx context.Context, d *schema.ResourceData, m inte
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the resource data from the terraform resource and flatten what needs to be flattened
 	networkId := d.Get("network_id").(string)
@@ -208,7 +212,6 @@ func resourceWireguardRead(ctx context.Context, d *schema.ResourceData, m interf
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the tunnel id and the network id from the terraform resource
 	ids := strings.Split(d.Id(), "-")
@@ -298,7 +301,6 @@ func resourceWireguardUpdate(ctx context.Context, d *schema.ResourceData, m inte
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// check if the remote endpoint or the remote subnets have changed
 	if d.HasChanges("remote_endpoint", "remote_subnets") {
@@ -345,7 +347,6 @@ func resourceWireguardDelete(ctx context.Context, d *schema.ResourceData, m inte
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the tunnel id and the network id from the terraform resource
 	tunnelId := d.Id()

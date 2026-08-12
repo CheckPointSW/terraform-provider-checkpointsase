@@ -73,7 +73,6 @@ dataSourceEnhancedRegionsRead Use the SDK to query all available Check Point SAS
 func dataSourceEnhancedRegionsRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	regions, _, err := client.EnhancedRegionsAPI.EnhancedNetworksControllerV2GetRegions(ctx).Execute()
 	if err != nil {

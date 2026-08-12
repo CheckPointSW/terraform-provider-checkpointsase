@@ -83,6 +83,13 @@ func resourceApplication() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceApplicationImportState,
 		},
+		// No Update timeout: this resource has no UpdateContext (every
+		// attribute is ForceNew — see the type-level doc comment above), so
+		// Terraform never calls an update operation to bound.
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(asyncResourceTimeout),
+			Delete: schema.DefaultTimeout(asyncResourceTimeout),
+		},
 	}
 }
 
@@ -140,7 +147,6 @@ resourceApplicationCreate Create an Application.
 func resourceApplicationCreate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	appName := d.Get("name").(string)
 	appType := d.Get("type").(string)
@@ -258,7 +264,6 @@ resourceApplicationRead Read an Application.
 func resourceApplicationRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	applicationId := d.Id()
 	appData, _, err := client.ApplicationsAPI.GetApplicationById(ctx, applicationId).Execute()

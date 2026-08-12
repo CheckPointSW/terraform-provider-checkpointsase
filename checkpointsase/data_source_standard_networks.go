@@ -89,7 +89,6 @@ func dataSourceStandardNetworks() *schema.Resource {
 func dataSourceStandardNetworksRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networks, _, err := client.StandardNetworksAPI.StandardGetNetworks(ctx).Execute()
 	if err != nil {

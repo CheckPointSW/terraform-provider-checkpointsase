@@ -38,6 +38,7 @@ resource "checkpointsase_gateway" "example" {
 
 - `gateways` (Block List) List of gateways to provision in the region. Order is not significant. (see [below for nested schema](#nestedblock--gateways))
 - `last_updated` (String) Timestamp of the last update to this resource.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
 
@@ -56,6 +57,16 @@ Read-Only:
 - `dns` (String) The DNS hostname assigned to the gateway.
 - `id` (String) The unique ID assigned to the gateway by the server.
 - `ip` (String) The public IP address assigned to the gateway.
+
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
+- `update` (String)
 
 ## Import
 

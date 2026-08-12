@@ -35,6 +35,7 @@ resource "checkpointsase_enhanced_route_table" "example" {
 ### Optional
 
 - `last_updated` (String) Timestamp of the last update to this resource.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 - `tunnel_id` (String) The static tunnel ID. Required when type is `static`. Mutually exclusive with `tunnel_ids`. The selected static tunnel must not already have a route table.
 - `tunnel_ids` (List of String) The list of dynamic tunnel IDs. Required when type is `dynamic`. Mutually exclusive with `tunnel_id`. The selected dynamic tunnels must not already have a route table.
 
@@ -42,6 +43,15 @@ resource "checkpointsase_enhanced_route_table" "example" {
 
 - `id` (String) The ID of this resource.
 - `propagated` (Boolean) Whether the route is propagated automatically.
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
+- `update` (String)
 
 ## Import
 

@@ -243,6 +243,11 @@ func resourceEnhancedDynamicTunnel() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceEnhancedDynamicTunnelImportState,
 		},
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(asyncResourceTimeout),
+			Update: schema.DefaultTimeout(asyncResourceTimeout),
+			Delete: schema.DefaultTimeout(asyncResourceTimeout),
+		},
 	}
 }
 
@@ -362,7 +367,6 @@ resourceEnhancedDynamicTunnelCreate Create an Enhanced Dynamic IPSec Tunnel.
 func resourceEnhancedDynamicTunnelCreate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	tunnelName := d.Get("tunnel_name").(string)
@@ -463,7 +467,6 @@ resourceEnhancedDynamicTunnelRead Read an Enhanced Dynamic IPSec Tunnel.
 func resourceEnhancedDynamicTunnelRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	dynamicTunnelId := d.Id()
@@ -528,7 +531,6 @@ resourceEnhancedDynamicTunnelUpdate Update an Enhanced Dynamic IPSec Tunnel.
 func resourceEnhancedDynamicTunnelUpdate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	dynamicTunnelId := d.Id()
@@ -564,7 +566,6 @@ resourceEnhancedDynamicTunnelDelete Delete an Enhanced Dynamic IPSec Tunnel.
 func resourceEnhancedDynamicTunnelDelete(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	dynamicTunnelId := d.Id()

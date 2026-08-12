@@ -82,6 +82,7 @@ resource "checkpointsase_enhanced_dynamic_tunnel" "example" {
 - `description` (String) Optional description for the dynamic tunnel.
 - `last_updated` (String) Timestamp of the last update to this resource.
 - `peak_bandwidth` (Number, Deprecated) Expected peak throughput of the tunnel communication in Mbps. Allowed range is 10–8000. Defaults to 1000. Not sent to the v3 server — the value is retained only for configuration compatibility with prior provider versions.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
 
@@ -124,6 +125,16 @@ Optional:
 - `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).
 - `remote_id` (String) The remote gateway ID. Server defaults to `remote_public_ip` when omitted.
 - `remote_public_ip` (String) The remote gateway public IP address.
+
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
+- `update` (String)
 
 ## Import
 

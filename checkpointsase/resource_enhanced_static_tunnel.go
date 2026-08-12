@@ -214,6 +214,11 @@ func resourceEnhancedStaticTunnel() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceEnhancedStaticTunnelImportState,
 		},
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(asyncResourceTimeout),
+			Update: schema.DefaultTimeout(asyncResourceTimeout),
+			Delete: schema.DefaultTimeout(asyncResourceTimeout),
+		},
 	}
 }
 
@@ -288,7 +293,6 @@ resourceEnhancedStaticTunnelCreate Create an Enhanced Static IPSec Tunnel.
 func resourceEnhancedStaticTunnelCreate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	regionId := d.Get("region_id").(string)
@@ -409,7 +413,6 @@ resourceEnhancedStaticTunnelRead Read an Enhanced Static IPSec Tunnel.
 func resourceEnhancedStaticTunnelRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	tunnelId := d.Id()
@@ -508,7 +511,6 @@ resourceEnhancedStaticTunnelUpdate Update an Enhanced Static IPSec Tunnel.
 func resourceEnhancedStaticTunnelUpdate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	tunnelId := d.Id()
@@ -607,7 +609,6 @@ resourceEnhancedStaticTunnelDelete Delete an Enhanced Static IPSec Tunnel.
 func resourceEnhancedStaticTunnelDelete(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	tunnelId := d.Id()

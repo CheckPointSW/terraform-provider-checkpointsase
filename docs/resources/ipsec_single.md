@@ -72,6 +72,7 @@ resource "checkpointsase_ipsec_single" "example" {
 - `created_at` (String) Timestamp when the tunnel was created (server-assigned).
 - `last_updated` (String) Timestamp of the last update to this resource.
 - `remote_id` (String) Optional remote tunnel ID. Computed if not supplied.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 - `updated_at` (String) Timestamp when the tunnel was last updated server-side.
 
 ### Read-Only
@@ -96,6 +97,16 @@ Required:
 - `auth` (List of String) List of phase 2 authentication algorithms.
 - `dh` (List of Number) List of phase 2 Diffie-Hellman group numbers.
 - `encryption` (List of String) List of phase 2 encryption algorithms.
+
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
+- `update` (String)
 
 ## Import
 

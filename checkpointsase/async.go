@@ -139,6 +139,20 @@ const (
 	applicationPollInterval = 30 * time.Second
 	// applicationTransientBudget allows two 5xx/EOF blips per operation.
 	applicationTransientBudget = 2
+
+	// asyncResourceTimeout is the default Create/Update/Delete timeout
+	// declared via `Timeouts` on every resource whose lifecycle polls an
+	// async operation through pollAsync (directly or via
+	// pollStandardNetworkStatus(ForResource) / pollApplicationStatusForResource).
+	// Now that ctx propagates all the way from Terraform down into pollAsync
+	// (see the ctx-discarding fix this constant ships with), this timeout is
+	// the backstop that turns a stuck poll into a deadline error instead of
+	// an indefinite hang. 30 minutes is deliberately generous relative to the
+	// 60s/20s/30s poll intervals above: network provisioning (the slowest of
+	// these operations) can legitimately take several minutes on a busy
+	// tenant, and this is only the *default* — HCL can override it per
+	// resource with a `timeouts { create = "1h" }` block.
+	asyncResourceTimeout = 30 * time.Minute
 )
 
 // pollStandardNetworkStatusForResource polls the standard-networks async status

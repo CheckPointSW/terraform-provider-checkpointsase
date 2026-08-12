@@ -76,7 +76,6 @@ dataSourceEnhancedRouteTableRead Use the SDK to query the enhanced network route
 func dataSourceEnhancedRouteTableRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 

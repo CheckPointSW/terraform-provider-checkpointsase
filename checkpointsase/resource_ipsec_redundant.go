@@ -322,6 +322,11 @@ func resourceIpsecRedundant() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceIpsecRedundantImportState,
 		},
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(asyncResourceTimeout),
+			Update: schema.DefaultTimeout(asyncResourceTimeout),
+			Delete: schema.DefaultTimeout(asyncResourceTimeout),
+		},
 	}
 }
 
@@ -364,7 +369,6 @@ func resourceIpsecRedundantCreate(ctx context.Context, d *schema.ResourceData, m
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the tunnel data from the terraform resource and flatten what need to be flattened for the api
 	networkId := d.Get("network_id").(string)
@@ -505,7 +509,6 @@ func resourceIpsecRedundantRead(ctx context.Context, d *schema.ResourceData, m i
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the ipsec-redundant tunnel id and the network id from the terraform resource data
 	ids := strings.Split(d.Id(), "-")
@@ -587,7 +590,6 @@ func resourceIpsecRedundantDelete(ctx context.Context, d *schema.ResourceData, m
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the ipsec-redundant tunnel id and the network id from the terraform resource data
 	tunnelId := d.Id()

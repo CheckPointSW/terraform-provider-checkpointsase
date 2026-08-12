@@ -78,7 +78,6 @@ dataSourceNetworkHealthRead Use the SDK to query the health of a standard networ
 func dataSourceNetworkHealthRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 

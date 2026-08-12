@@ -115,7 +115,6 @@ func resourceObjectServicesCreate(ctx context.Context, d *schema.ResourceData, m
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	name := d.Get("name").(string)
 	description := d.Get("description").(string)
@@ -147,7 +146,6 @@ resourceObjectServicesRead Read a Object Services
 func resourceObjectServicesRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// Look up by id, not by name. On terraform import only d.Id() is seeded,
 	// so a by-name lookup would panic; it also misbehaves if the service is
@@ -198,7 +196,6 @@ func resourceObjectServicesUpdate(ctx context.Context, d *schema.ResourceData, m
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	if d.HasChanges("name", "description", "protocols") {
 		objectServicesId := d.Id()
@@ -231,7 +228,6 @@ func resourceObjectServicesDelete(ctx context.Context, d *schema.ResourceData, m
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// delete the object services and check for errors
 	_, err := client.ObjectsAPI.DeleteObjectsServices(ctx, d.Id()).Execute()

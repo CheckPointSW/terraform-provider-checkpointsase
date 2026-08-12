@@ -43,11 +43,20 @@ resource "checkpointsase_application" "internal_app" {
 ### Optional
 
 - `groups` (List of String) List of group IDs allowed to access this application.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 - `users` (List of String) List of user IDs allowed to access this application.
 
 ### Read-Only
 
 - `id` (String) The ID of this resource.
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
 
 ## Import
 

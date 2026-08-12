@@ -84,6 +84,7 @@ resource "checkpointsase_ipsec_redundant" "example" {
 ### Optional
 
 - `last_updated` (String) Timestamp of the last update to this resource.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
 
@@ -170,6 +171,16 @@ Optional:
 
 - `remote_id` (String) Optional remote tunnel ID. Computed if not supplied.
 - `tunnel_id` (String) The server-assigned tunnel ID. Computed.
+
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
+- `update` (String)
 
 ## Import
 

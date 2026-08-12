@@ -42,6 +42,7 @@ resource "checkpointsase_enhanced_network" "example" {
 
 - `last_updated` (String) Timestamp of the last update to this resource.
 - `tags` (List of String) A list of tags to associate with the enhanced network.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
 
@@ -62,6 +63,16 @@ Optional:
 Read-Only:
 
 - `id` (String) The unique ID of the created region.
+
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
+- `update` (String)
 
 ## Import
 
