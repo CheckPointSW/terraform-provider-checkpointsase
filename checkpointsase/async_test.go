@@ -5,9 +5,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 )
 
 const testInterval = time.Millisecond
@@ -116,5 +119,51 @@ func TestPollAsyncHonoursContextDeadline(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("error %v should wrap context.DeadlineExceeded", err)
+	}
+}
+
+// standardNetworkStatusServer stands up a fake standard-networks status
+// endpoint that always answers with body on the first request, so
+// pollStandardNetworkStatus never has to sleep between polls.
+func standardNetworkStatusServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// This is the falsifiable proof of the migration: checkNetworkStatus's old
+// semantics (fail only on statusCode 500) would report this 409 completion
+// as a successful apply. pollStandardNetworkStatus must not.
+func TestPollStandardNetworkStatusFailsOnCompletedNonTwoXX(t *testing.T) {
+	server := standardNetworkStatusServer(t, `{"completed":true,"result":{"statusCode":409,"reason":["subnet overlaps an existing network"]}}`)
+
+	client := perimeter81Sdk.NewAPIClient(perimeter81Sdk.NewConfiguration("test-key", server.URL))
+
+	err := pollStandardNetworkStatus(context.Background(), client, "status-id")
+	if err == nil {
+		t.Fatal("pollStandardNetworkStatus() = nil, want an error for a 409 completion")
+	}
+	if !strings.Contains(err.Error(), "409") {
+		t.Errorf("error %q should include the status code", err)
+	}
+	if !strings.Contains(err.Error(), "subnet overlaps an existing network") {
+		t.Errorf("error %q should include the API's reason", err)
+	}
+}
+
+// Companion case: a completed + 200 response must return nil, so the test
+// above cannot pass by having pollStandardNetworkStatus always error.
+func TestPollStandardNetworkStatusSucceedsOnCompletedTwoHundred(t *testing.T) {
+	server := standardNetworkStatusServer(t, `{"completed":true,"result":{"statusCode":200}}`)
+
+	client := perimeter81Sdk.NewAPIClient(perimeter81Sdk.NewConfiguration("test-key", server.URL))
+
+	if err := pollStandardNetworkStatus(context.Background(), client, "status-id"); err != nil {
+		t.Fatalf("pollStandardNetworkStatus() = %v, want nil for a completed 200 response", err)
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 )
 
 // asyncResult is the normalised shape of every v3 async status response.
@@ -91,4 +93,32 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+const (
+	// standardNetworkPollInterval matches the 60s time.Sleep the hand-rolled
+	// polling loops used, so this migration changes correctness, not timing.
+	standardNetworkPollInterval = 60 * time.Second
+	// standardNetworkTransientBudget allows two 5xx/EOF blips per operation.
+	standardNetworkTransientBudget = 2
+)
+
+// pollStandardNetworkStatus polls the standard-networks async status endpoint
+// until the operation completes, fails, or ctx expires.
+//
+// It replaces checkNetworkStatus, which failed only on statusCode 500 and so
+// reported a 400 or 409 completion to Terraform as a successful apply.
+func pollStandardNetworkStatus(ctx context.Context, client *perimeter81Sdk.APIClient, statusId string) error {
+	return pollAsync(ctx, func(ctx context.Context) (asyncResult, *http.Response, error) {
+		status, resp, err := client.StandardNetworksAPI.StandardNetworksControllerV2Status(ctx, statusId).Execute()
+		if err != nil {
+			return asyncResult{}, resp, err
+		}
+		out := asyncResult{Completed: status.GetCompleted()}
+		if r := status.Result; r != nil {
+			out.StatusCode = int(r.GetStatusCode())
+			out.Reasons = r.GetReason()
+		}
+		return out, resp, nil
+	}, standardNetworkPollInterval, standardNetworkTransientBudget)
 }
