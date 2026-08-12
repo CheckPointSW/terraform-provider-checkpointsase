@@ -232,6 +232,51 @@ func flattenFirewallPolicyRules(rules []perimeter81Sdk.GranularFirewallPolicyRul
 }
 
 /*
+buildGranularFirewallPolicyRule converts a single policy_rules schema block (as produced by
+d.Get("policy_rules").([]interface{})) into a GranularFirewallPolicyRule SDK model. Factored out
+of resourceFirewallPolicyUpdate so it can be exercised directly by payload_marshal_test.go — this
+is the exact code path that produces Sources/Destinations, so a regression here (e.g. reverting to
+the zero-value SourcesAndDestinations{}) is caught by marshaling its output, not just by inspecting
+schema shape.
+*/
+func buildGranularFirewallPolicyRule(ruleMap map[string]interface{}) perimeter81Sdk.GranularFirewallPolicyRule {
+	rule := perimeter81Sdk.GranularFirewallPolicyRule{
+		Name:       ruleMap["name"].(string),
+		Enabled:    ruleMap["enabled"].(bool),
+		Allowed:    ruleMap["allowed"].(bool),
+		LogEnabled: ruleMap["log_enabled"].(bool),
+		// Sources/Destinations are not yet managed by this resource — there
+		// is no sources/destinations schema attribute, so an empty address
+		// list is the only shape this provider can express today. Adding
+		// that schema surface is a deliberate later-release scope, not a
+		// gap to close here.
+		//
+		// IMPORTANT: SourcesAndDestinations is a oneOf wrapper whose
+		// MarshalJSON returns (nil, nil) when neither variant is set (see
+		// model_sources_and_destinations.go). encoding/json treats a
+		// (nil, nil) return from MarshalJSON as an error ("unexpected end
+		// of JSON input"), so leaving these as the zero value
+		// SourcesAndDestinations{} breaks every request that has at least
+		// one policy_rules entry — Execute() fails in setBody before any
+		// request reaches the wire. Wrapping an empty Addresses list is
+		// the fix; whether the server's *semantics* for an empty address
+		// list match "unchanged"/"no sources configured" has not been
+		// confirmed against a live tenant.
+		Sources: perimeter81Sdk.AddressesAsSourcesAndDestinations(
+			&perimeter81Sdk.Addresses{Addresses: []string{}}),
+		Destinations: perimeter81Sdk.AddressesAsSourcesAndDestinations(
+			&perimeter81Sdk.Addresses{Addresses: []string{}}),
+	}
+	if v, ok := ruleMap["id"].(string); ok && v != "" {
+		rule.Id = &v
+	}
+	if v, ok := ruleMap["services"].([]interface{}); ok {
+		rule.Services = flattenStringsArrayData(v)
+	}
+	return rule
+}
+
+/*
 resourceFirewallPolicyUpdate Update the Firewall Policy configuration.
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
@@ -260,24 +305,7 @@ func resourceFirewallPolicyUpdate(ctx context.Context, d *schema.ResourceData, m
 	policyRulesRaw := d.Get("policy_rules").([]interface{})
 	policyRules := make([]perimeter81Sdk.GranularFirewallPolicyRule, len(policyRulesRaw))
 	for i, ruleRaw := range policyRulesRaw {
-		ruleMap := ruleRaw.(map[string]interface{})
-		rule := perimeter81Sdk.GranularFirewallPolicyRule{
-			Name:       ruleMap["name"].(string),
-			Enabled:    ruleMap["enabled"].(bool),
-			Allowed:    ruleMap["allowed"].(bool),
-			LogEnabled: ruleMap["log_enabled"].(bool),
-			// Sources and Destinations are not yet managed by this resource —
-			// keep them as zero values to leave them unchanged.
-			Sources:      perimeter81Sdk.SourcesAndDestinations{},
-			Destinations: perimeter81Sdk.SourcesAndDestinations{},
-		}
-		if v, ok := ruleMap["id"].(string); ok && v != "" {
-			rule.Id = &v
-		}
-		if v, ok := ruleMap["services"].([]interface{}); ok {
-			rule.Services = flattenStringsArrayData(v)
-		}
-		policyRules[i] = rule
+		policyRules[i] = buildGranularFirewallPolicyRule(ruleRaw.(map[string]interface{}))
 	}
 
 	updatePayload := perimeter81Sdk.GranularFirewallPolicy{

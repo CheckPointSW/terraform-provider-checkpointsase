@@ -335,6 +335,16 @@ func flattenDynamicTunnelDetails(tunnelItems []interface{}) []perimeter81Sdk.Dyn
 		if v, ok := tunnelMap["remote_gw_internal_ip"].(string); ok && v != "" {
 			detail.RemoteGWInternalIP = v
 		}
+		// Public-api requires `routingType` on every dynamic tunnel detail —
+		// see model_dynamic_tunnel_details.go: RoutingType is a value type
+		// (not a pointer), no omitempty, and the enum admits only
+		// ROUTINGTYPE_ROUTE/ROUTINGTYPE_POLICY, so leaving it unset serializes
+		// as "" and the server rejects the create outright. There is no
+		// routing_type schema attribute for dynamic tunnels, so default to
+		// route — the same default the static tunnel path uses (see
+		// resource_enhanced_static_tunnel.go's Create) when the user sets
+		// nothing.
+		detail.RoutingType = perimeter81Sdk.ROUTINGTYPE_ROUTE
 		tunnels[i] = detail
 	}
 	return tunnels
