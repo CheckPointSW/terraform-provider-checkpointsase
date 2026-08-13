@@ -103,7 +103,19 @@ func TestSetIfPresentPreservesCredentialsAcrossAPlainRead(t *testing.T) {
 		t.Errorf("secret_access_key = %q, want %q (a read that gets nothing back must not blank the prior value)", got, priorSecretAccessKey)
 	}
 
-	// The other half of the guard: when the API does report a value (e.g. a
+	// PRESENT BUT EMPTY. This is what the server actually does after create: it
+	// sends secretAccessKey back as "" rather than omitting it, so the SDK's
+	// generated HasSecretAccessKey() reports true. Found live — the first version
+	// of this guard keyed only on `present` and so let Read overwrite the stored
+	// credential with "", which is precisely what it was written to prevent.
+	if err := setIfPresent(d, "secret_access_key", "", true); err != nil {
+		t.Fatalf("setIfPresent(secret_access_key, present-but-empty): %v", err)
+	}
+	if got := d.Get("secret_access_key").(string); got != priorSecretAccessKey {
+		t.Errorf("secret_access_key = %q, want %q (a present-but-empty value must not blank the prior value)", got, priorSecretAccessKey)
+	}
+
+	// The other half of the guard: when the API does report a real value (e.g. a
 	// rotation just happened), it must still be written.
 	const rotatedSecret = "rotated-fake-secret" // fixture value, not a real credential
 	if err := setIfPresent(d, "secret_access_key", rotatedSecret, true); err != nil {

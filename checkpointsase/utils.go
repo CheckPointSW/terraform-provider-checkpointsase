@@ -47,7 +47,17 @@ state is left untouched.
 @return error - any error from the underlying d.Set
 */
 func setIfPresent(d *schema.ResourceData, key string, value string, present bool) error {
-	if !present {
+	// `present` comes from the SDK's generated HasX(), which only reports whether
+	// the JSON field was non-nil -- it is true for a field the server sent as "".
+	// That is not good enough for write-once credentials: the API returns
+	// secretAccessKey exactly once, on create/rotation, and thereafter sends the
+	// key back as an empty string rather than omitting it. Treating that as
+	// "present" made Read overwrite the stored credential with "", which is the
+	// value the resource description explicitly promises to preserve.
+	//
+	// So an empty value never overwrites state here. The only way to clear one of
+	// these attributes is to destroy the resource.
+	if !present || value == "" {
 		return nil
 	}
 	return d.Set(key, value)

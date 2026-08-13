@@ -13,10 +13,21 @@ import (
 
 var randNameOpenVpn string = randStringBytesRmndr()
 
+// TestAccOpenvpn_basic covers the credential-rotation contract: creating the
+// tunnel yields a secret_access_key, and bumping `version` replaces it.
+//
+// The assertions read Terraform STATE, not the API. secretAccessKey is returned
+// exactly once, in the create/update response — the subsequent GET does not
+// carry it, even though the spec declares it on OpenVPNTunnel. So state is the
+// only place the value can be observed, which is precisely what the resource's
+// description promises. An earlier version of this test asked the API for it and
+// therefore could never pass.
 func TestAccOpenvpn_basic(t *testing.T) {
 	t.Parallel()
-	var tunnel perimeter81Sdk.OpenVPNTunnel
-	var access_key string
+	// Captured by pointer on purpose: the check closures must read this when
+	// they run, not when the Steps slice is built. Passing it by value is how
+	// the previous version of this test ended up comparing against "".
+	var createdSecret string
 	resource.Test(t, resource.TestCase{
 		PreCheck:  func() { testAccPreCheck(t) },
 		Providers: testAccProviders,
@@ -24,53 +35,78 @@ func TestAccOpenvpn_basic(t *testing.T) {
 			{
 				Config: testAccOpenvpnConfig(),
 				Check: resource.ComposeTestCheckFunc(
-					testAccCheckOpenvpnExists("checkpointsase_openvpn.ovpn2", &tunnel, &access_key),
+					testAccCheckOpenvpnExists("checkpointsase_openvpn.ovpn2"),
+					testAccCaptureOpenvpnSecret("checkpointsase_openvpn.ovpn2", &createdSecret),
 				),
 			},
 			{
 				Config: testAccOpenvpnUpdateConfig(),
 				Check: resource.ComposeTestCheckFunc(
-					testAccCheckOpenvpnExists("checkpointsase_openvpn.ovpn2", &tunnel, &access_key),
-					testAccCheckOpenvpnAttributes(&tunnel, access_key),
+					testAccCheckOpenvpnExists("checkpointsase_openvpn.ovpn2"),
+					testAccCheckOpenvpnSecretRotated("checkpointsase_openvpn.ovpn2", &createdSecret),
 				),
 			},
 		},
 	})
 }
 
-func testAccCheckOpenvpnExists(n string, tunnel *perimeter81Sdk.OpenVPNTunnel, access_key *string) resource.TestCheckFunc {
+// testAccCheckOpenvpnExists confirms the tunnel really exists server-side, so a
+// state-only assertion cannot pass against a tunnel that was never created.
+func testAccCheckOpenvpnExists(n string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		rs, ok := s.RootModule().Resources[n]
 		if !ok {
 			return fmt.Errorf("Not Found: %s", n)
 		}
-
 		tunnelId := rs.Primary.ID
 		if tunnelId == "" {
 			return fmt.Errorf("No tunnel id is set")
 		}
 		conn := testAccProvider.Meta().(*perimeter81Sdk.APIClient)
-		ctx := context.Background()
 		networkId := rs.Primary.Attributes["network_id"]
-		version := rs.Primary.Attributes["version"]
-		gotOpenvpn, _, err := conn.StandardTunnelsAPI.StandardGetOpenVPNTunnel(ctx, networkId, tunnelId).Execute()
-		if err != nil {
+		if _, _, err := conn.StandardTunnelsAPI.StandardGetOpenVPNTunnel(context.Background(), networkId, tunnelId).Execute(); err != nil {
 			return err
 		}
-		if version == "1" {
-			*access_key = gotOpenvpn.GetSecretAccessKey()
-		}
-		*tunnel = *gotOpenvpn
 		return nil
 	}
 }
 
-func testAccCheckOpenvpnAttributes(tunnel *perimeter81Sdk.OpenVPNTunnel, access_key string) resource.TestCheckFunc {
+// testAccCaptureOpenvpnSecret records the create-time secret from state.
+func testAccCaptureOpenvpnSecret(n string, out *string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
-		if tunnel.GetSecretAccessKey() == access_key {
-			return fmt.Errorf("Access key was %q; and didn't change", access_key)
+		rs, ok := s.RootModule().Resources[n]
+		if !ok {
+			return fmt.Errorf("Not Found: %s", n)
 		}
+		secret := rs.Primary.Attributes["secret_access_key"]
+		if secret == "" {
+			return fmt.Errorf("secret_access_key is empty in state after create; " +
+				"the create response is the only place the API ever returns it, so it " +
+				"must be persisted there or the credential is lost")
+		}
+		*out = secret
+		return nil
+	}
+}
 
+// testAccCheckOpenvpnSecretRotated asserts the version bump replaced the
+// credential. The values themselves are never printed — the attribute is
+// Sensitive and test output is not a safe place for it.
+func testAccCheckOpenvpnSecretRotated(n string, previous *string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		rs, ok := s.RootModule().Resources[n]
+		if !ok {
+			return fmt.Errorf("Not Found: %s", n)
+		}
+		current := rs.Primary.Attributes["secret_access_key"]
+		if current == "" {
+			return fmt.Errorf("secret_access_key is empty in state after the version bump; " +
+				"the rotated secret from the update response was not persisted")
+		}
+		if current == *previous {
+			return fmt.Errorf("secret_access_key is unchanged after the version bump; " +
+				"the server rotated the credential but Terraform kept the stale value")
+		}
 		return nil
 	}
 }

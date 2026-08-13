@@ -192,6 +192,19 @@ func resourceOpenvpnCreate(ctx context.Context, d *schema.ResourceData, m interf
 	}
 	d.SetId(openvpnTunnelId)
 
+	// The create response is the ONLY place secretAccessKey is ever returned --
+	// the SDK field's own comment says "This key will be shown only once in the
+	// response for security reasons". The subsequent GET does not carry it
+	// (despite the spec declaring it on OpenVPNTunnel), so if we do not persist
+	// it here the credential is lost forever and the attribute stays empty,
+	// which is what the resource's own description promises it will not be.
+	if secret := status.GetSecretAccessKey(); secret != "" {
+		if err := d.Set("secret_access_key", secret); err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to set Openvpn secret_access_key", err)
+		}
+	}
+
 	return resourceOpenvpnRead(ctx, d, m)
 }
 
@@ -311,6 +324,16 @@ func resourceOpenvpnUpdate(ctx context.Context, d *schema.ResourceData, m interf
 		if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to update openvpn Tunnel", err)
+		}
+		// A version bump is a credential rotation, and the update response is the
+		// only place the rotated secret is ever returned -- same one-shot contract
+		// as create. Without this the server rotates, the old secret stops working,
+		// and Terraform silently keeps the stale one.
+		if secret := status.GetSecretAccessKey(); secret != "" {
+			if err := d.Set("secret_access_key", secret); err != nil {
+				d.Partial(true)
+				return appendErrorDiags(diags, "Unable to set rotated Openvpn secret_access_key", err)
+			}
 		}
 		d.Set("last_updated", time.Now().Format(time.RFC850))
 	}
