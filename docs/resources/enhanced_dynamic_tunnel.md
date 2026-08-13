@@ -75,7 +75,7 @@ resource "checkpointsase_enhanced_dynamic_tunnel" "example" {
 - `phase2` (Block List, Min: 1, Max: 1) Phase 2 (ESP/IPSec) configuration. (see [below for nested schema](#nestedblock--phase2))
 - `remote_gateway_subnets` (List of String) List of remote gateway subnet CIDR blocks (shared settings).
 - `tunnel` (Block List, Min: 1) The list of individual tunnel endpoints for this dynamic tunnel group. (see [below for nested schema](#nestedblock--tunnel))
-- `tunnel_name` (String) The name of the dynamic IPSec tunnel.
+- `tunnel_name` (String) The name of the dynamic IPSec tunnel. Must be 15 characters or fewer.
 
 ### Optional
 
@@ -123,7 +123,7 @@ Optional:
 - `auth_type` (String) Authentication type for this tunnel endpoint. Must be `psk` or `cert`.
 - `customer_root_ca` (String, Sensitive) Customer root certificate authority. Required when auth_type is 'cert'.
 - `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).
-- `remote_id` (String) The remote gateway ID. Server defaults to `remote_public_ip` when omitted.
+- `remote_id` (String) The remote gateway ID. Server defaults to `remote_public_ip` when omitted. Must be alphanumeric or a valid IP address.
 - `remote_public_ip` (String) The remote gateway public IP address.
 
 

@@ -48,7 +48,7 @@ func resourceEnhancedDynamicTunnel() *schema.Resource {
 			"tunnel_name": {
 				Type:        schema.TypeString,
 				Required:    true,
-				Description: "The name of the dynamic IPSec tunnel.",
+				Description: "The name of the dynamic IPSec tunnel. Must be 15 characters or fewer.",
 				// The upstream model auto-suffixes the user's tunnel name
 				// with `01` (createIPSecRedundant.transform.ts:113 —
 				// `interfaceName: ${tunnelName}0${i+1}`). Suppress the
@@ -56,6 +56,7 @@ func resourceEnhancedDynamicTunnel() *schema.Resource {
 				DiffSuppressFunc: func(k, oldValue, newValue string, d *schema.ResourceData) bool {
 					return strings.TrimSuffix(oldValue, "01") == newValue || oldValue == strings.TrimSuffix(newValue, "01")
 				},
+				ValidateFunc: validation.StringLenBetween(0, 15),
 			},
 			"description": {
 				Type:        schema.TypeString,
@@ -90,6 +91,10 @@ func resourceEnhancedDynamicTunnel() *schema.Resource {
 							Optional:    true,
 							Sensitive:   true,
 							Description: "Pre-shared key for tunnel authentication. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).",
+							ValidateFunc: validation.StringMatch(
+								regexp.MustCompile(`^[a-zA-Z1-9._][a-zA-Z0-9._]{7,63}$`),
+								"must be 8-64 characters using only letters, digits, '.', and '_' (the first character cannot be '0')",
+							),
 						},
 						"customer_root_ca": {
 							Type:        schema.TypeString,
@@ -103,10 +108,11 @@ func resourceEnhancedDynamicTunnel() *schema.Resource {
 							Description: "The remote gateway public IP address.",
 						},
 						"remote_id": {
-							Type:        schema.TypeString,
-							Optional:    true,
-							Computed:    true,
-							Description: "The remote gateway ID. Server defaults to `remote_public_ip` when omitted.",
+							Type:         schema.TypeString,
+							Optional:     true,
+							Computed:     true,
+							Description:  "The remote gateway ID. Server defaults to `remote_public_ip` when omitted. Must be alphanumeric or a valid IP address.",
+							ValidateFunc: validateRemoteID,
 						},
 						"remote_asn": {
 							Type:         schema.TypeInt,

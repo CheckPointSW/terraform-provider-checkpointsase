@@ -79,7 +79,7 @@ resource "checkpointsase_ipsec_redundant" "example" {
 - `shared_settings` (Block List, Min: 1) Subnet routing settings shared by both tunnels. (see [below for nested schema](#nestedblock--shared_settings))
 - `tunnel1` (Block List, Min: 1) Primary tunnel endpoint configuration. (see [below for nested schema](#nestedblock--tunnel1))
 - `tunnel2` (Block List, Min: 1) Standby tunnel endpoint configuration. Same shape as `tunnel1`. (see [below for nested schema](#nestedblock--tunnel2))
-- `tunnel_name` (String) Display name for the redundant tunnel pair.
+- `tunnel_name` (String) Display name for the redundant tunnel pair. Must be 15 characters or fewer.
 
 ### Optional
 
@@ -144,14 +144,14 @@ Required:
 
 - `gateway_id` (String) The ID of the SASE gateway that terminates this tunnel locally.
 - `p81_gwinternal_ip` (String) The Check Point SASE gateway internal IP on this tunnel.
-- `passphrase` (String, Sensitive) Pre-shared key for this tunnel (8–64 characters).
+- `passphrase` (String, Sensitive) Pre-shared key for this tunnel. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).
 - `remote_asn` (String) The remote peer's BGP ASN as a string (e.g. `"65010"`).
 - `remote_gwinternal_ip` (String) The remote gateway internal IP on this tunnel.
 - `remote_public_ip` (String) The remote gateway public IP on this tunnel.
 
 Optional:
 
-- `remote_id` (String) Optional remote tunnel ID. Computed if not supplied.
+- `remote_id` (String) Optional remote tunnel ID. Computed if not supplied. Must be alphanumeric or a valid IP address.
 - `tunnel_id` (String) The server-assigned tunnel ID. Computed.
 
 
@@ -162,14 +162,14 @@ Required:
 
 - `gateway_id` (String) The ID of the SASE gateway that terminates this tunnel locally.
 - `p81_gwinternal_ip` (String) The Check Point SASE gateway internal IP on this tunnel.
-- `passphrase` (String, Sensitive) Pre-shared key for this tunnel (8–64 characters).
+- `passphrase` (String, Sensitive) Pre-shared key for this tunnel. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).
 - `remote_asn` (String) The remote peer's BGP ASN as a string (e.g. `"65010"`).
 - `remote_gwinternal_ip` (String) The remote gateway internal IP on this tunnel.
 - `remote_public_ip` (String) The remote gateway public IP on this tunnel.
 
 Optional:
 
-- `remote_id` (String) Optional remote tunnel ID. Computed if not supplied.
+- `remote_id` (String) Optional remote tunnel ID. Computed if not supplied. Must be alphanumeric or a valid IP address.
 - `tunnel_id` (String) The server-assigned tunnel ID. Computed.
 
 

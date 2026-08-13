@@ -10,6 +10,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 )
 
 /*
@@ -64,10 +65,11 @@ func resourceOpenvpn() *schema.Resource {
 				Description: "The ID of the SASE gateway that terminates this tunnel locally.",
 			},
 			"tunnel_name": {
-				Type:        schema.TypeString,
-				Required:    true,
-				ForceNew:    true,
-				Description: "Display name for the OpenVPN tunnel.",
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				Description:  "Display name for the OpenVPN tunnel. Must be 15 characters or fewer.",
+				ValidateFunc: validation.StringLenBetween(0, 15),
 			},
 			"access_key_id": {
 				Type:        schema.TypeString,

@@ -57,10 +57,11 @@ func resourceIpsecSingle() *schema.Resource {
 				Description: "The ID of the SASE gateway that terminates this tunnel locally.",
 			},
 			"tunnel_name": {
-				Type:        schema.TypeString,
-				Required:    true,
-				ForceNew:    true,
-				Description: "Display name for the IPsec tunnel.",
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				Description:  "Display name for the IPsec tunnel. Must be 15 characters or fewer.",
+				ValidateFunc: validation.StringLenBetween(0, 15),
 			},
 			"key_exchange": {
 				Type:         schema.TypeString,
@@ -102,7 +103,11 @@ func resourceIpsecSingle() *schema.Resource {
 				Type:        schema.TypeString,
 				Sensitive:   true,
 				Required:    true,
-				Description: "Pre-shared key for tunnel authentication (8–64 characters).",
+				Description: "Pre-shared key for tunnel authentication. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).",
+				ValidateFunc: validation.StringMatch(
+					regexp.MustCompile(`^[a-zA-Z1-9._][a-zA-Z0-9._]{7,63}$`),
+					"must be 8-64 characters using only letters, digits, '.', and '_' (the first character cannot be '0')",
+				),
 			},
 			"remote_public_ip": {
 				Type:        schema.TypeString,
@@ -110,10 +115,11 @@ func resourceIpsecSingle() *schema.Resource {
 				Description: "The remote gateway public IP address.",
 			},
 			"remote_id": {
-				Type:        schema.TypeString,
-				Optional:    true,
-				Computed:    true,
-				Description: "Optional remote tunnel ID. Computed if not supplied.",
+				Type:         schema.TypeString,
+				Optional:     true,
+				Computed:     true,
+				Description:  "Optional remote tunnel ID. Computed if not supplied. Must be alphanumeric or a valid IP address.",
+				ValidateFunc: validateRemoteID,
 			},
 			"created_at": {
 				Type:        schema.TypeString,

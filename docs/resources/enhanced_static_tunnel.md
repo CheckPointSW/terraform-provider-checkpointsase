@@ -68,7 +68,7 @@ resource "checkpointsase_enhanced_static_tunnel" "example" {
 - `phase2` (Block List, Min: 1, Max: 1) Phase 2 (ESP/IPSec) configuration. (see [below for nested schema](#nestedblock--phase2))
 - `region_id` (String) The target region ID within the enhanced network.
 - `remote_gateway_subnets` (List of String) List of remote gateway subnet CIDR blocks.
-- `tunnel_name` (String) The name of the static IPSec tunnel.
+- `tunnel_name` (String) The name of the static IPSec tunnel. Must be 15 characters or fewer.
 
 ### Optional
 
@@ -76,9 +76,9 @@ resource "checkpointsase_enhanced_static_tunnel" "example" {
 - `customer_root_ca` (String, Sensitive) Customer root certificate authority. Required when auth_type is 'cert'.
 - `description` (String) Optional description for the static tunnel.
 - `last_updated` (String) Timestamp of the last update to this resource.
-- `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication (8-64 characters). Required when auth_type is 'psk'.
+- `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication. Required when auth_type is 'psk'. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).
 - `peak_bandwidth` (Number) Expected peak throughput of the tunnel communication in Mbps. Allowed range is 10–8000. Defaults to 1000. Settable only at creation: v3's update endpoint has no bandwidth field, so changing this value replaces the tunnel (destroy and re-create) rather than updating it in place.
-- `remote_id` (String) The remote gateway ID. When omitted, the server defaults this to `remote_public_ip`; the provider reads the server-assigned value back into state.
+- `remote_id` (String) The remote gateway ID. When omitted, the server defaults this to `remote_public_ip`; the provider reads the server-assigned value back into state. Must be alphanumeric or a valid IP address.
 - `remote_public_ip` (String) The remote gateway public IP address.
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 

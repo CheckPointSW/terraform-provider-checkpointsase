@@ -53,9 +53,10 @@ func resourceEnhancedStaticTunnel() *schema.Resource {
 				Description: "The target region ID within the enhanced network.",
 			},
 			"tunnel_name": {
-				Type:        schema.TypeString,
-				Required:    true,
-				Description: "The name of the static IPSec tunnel.",
+				Type:         schema.TypeString,
+				Required:     true,
+				Description:  "The name of the static IPSec tunnel. Must be 15 characters or fewer.",
+				ValidateFunc: validation.StringLenBetween(0, 15),
 			},
 			"remote_public_ip": {
 				Type:        schema.TypeString,
@@ -68,7 +69,9 @@ func resourceEnhancedStaticTunnel() *schema.Resource {
 				Computed: true,
 				Description: "The remote gateway ID. When omitted, the server " +
 					"defaults this to `remote_public_ip`; the provider reads " +
-					"the server-assigned value back into state.",
+					"the server-assigned value back into state. Must be " +
+					"alphanumeric or a valid IP address.",
+				ValidateFunc: validateRemoteID,
 			},
 			"auth_type": {
 				Type:         schema.TypeString,
@@ -80,7 +83,11 @@ func resourceEnhancedStaticTunnel() *schema.Resource {
 				Type:        schema.TypeString,
 				Optional:    true,
 				Sensitive:   true,
-				Description: "Pre-shared key for tunnel authentication (8-64 characters). Required when auth_type is 'psk'.",
+				Description: "Pre-shared key for tunnel authentication. Required when auth_type is 'psk'. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).",
+				ValidateFunc: validation.StringMatch(
+					regexp.MustCompile(`^[a-zA-Z1-9._][a-zA-Z0-9._]{7,63}$`),
+					"must be 8-64 characters using only letters, digits, '.', and '_' (the first character cannot be '0')",
+				),
 			},
 			"customer_root_ca": {
 				Type:        schema.TypeString,

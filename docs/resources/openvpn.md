@@ -32,7 +32,7 @@ resource "checkpointsase_openvpn" "example" {
 - `gateway_id` (String) The ID of the SASE gateway that terminates this tunnel locally.
 - `network_id` (String) The ID of the standard network the tunnel belongs to.
 - `region_id` (String) The ID of the network's region. Returned by `checkpointsase_network.region.region_id`.
-- `tunnel_name` (String) Display name for the OpenVPN tunnel.
+- `tunnel_name` (String) Display name for the OpenVPN tunnel. Must be 15 characters or fewer.
 - `version` (Number) Credential-rotation trigger. Increment (or change) this integer to trigger a server-side rotation of `access_key_id` / `secret_access_key`. The numeric value itself has no meaning beyond change detection.
 
 ### Optional

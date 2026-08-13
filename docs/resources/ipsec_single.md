@@ -59,19 +59,19 @@ resource "checkpointsase_ipsec_single" "example" {
 - `lifetime` (String) IPSec SA lifetime as a `<int><unit>` duration string, e.g. `3600s`, `60m`, or `1h`. Server-enforced ranges: `s` 10–86400, `m` 1–1440, `h` 1–24.
 - `network_id` (String) The ID of the standard network the tunnel belongs to.
 - `p81_gateway_subnets` (List of String) Check Point SASE gateway subnet CIDR blocks reachable through this tunnel.
-- `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication (8–64 characters).
+- `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).
 - `phase1` (Block List, Min: 1) Phase 1 (IKE) IPSec proposal lists. (see [below for nested schema](#nestedblock--phase1))
 - `phase2` (Block List, Min: 1) Phase 2 (ESP/IPSec) proposal lists. (see [below for nested schema](#nestedblock--phase2))
 - `region_id` (String) The ID of the network's region. Returned by `checkpointsase_network.region.region_id`.
 - `remote_gateway_subnets` (List of String) Remote-side subnet CIDR blocks reachable through this tunnel.
 - `remote_public_ip` (String) The remote gateway public IP address.
-- `tunnel_name` (String) Display name for the IPsec tunnel.
+- `tunnel_name` (String) Display name for the IPsec tunnel. Must be 15 characters or fewer.
 
 ### Optional
 
 - `created_at` (String) Timestamp when the tunnel was created (server-assigned).
 - `last_updated` (String) Timestamp of the last update to this resource.
-- `remote_id` (String) Optional remote tunnel ID. Computed if not supplied.
+- `remote_id` (String) Optional remote tunnel ID. Computed if not supplied. Must be alphanumeric or a valid IP address.
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 - `updated_at` (String) Timestamp when the tunnel was last updated server-side.
 

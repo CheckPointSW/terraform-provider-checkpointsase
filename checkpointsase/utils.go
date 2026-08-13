@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"net"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +24,33 @@ import (
 func parseASNString(s string) int32 {
 	n, _ := strconv.Atoi(strings.TrimSpace(s))
 	return int32(n)
+}
+
+// remoteIDAlphanumericPattern is the "alpha-numeric" half of the server's
+// documented remote_id rule; the other half (IP address) is checked with
+// net.ParseIP below so both IPv4 and IPv6 values are accepted.
+var remoteIDAlphanumericPattern = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
+
+// validateRemoteID is a schema.SchemaValidateFunc enforcing the server's
+// documented remote_id rule, confirmed live against a 400 response reading
+// `remoteID must be a valid remoteID ( alpha-numeric or IP)`. An empty
+// string is let through here: remote_id is Optional (often Optional+
+// Computed) everywhere it's used, and validation for a value the user never
+// set is not this function's job.
+func validateRemoteID(v interface{}, k string) (warns []string, errs []error) {
+	s, ok := v.(string)
+	if !ok {
+		errs = append(errs, fmt.Errorf("expected type of %q to be string", k))
+		return warns, errs
+	}
+	if s == "" {
+		return warns, errs
+	}
+	if remoteIDAlphanumericPattern.MatchString(s) || net.ParseIP(s) != nil {
+		return warns, errs
+	}
+	errs = append(errs, fmt.Errorf("%q must be alphanumeric or a valid IP address, got: %s", k, s))
+	return warns, errs
 }
 
 /*

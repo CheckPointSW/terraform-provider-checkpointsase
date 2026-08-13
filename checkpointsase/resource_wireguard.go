@@ -63,10 +63,11 @@ func resourceWireguard() *schema.Resource {
 				Description: "The ID of the SASE gateway that terminates this tunnel locally.",
 			},
 			"tunnel_name": {
-				Type:        schema.TypeString,
-				Required:    true,
-				ForceNew:    true,
-				Description: "Display name for the WireGuard tunnel.",
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				Description:  "Display name for the WireGuard tunnel. Must be 15 characters or fewer.",
+				ValidateFunc: validation.StringLenBetween(0, 15),
 			},
 			"created_at": {
 				Type:        schema.TypeString,

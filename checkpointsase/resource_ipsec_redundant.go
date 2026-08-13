@@ -52,10 +52,11 @@ func resourceIpsecRedundant() *schema.Resource {
 				Description: "The ID of the standard network the tunnel pair belongs to.",
 			},
 			"tunnel_name": {
-				Type:        schema.TypeString,
-				Required:    true,
-				ForceNew:    true,
-				Description: "Display name for the redundant tunnel pair.",
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				Description:  "Display name for the redundant tunnel pair. Must be 15 characters or fewer.",
+				ValidateFunc: validation.StringLenBetween(0, 15),
 			},
 			"advanced_settings": {
 				Type:        schema.TypeList,
@@ -225,7 +226,11 @@ func resourceIpsecRedundant() *schema.Resource {
 							Type:        schema.TypeString,
 							Sensitive:   true,
 							Required:    true,
-							Description: "Pre-shared key for this tunnel (8–64 characters).",
+							Description: "Pre-shared key for this tunnel. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).",
+							ValidateFunc: validation.StringMatch(
+								regexp.MustCompile(`^[a-zA-Z1-9._][a-zA-Z0-9._]{7,63}$`),
+								"must be 8-64 characters using only letters, digits, '.', and '_' (the first character cannot be '0')",
+							),
 						},
 						"gateway_id": {
 							Type:        schema.TypeString,
@@ -233,10 +238,11 @@ func resourceIpsecRedundant() *schema.Resource {
 							Description: "The ID of the SASE gateway that terminates this tunnel locally.",
 						},
 						"remote_id": {
-							Type:        schema.TypeString,
-							Optional:    true,
-							Computed:    true,
-							Description: "Optional remote tunnel ID. Computed if not supplied.",
+							Type:         schema.TypeString,
+							Optional:     true,
+							Computed:     true,
+							Description:  "Optional remote tunnel ID. Computed if not supplied. Must be alphanumeric or a valid IP address.",
+							ValidateFunc: validateRemoteID,
 						},
 						"tunnel_id": {
 							Type:        schema.TypeString,
@@ -277,7 +283,11 @@ func resourceIpsecRedundant() *schema.Resource {
 							Type:        schema.TypeString,
 							Sensitive:   true,
 							Required:    true,
-							Description: "Pre-shared key for this tunnel (8–64 characters).",
+							Description: "Pre-shared key for this tunnel. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).",
+							ValidateFunc: validation.StringMatch(
+								regexp.MustCompile(`^[a-zA-Z1-9._][a-zA-Z0-9._]{7,63}$`),
+								"must be 8-64 characters using only letters, digits, '.', and '_' (the first character cannot be '0')",
+							),
 						},
 						"tunnel_id": {
 							Type:        schema.TypeString,
@@ -291,10 +301,11 @@ func resourceIpsecRedundant() *schema.Resource {
 							Description: "The ID of the SASE gateway that terminates this tunnel locally.",
 						},
 						"remote_id": {
-							Type:        schema.TypeString,
-							Optional:    true,
-							Computed:    true,
-							Description: "Optional remote tunnel ID. Computed if not supplied.",
+							Type:         schema.TypeString,
+							Optional:     true,
+							Computed:     true,
+							Description:  "Optional remote tunnel ID. Computed if not supplied. Must be alphanumeric or a valid IP address.",
+							ValidateFunc: validateRemoteID,
 						},
 						"p81_gwinternal_ip": {
 							Type:        schema.TypeString,
