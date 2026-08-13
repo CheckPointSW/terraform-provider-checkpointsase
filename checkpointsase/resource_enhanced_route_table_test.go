@@ -24,7 +24,6 @@ var randNameEnhancedRouteTable string = randStringBytesRmndr()
 // (network_id, type, and the tunnel reference are all ForceNew — subnets is
 // the only in-place-mutable attribute) and confirms the change round-trips.
 func TestAccEnhancedRouteTable_basic(t *testing.T) {
-	t.Parallel()
 	var route perimeter81Sdk.EnhancedRouteTable
 
 	resource.Test(t, resource.TestCase{
@@ -134,11 +133,12 @@ resource "checkpointsase_enhanced_network" "demo" {
 resource "checkpointsase_enhanced_static_tunnel" "demo" {
   network_id  = checkpointsase_enhanced_network.demo.id
   region_id   = one(checkpointsase_enhanced_network.demo.region[*].id)
-  tunnel_name = "EnhancedRouteTableTunnel1"
+  tunnel_name = "EnhRouteTun1"
 
   auth_type        = "psk"
-  passphrase       = "CHANGE-ME-enhRoute1"
+  passphrase       = "CHANGEMEenhRoute1"
   remote_public_ip = "198.51.100.44"
+  remote_id        = "198.51.100.44"
 
   key_exchange  = "ikev1"
   ike_life_time = "9h"
@@ -194,11 +194,12 @@ resource "checkpointsase_enhanced_network" "demo" {
 resource "checkpointsase_enhanced_static_tunnel" "demo" {
   network_id  = checkpointsase_enhanced_network.demo.id
   region_id   = one(checkpointsase_enhanced_network.demo.region[*].id)
-  tunnel_name = "EnhancedRouteTableTunnel1"
+  tunnel_name = "EnhRouteTun1"
 
   auth_type        = "psk"
-  passphrase       = "CHANGE-ME-enhRoute1"
+  passphrase       = "CHANGEMEenhRoute1"
   remote_public_ip = "198.51.100.44"
+  remote_id        = "198.51.100.44"
 
   key_exchange  = "ikev1"
   ike_life_time = "9h"

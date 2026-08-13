@@ -27,7 +27,6 @@ var randNameEnhancedNetwork string = randStringBytesRmndr()
 // standard checkpointsase_network resource) — see the validated config at
 // demo/enhanced_network/main.tf, which this test's HCL is lifted from.
 func TestAccEnhancedNetwork_basic(t *testing.T) {
-	t.Parallel()
 	var network perimeter81Sdk.EnhancedNetwork
 
 	resource.Test(t, resource.TestCase{

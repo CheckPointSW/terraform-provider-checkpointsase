@@ -32,7 +32,6 @@ var randNameEnhancedStaticTunnel string = randStringBytesRmndr()
 // the value it compares against was never actually populated by the read
 // path being tested.
 func TestAccEnhancedStaticTunnel_basic(t *testing.T) {
-	t.Parallel()
 	var tunnel perimeter81Sdk.EnhancedTunnel
 
 	resource.Test(t, resource.TestCase{
@@ -44,7 +43,7 @@ func TestAccEnhancedStaticTunnel_basic(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckEnhancedStaticTunnelExists("checkpointsase_enhanced_static_tunnel.demo", &tunnel),
 					testAccCheckEnhancedStaticTunnelAttributes(&tunnel, &testAccEnhancedStaticTunnelExpectedAttributes{
-						TunnelName:           "EnhancedStaticTunnel1",
+						TunnelName:           "EnhStaticTun1",
 						AuthType:             "psk",
 						KeyExchange:          "ikev1",
 						IkeLifeTime:          "9h",
@@ -82,7 +81,7 @@ func TestAccEnhancedStaticTunnel_basic(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckEnhancedStaticTunnelExists("checkpointsase_enhanced_static_tunnel.demo", &tunnel),
 					testAccCheckEnhancedStaticTunnelAttributes(&tunnel, &testAccEnhancedStaticTunnelExpectedAttributes{
-						TunnelName:           "EnhancedStaticTunnel1Upd",
+						TunnelName:           "EnhStaticTun2",
 						AuthType:             "psk",
 						KeyExchange:          "ikev1",
 						IkeLifeTime:          "10h",
@@ -277,11 +276,12 @@ resource "checkpointsase_enhanced_network" "demo" {
 resource "checkpointsase_enhanced_static_tunnel" "demo" {
   network_id  = checkpointsase_enhanced_network.demo.id
   region_id   = one(checkpointsase_enhanced_network.demo.region[*].id)
-  tunnel_name = "EnhancedStaticTunnel1"
+  tunnel_name = "EnhStaticTun1"
 
   auth_type        = "psk"
-  passphrase       = "CHANGE-ME-enhStatic1"
+  passphrase       = "CHANGEMEenhStatic1"
   remote_public_ip = "198.51.100.43"
+  remote_id        = "198.51.100.43"
 
   key_exchange  = "ikev1"
   ike_life_time = "9h"
@@ -330,11 +330,12 @@ resource "checkpointsase_enhanced_network" "demo" {
 resource "checkpointsase_enhanced_static_tunnel" "demo" {
   network_id  = checkpointsase_enhanced_network.demo.id
   region_id   = one(checkpointsase_enhanced_network.demo.region[*].id)
-  tunnel_name = "EnhancedStaticTunnel1Upd"
+  tunnel_name = "EnhStaticTun2"
 
   auth_type        = "psk"
-  passphrase       = "CHANGE-ME-enhStatic1"
+  passphrase       = "CHANGEMEenhStatic1"
   remote_public_ip = "198.51.100.43"
+  remote_id        = "198.51.100.43"
 
   key_exchange  = "ikev1"
   ike_life_time = "10h"

@@ -29,7 +29,6 @@ var randNameEnhancedRegion string = randStringBytesRmndr()
 // demo/enhanced_region/main.tf config, which explicitly documents the same
 // risk given this resource has never been run live before.
 func TestAccEnhancedRegion_basic(t *testing.T) {
-	t.Parallel()
 	var region perimeter81Sdk.EnhancedRegion
 
 	resource.Test(t, resource.TestCase{

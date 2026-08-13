@@ -39,7 +39,6 @@ var randNameEnhancedDynamicTunnel string = randStringBytesRmndr()
 // avoid hyphens per the public-api regex (see the schema description on the
 // tunnel.passphrase attribute) and is an obviously fake placeholder.
 func TestAccEnhancedDynamicTunnel_basic(t *testing.T) {
-	t.Parallel()
 	var tunnel perimeter81Sdk.EnhancedTunnel
 
 	resource.Test(t, resource.TestCase{
@@ -51,7 +50,7 @@ func TestAccEnhancedDynamicTunnel_basic(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckEnhancedDynamicTunnelExists("checkpointsase_enhanced_dynamic_tunnel.demo", &tunnel),
 					testAccCheckEnhancedDynamicTunnelAttributes(&tunnel, &testAccEnhancedDynamicTunnelExpectedAttributes{
-						TunnelNameBase:       "EnhancedDynamicTunnel1",
+						TunnelNameBase:       "EnhDynTun1",
 						KeyExchange:          "ikev1",
 						IkeLifeTime:          "9h",
 						Lifetime:             "2h",
@@ -78,7 +77,7 @@ func TestAccEnhancedDynamicTunnel_basic(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckEnhancedDynamicTunnelExists("checkpointsase_enhanced_dynamic_tunnel.demo", &tunnel),
 					testAccCheckEnhancedDynamicTunnelAttributes(&tunnel, &testAccEnhancedDynamicTunnelExpectedAttributes{
-						TunnelNameBase:       "EnhancedDynamicTunnel1",
+						TunnelNameBase:       "EnhDynTun1",
 						KeyExchange:          "ikev1",
 						IkeLifeTime:          "9h",
 						Lifetime:             "2h",
@@ -251,7 +250,7 @@ resource "checkpointsase_enhanced_network" "demo" {
 
 resource "checkpointsase_enhanced_dynamic_tunnel" "demo" {
   network_id  = checkpointsase_enhanced_network.demo.id
-  tunnel_name = "EnhancedDynamicTunnel1"
+  tunnel_name = "EnhDynTun1"
   left_asn    = 65000
 
   tunnel {
@@ -310,7 +309,7 @@ resource "checkpointsase_enhanced_network" "demo" {
 
 resource "checkpointsase_enhanced_dynamic_tunnel" "demo" {
   network_id  = checkpointsase_enhanced_network.demo.id
-  tunnel_name = "EnhancedDynamicTunnel1"
+  tunnel_name = "EnhDynTun1"
   left_asn    = 65000
 
   tunnel {
