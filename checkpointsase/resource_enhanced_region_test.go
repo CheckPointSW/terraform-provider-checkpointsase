@@ -132,7 +132,16 @@ locals {
 
 resource "checkpointsase_enhanced_network" "demo" {
   name   = "qa-enh-region-%s"
-  subnet = "10.91.0.0/22"
+  // A /22 budgets exactly ONE gateway. A live run of this test failed with
+  // NETWORK_GW_AMOUNT_CIDR_VIOLATION and the server reported
+  // {"maxGatewayNumber":1,"currentGatewaysDeployed":1,"availableSlots":0} --
+  // the inline region consumes the only slot, so adding a second region can
+  // never succeed. This test needs 2 gateways in step 1 and 3 in step 2
+  // (the second region's scale_units goes to 2). Neither the spec nor the
+  // docs state the CIDR-to-gateway mapping, so /20 is chosen as the next
+  // size up with room to spare rather than a computed minimum; if the run
+  // still 409s, the error names the real maxGatewayNumber for a /20.
+  subnet = "10.91.0.0/20"
   tags   = ["qa-demo"]
 
   region {
@@ -165,7 +174,16 @@ locals {
 
 resource "checkpointsase_enhanced_network" "demo" {
   name   = "qa-enh-region-%s"
-  subnet = "10.91.0.0/22"
+  // A /22 budgets exactly ONE gateway. A live run of this test failed with
+  // NETWORK_GW_AMOUNT_CIDR_VIOLATION and the server reported
+  // {"maxGatewayNumber":1,"currentGatewaysDeployed":1,"availableSlots":0} --
+  // the inline region consumes the only slot, so adding a second region can
+  // never succeed. This test needs 2 gateways in step 1 and 3 in step 2
+  // (the second region's scale_units goes to 2). Neither the spec nor the
+  // docs state the CIDR-to-gateway mapping, so /20 is chosen as the next
+  // size up with room to spare rather than a computed minimum; if the run
+  // still 409s, the error names the real maxGatewayNumber for a /20.
+  subnet = "10.91.0.0/20"
   tags   = ["qa-demo"]
 
   region {
