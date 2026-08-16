@@ -21,18 +21,26 @@ var randNameEnhancedDynamicTunnel string = randStringBytesRmndr()
 // working session), and confirms the tunnel exists server-side with the
 // configured shared/advanced settings.
 //
-// Step 2 deliberately changes only dpd_delay/dpd_timeout — fields that
-// resourceEnhancedDynamicTunnelUpdate (resource_enhanced_dynamic_tunnel.go)
-// never sends to the server: its update payload carries only TunnelName and
-// description, nothing from the advanced/shared settings or tunnel details.
-// That means after this update, Read re-fetches the *unchanged* server
-// value and overwrites it into state, which contradicts the new config on
-// two fronts: the framework's automatic post-apply "second plan should be
-// empty" check (ExpectNonEmptyPlan is deliberately left unset) and the
-// explicit dpd_delay/dpd_timeout assertion in
-// testAccCheckEnhancedDynamicTunnelAttributes. Both are expected to fail
-// live — this test exists to expose that regression, not to hide it; see
-// the task-32 report.
+// Step 2 changes only dpd_delay/dpd_timeout. It was written to expose the
+// defect that resourceEnhancedDynamicTunnelUpdate sent only TunnelName and
+// description, so neither field ever reached the server and both the
+// framework's automatic post-apply "second plan should be empty" check
+// (ExpectNonEmptyPlan is deliberately left unset) and the explicit
+// dpd_delay/dpd_timeout assertion in
+// testAccCheckEnhancedDynamicTunnelAttributes were expected to fail live
+// (task-32 report). The update path now sends both fields, nested under
+// `advancedSettings`, and waits for the async operation to complete before
+// re-reading — so this step is expected to PASS. If it fails on dpd_delay or
+// dpd_timeout, the first thing to check is whether the server actually wants
+// those fields nested there: that nesting comes from the generated model and
+// has never been confirmed against a live response, and the sibling READ
+// shape was wrong in exactly this way until SDK overlay A19. See the task-35
+// report.
+//
+// Note that step 2 leaves the `tunnel` block untouched. That is not
+// incidental: changing an existing endpoint is refused by the provider (no
+// server-side endpoint id is obtainable — see planDynamicTunnelEndpointChanges),
+// so a step that edited one would fail by design.
 //
 // tunnel_name, left_asn, passphrase, p81_gw_internal_ip/remote_gw_internal_ip
 // etc. are lifted from demo/enhanced_dynamic_tunnel/main.tf. passphrase must
@@ -146,13 +154,13 @@ type testAccEnhancedDynamicTunnelExpectedAttributes struct {
 	Phase2               perimeter81Sdk.IPSecPhaseConfigV23
 }
 
-// testAccCheckEnhancedDynamicTunnelAttributes only compares fields the read
-// path actually populates or that the shared EnhancedTunnel read-shape
-// carries regardless of whether resourceEnhancedDynamicTunnelRead wires them
-// into state (P81GatewaySubnets/RemoteGatewaySubnets are present on the API
-// response but never d.Set by Read for this resource — an omission worth
-// flagging on its own, since it means Terraform can never detect drift on
-// those two attributes after create).
+// testAccCheckEnhancedDynamicTunnelAttributes compares the server's view of
+// the tunnel against what the configuration asked for. Every field it checks
+// is now also wired into state by resourceEnhancedDynamicTunnelRead —
+// P81GatewaySubnets/RemoteGatewaySubnets used to be present on the API
+// response but never d.Set by this resource's Read, so Terraform could not
+// detect drift on either after create; both now go through
+// setEnhancedTunnelSharedSubnetState.
 func testAccCheckEnhancedDynamicTunnelAttributes(tunnel *perimeter81Sdk.EnhancedTunnel, want *testAccEnhancedDynamicTunnelExpectedAttributes) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		// The upstream model auto-suffixes the tunnel name with "01" (see the
@@ -171,9 +179,9 @@ func testAccCheckEnhancedDynamicTunnelAttributes(tunnel *perimeter81Sdk.Enhanced
 			return fmt.Errorf("got lifetime %q; want %q", got, want.Lifetime)
 		}
 		if got := tunnel.GetDpdDelay(); got != want.DpdDelay {
-			return fmt.Errorf("got dpd_delay %q; want %q — if this fails after an update-only step, "+
-				"resourceEnhancedDynamicTunnelUpdate's payload carries only TunnelName and description, so "+
-				"the change never reached the server (suspected bug, see task-32 report)", got, want.DpdDelay)
+			return fmt.Errorf("got dpd_delay %q; want %q — if this fails after an update-only step, the update body's "+
+				"`advancedSettings` nesting is the first suspect: it comes from the generated model and has not been "+
+				"confirmed against a live response (see the task-35 report)", got, want.DpdDelay)
 		}
 		if got := tunnel.GetDpdTimeout(); got != want.DpdTimeout {
 			return fmt.Errorf("got dpd_timeout %q; want %q — see the dpd_delay note above", got, want.DpdTimeout)

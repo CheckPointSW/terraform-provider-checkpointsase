@@ -100,6 +100,33 @@ func setIfPresent(d *schema.ResourceData, key string, value string, present bool
 }
 
 /*
+setStringListIfPresent is the []string counterpart of setIfPresent, for
+list-typed attributes whose SDK field is a plain slice with no generated
+HasX() to consult.
+
+The reasoning is the one written out above setIfPresent, applied to a slice: a
+response that carries no entries for the field is indistinguishable, after
+decoding, from a response that omitted the field entirely, and writing the
+resulting empty slice into state would erase a list the user configured. An
+empty slice therefore leaves state alone. As with setIfPresent, that makes the
+worst case "this refresh learned nothing" rather than "the configuration was
+silently erased" — and it costs nothing real, because every attribute this is
+used for is Required in the schema, so an empty list was never a legal
+configured value to preserve in the first place.
+  - @param d *schema.ResourceData - the terraform resource data
+  - @param key string - the schema attribute to (maybe) write
+  - @param values []string - the values to write when non-empty
+
+@return error - any error from the underlying d.Set
+*/
+func setStringListIfPresent(d *schema.ResourceData, key string, values []string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	return d.Set(key, values)
+}
+
+/*
 flattenStringsArrayData flatten string array data
   - @param strs []interface{} - the strings that need to be flattened
 

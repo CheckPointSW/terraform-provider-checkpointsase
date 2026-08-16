@@ -64,15 +64,22 @@ func resourceEnhancedDynamicTunnel() *schema.Resource {
 				Description: "Optional description for the dynamic tunnel.",
 			},
 			"left_asn": {
-				Type:         schema.TypeInt,
-				Required:     true,
-				Description:  "The local (Check Point SASE) BGP autonomous-system number for this dynamic tunnel. Required by the API; valid ranges per IsValidASN.",
+				Type:     schema.TypeInt,
+				Required: true,
+				Description: "The local (Check Point SASE) BGP autonomous-system number for this dynamic tunnel. Required by the API; valid ranges per IsValidASN. " +
+					"**Effectively set-once:** the v3 update request body has no field for it (`leftASN` exists only on the create shape), so changing this value cannot be " +
+					"applied in place. The provider raises a warning and leaves the server-side ASN unchanged; use `terraform apply -replace=...` to change it.",
 				ValidateFunc: validation.IntBetween(1, 4294967295),
 			},
 			"tunnel": {
-				Type:        schema.TypeList,
-				Required:    true,
-				Description: "The list of individual tunnel endpoints for this dynamic tunnel group.",
+				Type:     schema.TypeList,
+				Required: true,
+				Description: "The list of individual tunnel endpoints for this dynamic tunnel group. " +
+					"**Adding** an endpoint to an existing dynamic tunnel is applied in place. **Changing or removing** an existing endpoint is not: the v3 update " +
+					"request identifies an endpoint by a server-assigned id that the provider has no way to obtain, so such a change fails the apply with an " +
+					"explanatory error instead of being silently dropped. Use `terraform apply -replace=...` to change or remove an endpoint, which destroys and " +
+					"recreates the whole tunnel group. An **imported** dynamic tunnel records no endpoints in state (the read API returns none of `remote_asn`, " +
+					"`p81_gw_internal_ip` or `remote_gw_internal_ip`), so the provider refuses to change its endpoint list at all rather than risk duplicating endpoints.",
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"region_id": {
@@ -504,6 +511,16 @@ func resourceEnhancedDynamicTunnelRead(ctx context.Context, d *schema.ResourceDa
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel IPSec settings", err)
 		}
+		// p81_gateway_subnets / remote_gateway_subnets were never written back
+		// at all before this, so the two attributes the group's sharedSettings
+		// is made of could not drift-detect: edit either in HCL and the plan
+		// was empty. They come off the same endpoint 0 as the IPSec settings
+		// and for the same reason — they are group-wide shared settings,
+		// repeated identically on every endpoint the group returns.
+		if err := setEnhancedTunnelSharedSubnetState(d, &tunnel); err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel shared subnets", err)
+		}
 	}
 
 	// The per-endpoint `tunnel` blocks are deliberately NOT refreshed here,
@@ -530,6 +547,223 @@ func resourceEnhancedDynamicTunnelRead(ctx context.Context, d *schema.ResourceDa
 }
 
 /*
+buildDynamicTunnelUpdatePayload builds everything on the DynamicTunnelUpdate
+body that comes from a single schema attribute, i.e. everything except the
+three endpoint collections (see planDynamicTunnelEndpointChanges for those).
+
+It is factored out of resourceEnhancedDynamicTunnelUpdate so the golden-body
+tests in payload_marshal_test.go drive the production construction rather than
+a copy of it: the update body used to carry two of this resource's fourteen
+mutable attributes, and nothing offline noticed, because nothing offline
+marshaled it.
+
+The wire shape below — timing fields and phase configs nested under
+`advancedSettings`, subnets nested under `sharedSettings` — is taken from the
+generated model, which is the only specification available for this endpoint.
+It has NOT been confirmed against a live response, and the sibling read model
+was recently found to be wrong in exactly this way (the spec declared a nested
+`advancedSettings` the server never sends; see SDK overlay A19 and
+setEnhancedTunnelIPSecState). Treat the nesting as unverified.
+  - @param d *schema.ResourceData - the terraform resource data
+
+@return perimeter81Sdk.DynamicTunnelUpdate - the payload, minus endpoint changes
+*/
+func buildDynamicTunnelUpdatePayload(d *schema.ResourceData) perimeter81Sdk.DynamicTunnelUpdate {
+	payload := perimeter81Sdk.DynamicTunnelUpdate{
+		TunnelName: d.Get("tunnel_name").(string),
+	}
+	if v, ok := d.GetOk("description"); ok {
+		s := v.(string)
+		payload.Description = &s
+	}
+
+	// EnhancedIPSecSharedSettingsUpdate carries p81GatewaySubnets,
+	// remoteGatewaySubnets, an optional `features` object and an optional
+	// p81ASN. Only the two subnet lists are sent:
+	//
+	//   - `features` is deliberately omitted. It is optional here (unlike on
+	//     create, where the SDK type makes it a required value), and the only
+	//     thing this provider could put in it is NetworkFeaturesCreate{},
+	//     which serializes as three explicit "enabled": false leaves. The live
+	//     read capture in resource_enhanced_tunnel_read_test.go shows a real
+	//     tunnel with DNSServices.redirectToResolver.enabled = true, so
+	//     sending the zero value on every update would switch a feature off
+	//     that this resource does not manage and the user never asked to
+	//     change.
+	//   - p81ASN is not left_asn's home. left_asn maps to `leftASN`, which
+	//     exists on EnhancedIPSecSharedSettingsCreate and has no counterpart
+	//     on the update type at all. p81ASN is a separate, server-assigned
+	//     value — SDK overlay A6 removed it from the create-required list on
+	//     exactly that ground ("the ASN is server-assigned once the first
+	//     dynamic tunnel is created and is never supplied by the caller").
+	//     Writing left_asn into it would be a guess at an equivalence the spec
+	//     does not state. left_asn is therefore not updatable in v3; the
+	//     warning raised in resourceEnhancedDynamicTunnelUpdate says so out
+	//     loud rather than letting the change disappear.
+	sharedSettings := perimeter81Sdk.EnhancedIPSecSharedSettingsUpdate{
+		P81GatewaySubnets:    flattenStringsArrayData(d.Get("p81_gateway_subnets").([]interface{})),
+		RemoteGatewaySubnets: flattenStringsArrayData(d.Get("remote_gateway_subnets").([]interface{})),
+	}
+	payload.SharedSettings = &sharedSettings
+
+	// Every field of IPSecAdvancedSettingsV23 is a required value type, and
+	// every one of them maps to a Required schema attribute, so this is always
+	// fully populated — the same struct, built the same way, as the create
+	// path a few functions above.
+	advancedSettings := perimeter81Sdk.IPSecAdvancedSettingsV23{
+		KeyExchange: d.Get("key_exchange").(string),
+		IkeLifeTime: d.Get("ike_life_time").(string),
+		Lifetime:    d.Get("lifetime").(string),
+		DpdDelay:    d.Get("dpd_delay").(string),
+		DpdTimeout:  d.Get("dpd_timeout").(string),
+		Phase1:      flattenIPSecPhaseConfigV23(d.Get("phase1").([]interface{})),
+		Phase2:      flattenIPSecPhaseConfigV23(d.Get("phase2").([]interface{})),
+	}
+	payload.AdvancedSettings = &advancedSettings
+
+	// DynamicTunnelUpdate.RoutingType is left unset on purpose. There is no
+	// routing_type schema attribute on this resource, so the provider has no
+	// user intent to transmit; the field is an optional pointer, so omitting
+	// it asks the server to keep whatever the group already has. The create
+	// path hardcodes "route" only because RoutingType is a required value type
+	// on DynamicTunnelDetails and "" is not a member of the enum — that is a
+	// constraint of the create model, not a statement that this resource owns
+	// the group's routing mode, and repeating it here would silently overwrite
+	// a group switched to "policy" outside Terraform.
+
+	return payload
+}
+
+/*
+dynamicTunnelEndpointKey renders one `tunnel` block into a canonical string, so
+that two blocks can be compared for exact equality. Every attribute of the
+block contributes; %q quotes the strings so a separator character inside a
+value cannot fake a match against a different field split.
+  - @param block map[string]interface{} - one element of the `tunnel` list
+
+@return string - a key equal for two blocks iff they are configured identically
+*/
+func dynamicTunnelEndpointKey(block map[string]interface{}) string {
+	return fmt.Sprintf("%q|%q|%q|%q|%q|%q|%v|%q|%q",
+		block["region_id"],
+		block["auth_type"],
+		block["passphrase"],
+		block["customer_root_ca"],
+		block["remote_public_ip"],
+		block["remote_id"],
+		block["remote_asn"],
+		block["p81_gw_internal_ip"],
+		block["remote_gw_internal_ip"],
+	)
+}
+
+/*
+planDynamicTunnelEndpointChanges decides what the endpoint collections on
+DynamicTunnelUpdate should carry, given the `tunnel` block list before and
+after the change.
+
+Of the three collections the model offers, only one can be produced correctly
+today, and this function refuses to approximate the other two:
+
+  - addTunnels is a list of whole DynamicTunnelDetails objects and needs no
+    server-side identifier, so an endpoint the user has newly written can be
+    sent verbatim — the same flattenDynamicTunnelDetails the create path uses.
+  - updateTunnels and removeTunnels are keyed by `id`, required on both
+    DynamicTunnelUpdateUpdateTunnelsInner and
+    DynamicTunnelUpdateRemoveTunnelsInner. That is the server's id for one
+    endpoint of the group, and the provider has no way to learn which endpoint
+    a given `tunnel` block became. The block has no id attribute; Read does not
+    populate the block list; and the read model (EnhancedTunnel) carries none
+    of remoteASN, p81GWInternalIP or remoteGWInternalIP, so a returned endpoint
+    cannot be matched back to the block that configured it on content either.
+    Pairing by list position assumes the group's endpoints come back in
+    configuration order, which nothing documents; pairing by region_id assumes
+    a region hosts at most one endpoint of a group, which nothing enforces.
+    Either guess sends one endpoint's settings — including its pre-shared key —
+    to a different endpoint, or deletes the wrong one.
+
+So: when every endpoint that was already configured is still configured
+verbatim, the difference is purely additive and comes back as addTunnels. When
+any previously-configured endpoint has been edited or dropped, applying the
+configuration needs an id that does not exist here, and this returns an error.
+Failing the apply is the point. The alternative is the defect this change
+exists to remove, where Terraform reports success and the server was never
+told anything.
+  - @param oldBlocks []interface{} - the `tunnel` list as it is in state
+  - @param newBlocks []interface{} - the `tunnel` list as it is in the new config
+
+@return []perimeter81Sdk.DynamicTunnelDetails - endpoints to add, nil if none
+@return error - set when the change needs updateTunnels or removeTunnels
+*/
+func planDynamicTunnelEndpointChanges(oldBlocks, newBlocks []interface{}) ([]perimeter81Sdk.DynamicTunnelDetails, error) {
+	// An empty prior list is not "this group has no endpoints yet". `tunnel`
+	// is Required, so a group Terraform created always has at least one block
+	// in state; the only way to reach Update with none is an import, because
+	// resourceEnhancedDynamicTunnelImportState reads the resource and Read
+	// does not populate the block list. Treating that as an addition would
+	// send every configured endpoint to a group that already has them and
+	// duplicate the lot on a live tunnel — strictly worse than the defect this
+	// function exists to fix. Refuse instead.
+	if len(oldBlocks) == 0 && len(newBlocks) > 0 {
+		return nil, fmt.Errorf(
+			"this dynamic tunnel has no `tunnel` endpoints recorded in Terraform state, so the provider cannot tell which of the %d configured endpoints already exist server-side: "+
+				"sending them would add duplicates to a group that already has them. This is the state an imported dynamic tunnel is in — Read cannot repopulate the block list, "+
+				"because the tunnel read model returns no remoteASN/p81GWInternalIP/remoteGWInternalIP and those are Required attributes. "+
+				"Manage this tunnel with a resource Terraform created, or replace it (`terraform apply -replace=...`) so that Create records the endpoints",
+			len(newBlocks))
+	}
+
+	// Counted (multiset) rather than set membership, so that dropping one of
+	// two identically-configured endpoints is still recognised as a removal.
+	unmatched := make(map[string]int, len(newBlocks))
+	for _, item := range newBlocks {
+		if block, ok := item.(map[string]interface{}); ok {
+			unmatched[dynamicTunnelEndpointKey(block)]++
+		}
+	}
+	for _, item := range oldBlocks {
+		block, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		key := dynamicTunnelEndpointKey(block)
+		if unmatched[key] == 0 {
+			return nil, fmt.Errorf(
+				"the `tunnel` endpoint for region_id %q (remote_public_ip %q) has been changed or removed, and this provider cannot apply that to an existing dynamic tunnel: "+
+					"the v3 update endpoint identifies an endpoint to modify or delete by a server-assigned id (`updateTunnels[].id` / `removeTunnels[].id`, required on both) "+
+					"that the provider has no way to obtain — the `tunnel` block has no id attribute, Read does not refresh the block list, and the tunnel read model returns no "+
+					"remoteASN/p81GWInternalIP/remoteGWInternalIP to match a returned endpoint back to the block that configured it. "+
+					"Adding a new `tunnel` block to an existing dynamic tunnel is supported and does apply. To change or remove an existing endpoint, replace the resource "+
+					"(`terraform apply -replace=...`), which destroys and recreates the whole tunnel group. "+
+					"This is reported as an error rather than applied partially so that the change cannot be silently dropped while Terraform reports success",
+				block["region_id"], block["remote_public_ip"])
+		}
+		unmatched[key]--
+	}
+
+	// Whatever is still unmatched is new. Walk newBlocks (not the map) so the
+	// added endpoints keep configuration order and duplicates are consumed in
+	// the order the user wrote them.
+	added := make([]interface{}, 0, len(newBlocks))
+	for _, item := range newBlocks {
+		block, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		key := dynamicTunnelEndpointKey(block)
+		if unmatched[key] == 0 {
+			continue
+		}
+		unmatched[key]--
+		added = append(added, item)
+	}
+	if len(added) == 0 {
+		return nil, nil
+	}
+	return flattenDynamicTunnelDetails(added), nil
+}
+
+/*
 resourceEnhancedDynamicTunnelUpdate Update an Enhanced Dynamic IPSec Tunnel.
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
@@ -543,25 +777,59 @@ func resourceEnhancedDynamicTunnelUpdate(ctx context.Context, d *schema.Resource
 
 	networkId := d.Get("network_id").(string)
 	dynamicTunnelId := d.Id()
-	tunnelName := d.Get("tunnel_name").(string)
 
-	payload := perimeter81Sdk.DynamicTunnelUpdate{
-		TunnelName: tunnelName,
-	}
+	payload := buildDynamicTunnelUpdatePayload(d)
 
-	if v, ok := d.GetOk("description"); ok {
-		s := v.(string)
-		payload.Description = &s
-	}
-
-	_, _, err := client.EnhancedTunnelsAPI.UpdateDynamicTunnel(ctx, networkId, dynamicTunnelId).DynamicTunnelUpdate(payload).Execute()
+	// Endpoint changes are worked out before anything is sent, so a change the
+	// provider cannot express fails the apply outright instead of leaving the
+	// group half-updated.
+	oldTunnels, newTunnels := d.GetChange("tunnel")
+	oldBlocks, _ := oldTunnels.([]interface{})
+	newBlocks, _ := newTunnels.([]interface{})
+	addTunnels, err := planDynamicTunnelEndpointChanges(oldBlocks, newBlocks)
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to update Enhanced Dynamic Tunnel", err)
 	}
+	payload.AddTunnels = addTunnels
+
+	// left_asn has no field on the update type — see buildDynamicTunnelUpdatePayload.
+	// Warn rather than drop it silently; a warning is the whole difference
+	// between "Terraform told me it could not do this" and "Terraform said OK
+	// and the next plan showed the same diff again".
+	if d.HasChange("left_asn") {
+		previous, desired := d.GetChange("left_asn")
+		diags = appendWarningDiags(diags, "left_asn cannot be changed on an existing Enhanced Dynamic Tunnel",
+			fmt.Sprintf("The configuration changes left_asn from %v to %v, but the v3 dynamic-tunnel update body has no field for it: "+
+				"`leftASN` exists only on the create type (EnhancedIPSecSharedSettingsCreate) and has no counterpart on "+
+				"EnhancedIPSecSharedSettingsUpdate. The local BGP ASN was left unchanged server-side and this attribute will keep "+
+				"showing a diff. To apply it, replace the resource (`terraform apply -replace=...`).", previous, desired))
+	}
+
+	status, _, err := client.EnhancedTunnelsAPI.UpdateDynamicTunnel(ctx, networkId, dynamicTunnelId).DynamicTunnelUpdate(payload).Execute()
+	if err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to update Enhanced Dynamic Tunnel", err)
+	}
+	// UpdateDynamicTunnel is async, exactly like Create and Delete: it returns
+	// an AsyncOperationResponse, and the change is not applied when it does.
+	// The previous implementation dropped that response on the floor, so the
+	// Read below could observe pre-update values and write them straight back
+	// into state — an update that worked would still look like it had not.
+	// statusUrl is optional on the response, so poll only when there is
+	// something to poll; a missing URL must not turn a successful update into
+	// a 404 against the status endpoint.
+	if statusId := getIdFromUrl(status.GetStatusUrl()); statusId != "" {
+		if err := pollStandardNetworkStatus(ctx, client, statusId, standardNetworkPollInterval); err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to update Enhanced Dynamic Tunnel", err)
+		}
+	}
 	d.Set("last_updated", time.Now().Format(time.RFC850))
 
-	return resourceEnhancedDynamicTunnelRead(ctx, d, m)
+	// Append rather than return Read's diagnostics directly, so a warning
+	// raised above survives to the user.
+	return append(diags, resourceEnhancedDynamicTunnelRead(ctx, d, m)...)
 }
 
 /*

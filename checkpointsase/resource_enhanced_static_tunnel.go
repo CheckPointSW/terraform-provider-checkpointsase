@@ -346,6 +346,36 @@ func setEnhancedTunnelIPSecState(d *schema.ResourceData, tunnel *perimeter81Sdk.
 }
 
 /*
+setEnhancedTunnelSharedSubnetState writes the two subnet lists that make up an
+enhanced tunnel's shared settings — p81_gateway_subnets and
+remote_gateway_subnets — both of which the static and the dynamic resource
+declare as Required top-level attributes.
+
+Shared between the two Reads for the same reason setEnhancedTunnelIPSecState
+is: the dynamic resource never wrote these back at all, so neither attribute
+could drift-detect, and re-deriving the write in a second place is how the two
+Reads diverged in the first place.
+
+Writes go through setStringListIfPresent, so a response with no subnets leaves
+the configured lists alone instead of blanking them. Both attributes are
+Required in both schemas, so an empty list was never a configurable value and
+declining to write one costs no fidelity.
+  - @param d *schema.ResourceData - the terraform resource data
+  - @param tunnel *perimeter81Sdk.EnhancedTunnel - the tunnel as returned by the API
+
+@return error - the first d.Set error, naming the attribute that failed
+*/
+func setEnhancedTunnelSharedSubnetState(d *schema.ResourceData, tunnel *perimeter81Sdk.EnhancedTunnel) error {
+	if err := setStringListIfPresent(d, "p81_gateway_subnets", tunnel.P81GatewaySubnets); err != nil {
+		return fmt.Errorf("could not set p81_gateway_subnets: %w", err)
+	}
+	if err := setStringListIfPresent(d, "remote_gateway_subnets", tunnel.RemoteGatewaySubnets); err != nil {
+		return fmt.Errorf("could not set remote_gateway_subnets: %w", err)
+	}
+	return nil
+}
+
+/*
 resourceEnhancedStaticTunnelCreate Create an Enhanced Static IPSec Tunnel.
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
@@ -544,13 +574,9 @@ func resourceEnhancedStaticTunnelRead(ctx context.Context, d *schema.ResourceDat
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel auth_type", err)
 	}
-	if err := d.Set("p81_gateway_subnets", tunnelData.P81GatewaySubnets); err != nil {
+	if err := setEnhancedTunnelSharedSubnetState(d, tunnelData); err != nil {
 		d.Partial(true)
-		return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel p81_gateway_subnets", err)
-	}
-	if err := d.Set("remote_gateway_subnets", tunnelData.RemoteGatewaySubnets); err != nil {
-		d.Partial(true)
-		return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel remote_gateway_subnets", err)
+		return appendErrorDiags(diags, "Unable to set Enhanced Static Tunnel shared subnets", err)
 	}
 	// `description` now exists on the read model (SDK overlay A19 declares it;
 	// the 2026-08-16 capture shows the server returning the key), but it is

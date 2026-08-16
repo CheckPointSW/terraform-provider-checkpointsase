@@ -67,14 +67,14 @@ resource "checkpointsase_enhanced_dynamic_tunnel" "example" {
 - `dpd_timeout` (String) Dead peer detection timeout, formatted `<int>s`. Allowed range is `5s`–`60s`.
 - `ike_life_time` (String) IKE lifetime as a `<int><unit>` duration string, e.g. `28800s`, `480m`, or `8h`. Server-enforced ranges: `s` 10–86400, `m` 1–1440, `h` 1–24.
 - `key_exchange` (String) IKE version for key exchange. Must be `ikev1` or `ikev2`.
-- `left_asn` (Number) The local (Check Point SASE) BGP autonomous-system number for this dynamic tunnel. Required by the API; valid ranges per IsValidASN.
+- `left_asn` (Number) The local (Check Point SASE) BGP autonomous-system number for this dynamic tunnel. Required by the API; valid ranges per IsValidASN. **Effectively set-once:** the v3 update request body has no field for it (`leftASN` exists only on the create shape), so changing this value cannot be applied in place. The provider raises a warning and leaves the server-side ASN unchanged; use `terraform apply -replace=...` to change it.
 - `lifetime` (String) IPSec SA lifetime as a `<int><unit>` duration string, e.g. `3600s`, `60m`, or `1h`. Server-enforced ranges: `s` 10–86400, `m` 1–1440, `h` 1–24.
 - `network_id` (String) The ID of the enhanced network this dynamic tunnel belongs to.
 - `p81_gateway_subnets` (List of String) List of Check Point SASE gateway subnet CIDR blocks (shared settings).
 - `phase1` (Block List, Min: 1, Max: 1) Phase 1 (IKE) IPSec configuration. (see [below for nested schema](#nestedblock--phase1))
 - `phase2` (Block List, Min: 1, Max: 1) Phase 2 (ESP/IPSec) configuration. (see [below for nested schema](#nestedblock--phase2))
 - `remote_gateway_subnets` (List of String) List of remote gateway subnet CIDR blocks (shared settings).
-- `tunnel` (Block List, Min: 1) The list of individual tunnel endpoints for this dynamic tunnel group. (see [below for nested schema](#nestedblock--tunnel))
+- `tunnel` (Block List, Min: 1) The list of individual tunnel endpoints for this dynamic tunnel group. **Adding** an endpoint to an existing dynamic tunnel is applied in place. **Changing or removing** an existing endpoint is not: the v3 update request identifies an endpoint by a server-assigned id that the provider has no way to obtain, so such a change fails the apply with an explanatory error instead of being silently dropped. Use `terraform apply -replace=...` to change or remove an endpoint, which destroys and recreates the whole tunnel group. An **imported** dynamic tunnel records no endpoints in state (the read API returns none of `remote_asn`, `p81_gw_internal_ip` or `remote_gw_internal_ip`), so the provider refuses to change its endpoint list at all rather than risk duplicating endpoints. (see [below for nested schema](#nestedblock--tunnel))
 - `tunnel_name` (String) The name of the dynamic IPSec tunnel. Must be 15 characters or fewer.
 
 ### Optional

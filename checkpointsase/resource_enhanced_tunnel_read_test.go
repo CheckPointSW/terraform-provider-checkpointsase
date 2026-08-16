@@ -229,6 +229,81 @@ func TestSetEnhancedTunnelIPSecStatePreservesStateWhenTheServerOmitsFields(t *te
 }
 
 /*
+TestSetEnhancedTunnelSharedSubnetStateWritesBothLists covers the group's shared settings.
+
+resourceEnhancedDynamicTunnelRead never wrote p81_gateway_subnets or remote_gateway_subnets into
+state at all, so neither could ever drift-detect: change either list in HCL and the plan came back
+empty. (The dynamic acceptance test already recorded this as "present on the API response but
+never d.Set by Read for this resource".) Both Reads now go through one helper, so the two cannot
+diverge again.
+*/
+func TestSetEnhancedTunnelSharedSubnetStateWritesBothLists(t *testing.T) {
+	tunnel := decodeEnhancedTunnelFixture(t, enhancedTunnelLiveReadFixture)
+
+	for _, tc := range []struct {
+		name   string
+		schema map[string]*schema.Schema
+	}{
+		{"static tunnel", resourceEnhancedStaticTunnel().Schema},
+		{"dynamic tunnel", resourceEnhancedDynamicTunnel().Schema},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := schema.TestResourceDataRaw(t, tc.schema, map[string]interface{}{})
+
+			if err := setEnhancedTunnelSharedSubnetState(d, tunnel); err != nil {
+				t.Fatalf("setEnhancedTunnelSharedSubnetState: %v", err)
+			}
+
+			for _, key := range []string{"p81_gateway_subnets", "remote_gateway_subnets"} {
+				list, ok := d.Get(key).([]interface{})
+				if !ok || len(list) != 1 || list[0] != "0.0.0.0/0" {
+					t.Errorf("%s = %v, want [0.0.0.0/0]", key, d.Get(key))
+				}
+			}
+		})
+	}
+}
+
+/*
+TestSetEnhancedTunnelSharedSubnetStatePreservesStateWhenTheServerOmitsFields is the never-blank
+half, matching the guard on the IPSec fields. Both attributes are Required in both schemas, so an
+empty list is not a value the user could have configured — writing one back would only ever
+destroy a real configuration, never record a real one.
+*/
+func TestSetEnhancedTunnelSharedSubnetStatePreservesStateWhenTheServerOmitsFields(t *testing.T) {
+	tunnel := decodeEnhancedTunnelFixture(t, `{
+	  "id": "aVttJETcnB",
+	  "haTunnelID": "aVttJETcnB",
+	  "dpdAction": "restart",
+	  "tunnelName": "ProbeTun1",
+	  "regionID": "KESYiSXGoi",
+	  "p81GatewaySubnets": [],
+	  "remoteGatewaySubnets": [],
+	  "keyExchange": "ikev1",
+	  "authType": "psk"
+	}`)
+
+	d := schema.TestResourceDataRaw(t, resourceEnhancedDynamicTunnel().Schema, map[string]interface{}{
+		"p81_gateway_subnets":    []interface{}{"10.0.0.0/24"},
+		"remote_gateway_subnets": []interface{}{"10.1.0.0/24"},
+	})
+
+	if err := setEnhancedTunnelSharedSubnetState(d, tunnel); err != nil {
+		t.Fatalf("setEnhancedTunnelSharedSubnetState: %v", err)
+	}
+
+	for key, want := range map[string]string{
+		"p81_gateway_subnets":    "10.0.0.0/24",
+		"remote_gateway_subnets": "10.1.0.0/24",
+	} {
+		list, ok := d.Get(key).([]interface{})
+		if !ok || len(list) != 1 || list[0] != want {
+			t.Errorf("%s = %v, want [%s] (an empty list from the server must not blank a configured one)", key, d.Get(key), want)
+		}
+	}
+}
+
+/*
 TestFlattenEnhancedTunnelsDataPopulatesEveryAttribute covers the third call
 site. dataSourceEnhancedTunnelsRead used to hardcode "" for remote_public_ip,
 remote_id and description, and read the four timing fields off the nil

@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
 /*
@@ -438,6 +440,295 @@ func TestPayloadMarshalStaticTunnelUpdate(t *testing.T) {
 	}`
 
 	assertMarshalsTo(t, payload, want)
+}
+
+// testDynamicTunnelEndpointBlock returns one `tunnel` block, with every attribute set, as
+// Terraform would hand it to the resource. Callers override individual keys to express "the
+// same endpoint, edited".
+func testDynamicTunnelEndpointBlock(regionID string, remotePublicIP string, remoteASN int) map[string]interface{} {
+	return map[string]interface{}{
+		"region_id":             regionID,
+		"auth_type":             "psk",
+		"passphrase":            "fake-passphrase-5",
+		"customer_root_ca":      "",
+		"remote_public_ip":      remotePublicIP,
+		"remote_id":             remotePublicIP,
+		"remote_asn":            remoteASN,
+		"p81_gw_internal_ip":    "10.8.0.1",
+		"remote_gw_internal_ip": "10.8.0.2",
+	}
+}
+
+// testDynamicTunnelUpdateResourceData builds a ResourceData over the real
+// checkpointsase_enhanced_dynamic_tunnel schema, holding the values
+// buildDynamicTunnelUpdatePayload reads.
+func testDynamicTunnelUpdateResourceData(t *testing.T) *schema.ResourceData {
+	t.Helper()
+	phase := []interface{}{map[string]interface{}{
+		"auth":                []interface{}{"sha256"},
+		"encryption":          []interface{}{"aes-cbc-256"},
+		"key_exchange_method": []interface{}{"modp2048"},
+	}}
+	return schema.TestResourceDataRaw(t, resourceEnhancedDynamicTunnel().Schema, map[string]interface{}{
+		"network_id":             "fake-network-1",
+		"tunnel_name":            "fake-dyn-tun-1",
+		"description":            "updated fake dynamic tunnel",
+		"left_asn":               65000,
+		"p81_gateway_subnets":    []interface{}{"10.6.0.0/24"},
+		"remote_gateway_subnets": []interface{}{"10.7.0.0/24"},
+		"peak_bandwidth":         500,
+		"key_exchange":           "ikev2",
+		"ike_life_time":          "28800s",
+		"lifetime":               "3600s",
+		"dpd_delay":              "30s",
+		"dpd_timeout":            "30s",
+		"phase1":                 phase,
+		"phase2":                 phase,
+		"tunnel": []interface{}{
+			testDynamicTunnelEndpointBlock("fake-region-6", "203.0.113.50", 65010),
+		},
+	})
+}
+
+/*
+TestPayloadMarshalDynamicTunnelUpdate is the regression test for the defect that this resource's
+update body carried two of its fourteen mutable attributes — tunnelName and description — and
+nothing else. Every other configurable value (the subnet lists, the IKE version, the four timing
+fields and both phase configs) was accepted by Terraform, reported as applied, and never sent, so
+the next plan showed the same diff forever.
+
+It drives buildDynamicTunnelUpdatePayload, the exact function
+resourceEnhancedDynamicTunnelUpdate calls, over the real resource schema, so dropping any of
+those fields again fails here.
+
+Two absences in the golden body are deliberate and are asserted by their absence:
+
+  - no "features" inside sharedSettings. The only value the provider could send is
+    NetworkFeaturesCreate{}, which serializes as explicit "enabled": false leaves; the live read
+    capture in resource_enhanced_tunnel_read_test.go shows a real tunnel with
+    DNSServices.redirectToResolver enabled, so sending it would switch off a feature nobody asked
+    to change.
+  - no "routingType". This resource exposes no routing_type attribute, the field is optional, and
+    omitting it preserves whatever mode the group is in.
+
+WIRE SHAPE UNVERIFIED: the nesting below (timing fields under advancedSettings, subnets under
+sharedSettings) comes from the generated model and has not been confirmed against a live
+response. The sibling read model was wrong in precisely this way until SDK overlay A19. If a
+capture later shows the server wants these flat, this fixture is what changes.
+*/
+func TestPayloadMarshalDynamicTunnelUpdate(t *testing.T) {
+	payload := buildDynamicTunnelUpdatePayload(testDynamicTunnelUpdateResourceData(t))
+
+	want := `{
+		"tunnelName": "fake-dyn-tun-1",
+		"description": "updated fake dynamic tunnel",
+		"sharedSettings": {
+			"p81GatewaySubnets": ["10.6.0.0/24"],
+			"remoteGatewaySubnets": ["10.7.0.0/24"]
+		},
+		"advancedSettings": {
+			"keyExchange": "ikev2",
+			"ikeLifeTime": "28800s",
+			"lifetime": "3600s",
+			"dpdDelay": "30s",
+			"dpdTimeout": "30s",
+			"phase1": {"auth": ["sha256"], "encryption": ["aes-cbc-256"], "keyExchangeMethod": ["modp2048"]},
+			"phase2": {"auth": ["sha256"], "encryption": ["aes-cbc-256"], "keyExchangeMethod": ["modp2048"]}
+		}
+	}`
+
+	assertMarshalsTo(t, payload, want)
+
+	// The three endpoint collections must stay absent when the endpoint list did not change:
+	// addTunnels/updateTunnels/removeTunnels are incremental, so an empty-but-present collection
+	// is not the same request as an omitted one.
+	if payload.AddTunnels != nil || payload.UpdateTunnels != nil || payload.RemoveTunnels != nil {
+		t.Errorf("endpoint collections should be nil on a payload built from schema data alone; got add=%v update=%v remove=%v",
+			payload.AddTunnels, payload.UpdateTunnels, payload.RemoveTunnels)
+	}
+}
+
+/*
+TestPayloadMarshalDynamicTunnelUpdateAddsEndpoints covers the one endpoint collection the
+provider can populate correctly. addTunnels takes whole DynamicTunnelDetails objects, so a newly
+written `tunnel` block needs no server-side id and can be sent verbatim — which is why adding an
+endpoint is supported while editing or removing one is not (see
+TestPlanDynamicTunnelEndpointChanges).
+*/
+func TestPayloadMarshalDynamicTunnelUpdateAddsEndpoints(t *testing.T) {
+	existing := testDynamicTunnelEndpointBlock("fake-region-6", "203.0.113.50", 65010)
+	added := testDynamicTunnelEndpointBlock("fake-region-7", "203.0.113.51", 65011)
+
+	addTunnels, err := planDynamicTunnelEndpointChanges(
+		[]interface{}{existing},
+		[]interface{}{existing, added},
+	)
+	if err != nil {
+		t.Fatalf("adding an endpoint must not error: %v", err)
+	}
+
+	payload := buildDynamicTunnelUpdatePayload(testDynamicTunnelUpdateResourceData(t))
+	payload.AddTunnels = addTunnels
+
+	want := `{
+		"tunnelName": "fake-dyn-tun-1",
+		"description": "updated fake dynamic tunnel",
+		"sharedSettings": {
+			"p81GatewaySubnets": ["10.6.0.0/24"],
+			"remoteGatewaySubnets": ["10.7.0.0/24"]
+		},
+		"advancedSettings": {
+			"keyExchange": "ikev2",
+			"ikeLifeTime": "28800s",
+			"lifetime": "3600s",
+			"dpdDelay": "30s",
+			"dpdTimeout": "30s",
+			"phase1": {"auth": ["sha256"], "encryption": ["aes-cbc-256"], "keyExchangeMethod": ["modp2048"]},
+			"phase2": {"auth": ["sha256"], "encryption": ["aes-cbc-256"], "keyExchangeMethod": ["modp2048"]}
+		},
+		"addTunnels": [
+			{
+				"authType": "psk",
+				"passphrase": "fake-passphrase-5",
+				"regionID": "fake-region-7",
+				"p81GWInternalIP": "10.8.0.1",
+				"remoteGWInternalIP": "10.8.0.2",
+				"remotePublicIP": "203.0.113.51",
+				"remoteASN": 65011,
+				"remoteID": "203.0.113.51",
+				"routingType": "route"
+			}
+		]
+	}`
+
+	assertMarshalsTo(t, payload, want)
+}
+
+/*
+TestPlanDynamicTunnelEndpointChanges pins the rule that decides whether an endpoint change can be
+expressed at all.
+
+The asymmetry it encodes is not a simplification: addTunnels carries whole endpoint objects,
+while updateTunnels and removeTunnels are keyed by a required server-assigned `id` that the
+provider has no way to learn — the `tunnel` block has no id attribute, Read does not refresh the
+block list, and EnhancedTunnel returns no remoteASN/p81GWInternalIP/remoteGWInternalIP to match a
+returned endpoint back to the block that configured it. Guessing the pairing by list position or
+by region_id would send one endpoint's pre-shared key to another endpoint, or delete the wrong
+one.
+
+The error cases below are therefore the point of the function, not a limitation to be worked
+around later without new information: they turn "Terraform reported success and nothing happened"
+into a failed apply that names what is missing.
+*/
+func TestPlanDynamicTunnelEndpointChanges(t *testing.T) {
+	first := testDynamicTunnelEndpointBlock("fake-region-6", "203.0.113.50", 65010)
+	second := testDynamicTunnelEndpointBlock("fake-region-7", "203.0.113.51", 65011)
+	editedFirst := testDynamicTunnelEndpointBlock("fake-region-6", "203.0.113.52", 65010)
+
+	rotatedFirst := testDynamicTunnelEndpointBlock("fake-region-6", "203.0.113.50", 65010)
+	rotatedFirst["passphrase"] = "fake-passphrase-6"
+
+	tests := []struct {
+		name      string
+		old       []interface{}
+		updated   []interface{}
+		wantAdded []string // regionID of each endpoint expected in addTunnels, in order
+		wantErr   bool
+	}{
+		{
+			name:    "unchanged endpoint list sends nothing",
+			old:     []interface{}{first},
+			updated: []interface{}{first},
+		},
+		{
+			name:      "new endpoint appended",
+			old:       []interface{}{first},
+			updated:   []interface{}{first, second},
+			wantAdded: []string{"fake-region-7"},
+		},
+		{
+			name: "an empty prior list is refused, not treated as an add",
+			// `tunnel` is Required, so a group Terraform created always has a block in
+			// state. Reaching Update with none means the resource was imported, and the
+			// endpoints already exist server-side — "adding" them would duplicate every
+			// one of them on a live tunnel group. This case is the reason the function
+			// checks cardinality before anything else.
+			old:     []interface{}{},
+			updated: []interface{}{first},
+			wantErr: true,
+		},
+		{
+			name: "reordering the same endpoints is not a change",
+			old:  []interface{}{first, second},
+			// Terraform sees a list, so a reorder is a diff; the server sees the same two
+			// endpoints, so nothing needs sending. Position must not be treated as identity.
+			updated: []interface{}{second, first},
+		},
+		{
+			name:      "adding a duplicate of an existing endpoint adds exactly one",
+			old:       []interface{}{first},
+			updated:   []interface{}{first, first},
+			wantAdded: []string{"fake-region-6"},
+		},
+		{
+			name:    "editing an existing endpoint is refused",
+			old:     []interface{}{first},
+			updated: []interface{}{editedFirst},
+			wantErr: true,
+		},
+		{
+			name: "rotating an existing endpoint's passphrase is refused",
+			old:  []interface{}{first},
+			// A credential rotation looks like any other edit and needs the same missing id.
+			// Treating it as an add would leave the old endpoint live with the old key.
+			updated: []interface{}{rotatedFirst},
+			wantErr: true,
+		},
+		{
+			name:    "removing an endpoint is refused",
+			old:     []interface{}{first, second},
+			updated: []interface{}{first},
+			wantErr: true,
+		},
+		{
+			name:    "removing one of two identical endpoints is refused",
+			old:     []interface{}{first, first},
+			updated: []interface{}{first},
+			wantErr: true,
+		},
+		{
+			name:    "replacing an endpoint is refused, not split into an add plus a silent drop",
+			old:     []interface{}{first},
+			updated: []interface{}{second},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			added, err := planDynamicTunnelEndpointChanges(tc.old, tc.updated)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got addTunnels=%v — a change the update endpoint cannot express must fail the apply, not disappear", added)
+				}
+				if added != nil {
+					t.Errorf("addTunnels must be nil on the error path, got %v", added)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(added) != len(tc.wantAdded) {
+				t.Fatalf("addTunnels has %d entries, want %d: %v", len(added), len(tc.wantAdded), added)
+			}
+			for i, wantRegion := range tc.wantAdded {
+				if added[i].RegionID != wantRegion {
+					t.Errorf("addTunnels[%d].regionID = %q, want %q", i, added[i].RegionID, wantRegion)
+				}
+			}
+		})
+	}
 }
 
 /*
