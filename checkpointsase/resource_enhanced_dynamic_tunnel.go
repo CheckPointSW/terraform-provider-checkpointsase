@@ -493,35 +493,38 @@ func resourceEnhancedDynamicTunnelRead(ctx context.Context, d *schema.ResourceDa
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel key_exchange", err)
 		}
-		// v3: IkeLifeTime/Lifetime/DpdDelay/DpdTimeout/Phase1/Phase2 moved off
-		// EnhancedTunnel and onto its nested *IPSecAdvancedSettingsV23
-		// (AdvancedSettings is a pointer, but IPSecAdvancedSettingsV23's Get*
-		// accessors are nil-safe, so no manual nil-check is required here).
-		if err := d.Set("ike_life_time", tunnel.AdvancedSettings.GetIkeLifeTime()); err != nil {
+		// ike_life_time / lifetime / dpd_delay / dpd_timeout / phase1 / phase2
+		// come back at the top level of each returned endpoint, not inside an
+		// `advancedSettings` object — see setEnhancedTunnelIPSecState
+		// (resource_enhanced_static_tunnel.go) and SDK overlay A19. These are
+		// the dynamic tunnel group's shared settings, identical across every
+		// endpoint the group returns, so reading them from endpoint 0 is
+		// correct.
+		if err := setEnhancedTunnelIPSecState(d, &tunnel); err != nil {
 			d.Partial(true)
-			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel ike_life_time", err)
-		}
-		if err := d.Set("lifetime", tunnel.AdvancedSettings.GetLifetime()); err != nil {
-			d.Partial(true)
-			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel lifetime", err)
-		}
-		if err := d.Set("dpd_delay", tunnel.AdvancedSettings.GetDpdDelay()); err != nil {
-			d.Partial(true)
-			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel dpd_delay", err)
-		}
-		if err := d.Set("dpd_timeout", tunnel.AdvancedSettings.GetDpdTimeout()); err != nil {
-			d.Partial(true)
-			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel dpd_timeout", err)
-		}
-		if err := d.Set("phase1", flattenIPSecPhaseConfigV23ToMap(tunnel.AdvancedSettings.GetPhase1())); err != nil {
-			d.Partial(true)
-			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel phase1", err)
-		}
-		if err := d.Set("phase2", flattenIPSecPhaseConfigV23ToMap(tunnel.AdvancedSettings.GetPhase2())); err != nil {
-			d.Partial(true)
-			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel phase2", err)
+			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel IPSec settings", err)
 		}
 	}
+
+	// The per-endpoint `tunnel` blocks are deliberately NOT refreshed here,
+	// even though each returned EnhancedTunnel now carries that endpoint's
+	// remotePublicIP and remoteID (overlay A19). Two things would have to be
+	// established first, and neither is:
+	//
+	//   1. EnhancedTunnel carries no remoteASN, p81GWInternalIP or
+	//      remoteGWInternalIP, so rebuilding the `tunnel` list from the
+	//      response would blank three Required attributes — a worse version
+	//      of the bug this change fixes. A correct implementation has to
+	//      merge into the existing list rather than replace it.
+	//   2. That merge needs a reliable endpoint identity. Pairing
+	//      tunnelsData[i] with tunnel[i] assumes the server returns endpoints
+	//      in the order they were configured, which nothing verifies; if it
+	//      does not, endpoint B's remote_id lands on endpoint A. region_id is
+	//      not a key either — nothing stops two endpoints sharing a region.
+	//
+	// Populating these needs a live capture of a multi-endpoint dynamic tunnel
+	// to settle the ordering question. Until then the static tunnel gets
+	// remote_public_ip/remote_id drift detection and this resource does not.
 
 	return diags
 }

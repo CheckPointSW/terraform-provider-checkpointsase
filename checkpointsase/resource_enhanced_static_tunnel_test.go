@@ -68,11 +68,12 @@ func TestAccEnhancedStaticTunnel_basic(t *testing.T) {
 					// remote_id is documented ("The remote gateway ID. When
 					// omitted, the server defaults this to remote_public_ip;
 					// the provider reads the server-assigned value back into
-					// state.") but resourceEnhancedStaticTunnelRead never
-					// calls d.Set for remote_id, and EnhancedTunnel (the v3
-					// read shape) has no RemoteID field to read it from at
-					// all. This assertion is expected to fail live —
-					// suspected bug, see task-32 report.
+					// state."). This used to be expected to fail: the v3 read
+					// model had no RemoteID field, so Read could not set it.
+					// Task 34 established from a live capture that the server
+					// does return remoteID at top level, corrected the read
+					// model (SDK overlay A19) and wired it up, so this should
+					// now pass.
 					testAccCheckEnhancedStaticTunnelRemoteIDInState("checkpointsase_enhanced_static_tunnel.demo"),
 				),
 			},
@@ -163,16 +164,16 @@ func testAccCheckEnhancedStaticTunnelAttributes(tunnel *perimeter81Sdk.EnhancedT
 		if tunnel.KeyExchange != want.KeyExchange {
 			return fmt.Errorf("got key_exchange %q; want %q", tunnel.KeyExchange, want.KeyExchange)
 		}
-		if got := tunnel.AdvancedSettings.GetIkeLifeTime(); got != want.IkeLifeTime {
+		if got := tunnel.GetIkeLifeTime(); got != want.IkeLifeTime {
 			return fmt.Errorf("got ike_life_time %q; want %q", got, want.IkeLifeTime)
 		}
-		if got := tunnel.AdvancedSettings.GetLifetime(); got != want.Lifetime {
+		if got := tunnel.GetLifetime(); got != want.Lifetime {
 			return fmt.Errorf("got lifetime %q; want %q", got, want.Lifetime)
 		}
-		if got := tunnel.AdvancedSettings.GetDpdDelay(); got != want.DpdDelay {
+		if got := tunnel.GetDpdDelay(); got != want.DpdDelay {
 			return fmt.Errorf("got dpd_delay %q; want %q", got, want.DpdDelay)
 		}
-		if got := tunnel.AdvancedSettings.GetDpdTimeout(); got != want.DpdTimeout {
+		if got := tunnel.GetDpdTimeout(); got != want.DpdTimeout {
 			return fmt.Errorf("got dpd_timeout %q; want %q", got, want.DpdTimeout)
 		}
 		if !testComparableArraiesEq(tunnel.P81GatewaySubnets, want.P81GatewaySubnets) {
@@ -184,7 +185,7 @@ func testAccCheckEnhancedStaticTunnelAttributes(tunnel *perimeter81Sdk.EnhancedT
 		if tunnel.PeakBandwidthMbps == nil || *tunnel.PeakBandwidthMbps != want.PeakBandwidthMbps {
 			return fmt.Errorf("got peak_bandwidth %v; want %d", tunnel.PeakBandwidthMbps, want.PeakBandwidthMbps)
 		}
-		phase1 := tunnel.AdvancedSettings.GetPhase1()
+		phase1 := tunnel.GetPhase1()
 		if !testComparableArraiesEq(phase1.Auth, want.Phase1.Auth) {
 			return fmt.Errorf("got phase1 auth %q; want %q", phase1.Auth, want.Phase1.Auth)
 		}
@@ -194,7 +195,7 @@ func testAccCheckEnhancedStaticTunnelAttributes(tunnel *perimeter81Sdk.EnhancedT
 		if !testComparableArraiesEq(phase1.KeyExchangeMethod, want.Phase1.KeyExchangeMethod) {
 			return fmt.Errorf("got phase1 key_exchange_method %q; want %q", phase1.KeyExchangeMethod, want.Phase1.KeyExchangeMethod)
 		}
-		phase2 := tunnel.AdvancedSettings.GetPhase2()
+		phase2 := tunnel.GetPhase2()
 		if !testComparableArraiesEq(phase2.Auth, want.Phase2.Auth) {
 			return fmt.Errorf("got phase2 auth %q; want %q", phase2.Auth, want.Phase2.Auth)
 		}
@@ -234,8 +235,7 @@ func testAccCheckEnhancedStaticTunnelRegionID(n string, tunnel *perimeter81Sdk.E
 // Terraform STATE rather than the API — per the assertion rules, a value
 // only available at create/read time must be checked against state, not
 // re-derived from a live API call the schema doesn't actually guarantee
-// returns it. See the TestAccEnhancedStaticTunnel_basic doc comment for why
-// this is expected to fail live.
+// returns it.
 func testAccCheckEnhancedStaticTunnelRemoteIDInState(n string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		rs, ok := s.RootModule().Resources[n]
@@ -246,8 +246,9 @@ func testAccCheckEnhancedStaticTunnelRemoteIDInState(n string) resource.TestChec
 		if remoteID == "" {
 			return fmt.Errorf("remote_id is empty in state; the schema documents that the server " +
 				"defaults remote_id to remote_public_ip and the provider reads the assigned value " +
-				"back, but resourceEnhancedStaticTunnelRead never sets remote_id and EnhancedTunnel " +
-				"(the v3 read shape) has no RemoteID field to read it from")
+				"back. resourceEnhancedStaticTunnelRead does set it from EnhancedTunnel.RemoteID " +
+				"(SDK overlay A19), so an empty value here means either the server stopped returning " +
+				"remoteID or the read model regressed")
 		}
 		return nil
 	}

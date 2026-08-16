@@ -24,7 +24,7 @@ var randNameEnhancedDynamicTunnel string = randStringBytesRmndr()
 // Step 2 deliberately changes only dpd_delay/dpd_timeout — fields that
 // resourceEnhancedDynamicTunnelUpdate (resource_enhanced_dynamic_tunnel.go)
 // never sends to the server: its update payload carries only TunnelName and
-// description, nothing from AdvancedSettings/SharedSettings/tunnel details.
+// description, nothing from the advanced/shared settings or tunnel details.
 // That means after this update, Read re-fetches the *unchanged* server
 // value and overwrites it into state, which contradicts the new config on
 // two fronts: the framework's automatic post-apply "second plan should be
@@ -164,18 +164,18 @@ func testAccCheckEnhancedDynamicTunnelAttributes(tunnel *perimeter81Sdk.Enhanced
 		if tunnel.KeyExchange != want.KeyExchange {
 			return fmt.Errorf("got key_exchange %q; want %q", tunnel.KeyExchange, want.KeyExchange)
 		}
-		if got := tunnel.AdvancedSettings.GetIkeLifeTime(); got != want.IkeLifeTime {
+		if got := tunnel.GetIkeLifeTime(); got != want.IkeLifeTime {
 			return fmt.Errorf("got ike_life_time %q; want %q", got, want.IkeLifeTime)
 		}
-		if got := tunnel.AdvancedSettings.GetLifetime(); got != want.Lifetime {
+		if got := tunnel.GetLifetime(); got != want.Lifetime {
 			return fmt.Errorf("got lifetime %q; want %q", got, want.Lifetime)
 		}
-		if got := tunnel.AdvancedSettings.GetDpdDelay(); got != want.DpdDelay {
+		if got := tunnel.GetDpdDelay(); got != want.DpdDelay {
 			return fmt.Errorf("got dpd_delay %q; want %q — if this fails after an update-only step, "+
-				"resourceEnhancedDynamicTunnelUpdate's payload does not include AdvancedSettings, so "+
+				"resourceEnhancedDynamicTunnelUpdate's payload carries only TunnelName and description, so "+
 				"the change never reached the server (suspected bug, see task-32 report)", got, want.DpdDelay)
 		}
-		if got := tunnel.AdvancedSettings.GetDpdTimeout(); got != want.DpdTimeout {
+		if got := tunnel.GetDpdTimeout(); got != want.DpdTimeout {
 			return fmt.Errorf("got dpd_timeout %q; want %q — see the dpd_delay note above", got, want.DpdTimeout)
 		}
 		if !testComparableArraiesEq(tunnel.P81GatewaySubnets, want.P81GatewaySubnets) {
@@ -184,7 +184,7 @@ func testAccCheckEnhancedDynamicTunnelAttributes(tunnel *perimeter81Sdk.Enhanced
 		if !testComparableArraiesEq(tunnel.RemoteGatewaySubnets, want.RemoteGatewaySubnets) {
 			return fmt.Errorf("got remote_gateway_subnets %q; want %q", tunnel.RemoteGatewaySubnets, want.RemoteGatewaySubnets)
 		}
-		phase1 := tunnel.AdvancedSettings.GetPhase1()
+		phase1 := tunnel.GetPhase1()
 		if !testComparableArraiesEq(phase1.Auth, want.Phase1.Auth) {
 			return fmt.Errorf("got phase1 auth %q; want %q", phase1.Auth, want.Phase1.Auth)
 		}
@@ -194,7 +194,7 @@ func testAccCheckEnhancedDynamicTunnelAttributes(tunnel *perimeter81Sdk.Enhanced
 		if !testComparableArraiesEq(phase1.KeyExchangeMethod, want.Phase1.KeyExchangeMethod) {
 			return fmt.Errorf("got phase1 key_exchange_method %q; want %q", phase1.KeyExchangeMethod, want.Phase1.KeyExchangeMethod)
 		}
-		phase2 := tunnel.AdvancedSettings.GetPhase2()
+		phase2 := tunnel.GetPhase2()
 		if !testComparableArraiesEq(phase2.Auth, want.Phase2.Auth) {
 			return fmt.Errorf("got phase2 auth %q; want %q", phase2.Auth, want.Phase2.Auth)
 		}

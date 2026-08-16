@@ -181,9 +181,6 @@ func dataSourceEnhancedTunnelsRead(ctx context.Context, d *schema.ResourceData, 
 		return appendErrorDiags(diags, "Unable to set Enhanced Tunnels total_page", err)
 	}
 
-	// v3's read shape (EnhancedTunnel) dropped remote_public_ip, remote_id
-	// and description entirely — see flattenEnhancedTunnelsData below for
-	// why they read back as "" here and why that can't be worked around.
 	tunnels := flattenEnhancedTunnelsData(response.GetData())
 	if err := d.Set("tunnels", tunnels); err != nil {
 		d.Partial(true)
@@ -205,50 +202,42 @@ func flattenEnhancedTunnelsData(tunnels []perimeter81Sdk.EnhancedTunnel) []inter
 		return make([]interface{}, 0)
 	}
 
-	// v3: remote_public_ip, remote_id and description were dropped from
-	// EnhancedTunnel (the v3 read shape) — they only still exist on the
-	// write-side types (StaticTunnelCreate/StaticTunnelUpdate/
-	// DynamicTunnelDetails/DynamicTunnelUpdate), so there is nothing here to
-	// read them from. They are always "" below, on every refresh, for every
-	// tunnel — not just "the first time a tunnel is observed."
+	// Every attribute below is read straight off the response. That was not
+	// true before SDK overlay A19: the spec declared the timing fields and
+	// phase configs nested inside an `advancedSettings` object the server
+	// never sends, and declared no remotePublicIP/remoteID/description at
+	// all, so this function reported "" for six of its attributes on every
+	// call. A live GET /v3/networks/enhanced/{networkId}/tunnels captured
+	// 2026-08-16 shows all of them at the top level; A19 corrects the read
+	// model to match.
 	//
-	// This is NOT fixable with a preserve-prior-state merge the way
-	// resourceGatewayRead's `name`/`idle` handling in resource_gateway.go
-	// (a resource) works: Terraform never gives a data source its previous
-	// state. Confirmed in terraform-plugin-sdk/v2@v2.26.1:
+	// Unconditional Get* is right here in a way it is not in the resource
+	// Read functions (which guard with setIfPresent so an absent field cannot
+	// blank state): a data source has no prior state to protect. Terraform
+	// never gives one its previous state — terraform-plugin-sdk/v2@v2.26.1's
 	// grpc_provider.go:1155 calls `res.Diff(ctx, nil, config, ...)` for
-	// ReadDataSource — the state argument is a hardcoded `nil` — and
-	// resource.go:935 states outright: "Data sources are always built
-	// completely from scratch on each read, so the source state is always
-	// nil." Contrast ReadResource, which receives the real prior state via
-	// req.CurrentState (grpc_provider.go:581) — that's what makes the
-	// resource-level preservation elsewhere in this task correct and this
-	// data source different in kind, not just in effort. Do not attempt a
-	// "carry forward by id" merge here; there is no supported mechanism to
-	// carry anything forward, and inventing one (e.g. a package-level cache)
-	// would be worse than the honest "" this produces. Drift detection on
-	// these three fields is simply impossible under v3 for this data source.
+	// ReadDataSource with a hardcoded nil, and resource.go:935 says outright
+	// "Data sources are always built completely from scratch on each read, so
+	// the source state is always nil." So "" from a nil-safe getter is the
+	// only possible answer for a field the server omits, and there is nothing
+	// to preserve it against.
 	result := make([]interface{}, len(tunnels))
 	for i, tunnel := range tunnels {
 		tunnelMap := map[string]interface{}{
-			"id":           tunnel.GetId(),
-			"tunnel_name":  tunnel.GetTunnelName(),
-			"region_id":    tunnel.GetRegionID(),
-			"ha_tunnel_id": tunnel.GetHaTunnelID(),
-			"auth_type":    tunnel.GetAuthType(),
-			"key_exchange": tunnel.GetKeyExchange(),
-			// v3: IkeLifeTime/Lifetime/DpdDelay/DpdTimeout moved off
-			// EnhancedTunnel and onto its nested *IPSecAdvancedSettingsV23
-			// (AdvancedSettings is a pointer, but IPSecAdvancedSettingsV23's
-			// Get* accessors are nil-safe, so no manual nil-check is needed).
-			"ike_life_time":          tunnel.AdvancedSettings.GetIkeLifeTime(),
-			"lifetime":               tunnel.AdvancedSettings.GetLifetime(),
-			"dpd_delay":              tunnel.AdvancedSettings.GetDpdDelay(),
-			"dpd_timeout":            tunnel.AdvancedSettings.GetDpdTimeout(),
+			"id":                     tunnel.GetId(),
+			"tunnel_name":            tunnel.GetTunnelName(),
+			"region_id":              tunnel.GetRegionID(),
+			"ha_tunnel_id":           tunnel.GetHaTunnelID(),
+			"auth_type":              tunnel.GetAuthType(),
+			"key_exchange":           tunnel.GetKeyExchange(),
+			"ike_life_time":          tunnel.GetIkeLifeTime(),
+			"lifetime":               tunnel.GetLifetime(),
+			"dpd_delay":              tunnel.GetDpdDelay(),
+			"dpd_timeout":            tunnel.GetDpdTimeout(),
 			"dpd_action":             tunnel.GetDpdAction(),
-			"remote_public_ip":       "",
-			"remote_id":              "",
-			"description":            "",
+			"remote_public_ip":       tunnel.GetRemotePublicIP(),
+			"remote_id":              tunnel.GetRemoteID(),
+			"description":            tunnel.GetDescription(),
 			"routing_type":           string(tunnel.GetRoutingType()),
 			"peak_bandwidth":         int(tunnel.GetPeakBandwidthMbps()),
 			"p81_gateway_subnets":    tunnel.GetP81GatewaySubnets(),

@@ -68,6 +68,13 @@ plain read would overwrite the terraform state's only durable copy of the
 value with "". setIfPresent exists so Read functions can't do that by
 accident: when present is false, this is a no-op and whatever is already in
 state is left untouched.
+
+The same guard is used beyond credentials, for any optional read-model field
+where blanking state is worse than missing one refresh — see
+setEnhancedTunnelIPSecState in resource_enhanced_static_tunnel.go, which
+routes the enhanced tunnel's timing and remote-endpoint fields through here
+precisely because a spec defect that made them read back as "" is what caused
+the bug it was written to fix.
   - @param d *schema.ResourceData - the terraform resource data
   - @param key string - the schema attribute to (maybe) write
   - @param value string - the value to write when present
