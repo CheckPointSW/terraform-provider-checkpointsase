@@ -46,16 +46,17 @@ func resourceEnhancedDynamicTunnel() *schema.Resource {
 				Description: "The ID of the enhanced network this dynamic tunnel belongs to.",
 			},
 			"tunnel_name": {
-				Type:        schema.TypeString,
-				Required:    true,
-				Description: "The name of the dynamic IPSec tunnel. Must be 15 characters or fewer.",
-				// The upstream model auto-suffixes the user's tunnel name
-				// with `01` (createIPSecRedundant.transform.ts:113 —
-				// `interfaceName: ${tunnelName}0${i+1}`). Suppress the
-				// resulting drift so plan stays idempotent post-Create.
-				DiffSuppressFunc: func(k, oldValue, newValue string, d *schema.ResourceData) bool {
-					return strings.TrimSuffix(oldValue, "01") == newValue || oldValue == strings.TrimSuffix(newValue, "01")
-				},
+				Type:     schema.TypeString,
+				Required: true,
+				Description: "The name of the dynamic IPSec tunnel. Must be 15 characters or fewer. " +
+					"The server derives each endpoint's interface name by appending `01` to this value " +
+					"(`interfaceName: ${tunnelName}0${i+1}`) and reports that decorated form on read. Terraform records " +
+					"the name **you** configured, not the decorated one, so a plan straight after an apply is empty and " +
+					"a name you deliberately end with `01` is sent and kept exactly as written.",
+				// No DiffSuppressFunc. Reconciliation happens in Read
+				// (setEnhancedDynamicTunnelNameState) instead — see the comment
+				// above dynamicTunnelNameForState for why suppressing the diff
+				// here was actively harmful.
 				ValidateFunc: validation.StringLenBetween(0, 15),
 			},
 			"description": {
@@ -297,6 +298,111 @@ func resourceEnhancedDynamicTunnelImportState(ctx context.Context, d *schema.Res
 	return []*schema.ResourceData{d}, nil
 }
 
+// dynamicTunnelServerNameSuffix is what the upstream model appends to a dynamic
+// tunnel's name when it derives each endpoint's interface name —
+// createIPSecRedundant.transform.ts:113, `interfaceName: ${tunnelName}0${i+1}`.
+// A single-endpoint group therefore reads back as `<tunnelName>01`.
+//
+// This is dynamic-tunnel-only. A live probe created a static tunnel named
+// `ProbeTun1` and the tunnels list returned `"tunnelName": "ProbeTun1"`,
+// unsuffixed; the static resource must not use any of this.
+const dynamicTunnelServerNameSuffix = "01"
+
+/*
+dynamicTunnelNameIsDerivedFrom reports whether serverName is a name the server
+would be holding for a dynamic tunnel that was sent `configured`.
+
+Both forms count. The suffixed one is what the live server does today; the bare
+one is accepted because nothing in the API contract promises the suffix, the
+sibling static tunnel does not get one, and a provider that only recognised the
+decorated form would break the day the server stopped decorating.
+
+An empty `configured` matches nothing. Without that guard a caller with no
+configured name would match any tunnel the server happens to call "01".
+  - @param serverName string - the name as the API reports it
+  - @param configured string - the name the user wrote / Terraform sent
+
+@return bool - true when serverName is `configured` or `configured` + "01"
+*/
+func dynamicTunnelNameIsDerivedFrom(serverName, configured string) bool {
+	if configured == "" {
+		return false
+	}
+	return serverName == configured || serverName == configured+dynamicTunnelServerNameSuffix
+}
+
+/*
+dynamicTunnelNameForState decides what tunnel_name should hold in state after a
+read, given the value already in state (`prior`) and the value the API reports.
+
+The rule is the preserve-prior-state pattern setIfPresent and resourceGatewayRead
+already use, specialised for a value the server rewrites: when the server's name
+is the derived form of the name Terraform sent, the read has learned nothing new
+and prior stays. Only a name the server could NOT have derived from prior is real
+drift, and that is written through.
+
+Why this rather than a DiffSuppressFunc, which is what this resource had:
+
+	The server's name went into state verbatim, and the DiffSuppressFunc hid the
+	resulting difference from the configured name. Hiding a diff does not discard
+	the state value — it makes the SDK carry it into the apply, so
+	d.Get("tunnel_name") in Update returned the DECORATED name, Update sent it,
+	and the server decorated it again. `EnhDynTun1` became `EnhDynTun101` on
+	create and `EnhDynTun10101` after one update: two characters per apply
+	against a 15-character server-side cap, so a few applies in, unrelated
+	changes start failing with a 400 about the name.
+
+	The suppression was also one-sided in a way that mangles legitimate names.
+	`strings.TrimSuffix(old, "01") == new || old == strings.TrimSuffix(new, "01")`
+	is true for the pair (`TunA`, `TunA01`) in either direction, so a user
+	renaming a tunnel to a name that is the old one plus `01` — and
+	`dynamicTunnel01`, the name in this resource's own documentation example, is
+	exactly that shape — had the rename silently dropped. And once the name had
+	compounded to `EnhDynTun10101`, neither branch matched `EnhDynTun1` any more,
+	so the diff came back forever and every apply made it worse.
+
+	Normalising in Read fixes the cause: state holds what the user asked for, so
+	there is no diff to suppress, Update sends the base name, and the server's
+	own idempotent derivation keeps the name at `<configured>01` no matter how
+	many times it runs. Every genuine rename is a genuine diff again.
+
+The one case this cannot normalise is import: the importer runs Read with an
+empty prior, so state takes the decorated name and the first plan against a
+config holding the base name shows a rename. That apply is real — it sends the
+base name, the server re-derives the same decorated name it already had, and
+the read after it normalises state. It converges in one apply, and the diff is
+honest about the fact that Terraform is only now learning the configured name.
+  - @param prior string - tunnel_name as it currently stands in state
+  - @param serverName string - tunnel_name as the API reports it
+
+@return string - the value to write to state
+*/
+func dynamicTunnelNameForState(prior, serverName string) string {
+	// An empty serverName is the setIfPresent case: the API told us nothing, so
+	// it must not blank a name the user configured.
+	if serverName == "" || dynamicTunnelNameIsDerivedFrom(serverName, prior) {
+		return prior
+	}
+	return serverName
+}
+
+/*
+setEnhancedDynamicTunnelNameState writes the reconciled tunnel_name into state.
+
+Factored out so the offline lifecycle test drives the production reconciliation
+rather than a copy of it — the interaction between what Read stores and what
+Update later reads back out of d is precisely what produced the compounding-name
+defect, so the test has to exercise the real thing.
+  - @param d *schema.ResourceData - the terraform resource data
+  - @param serverName string - tunnel_name as the API reports it
+
+@return error - any error from the underlying d.Set
+*/
+func setEnhancedDynamicTunnelNameState(d *schema.ResourceData, serverName string) error {
+	prior, _ := d.Get("tunnel_name").(string)
+	return d.Set("tunnel_name", dynamicTunnelNameForState(prior, serverName))
+}
+
 /*
 flattenDynamicTunnelDetails converts a list of tunnel schema blocks into []DynamicTunnelDetails SDK models.
 */
@@ -448,11 +554,15 @@ func resourceEnhancedDynamicTunnelCreate(ctx context.Context, d *schema.Resource
 	dynamicTunnelId := getIdFromUrl(resource)
 	if dynamicTunnelId == "" {
 		// Async result didn't carry a resource URL. Fall back to
-		// listing tunnels and finding by tunnel_name.
+		// listing tunnels and finding by tunnel_name — matching the derived
+		// name as well as the literal one, because the server stores
+		// `<tunnelName>01` for a dynamic tunnel. An exact comparison could
+		// never match against that server, so this fallback silently failed to
+		// find a tunnel it had just created.
 		resp, _, lerr := client.EnhancedTunnelsAPI.GetEnhancedRegionTunnelsPerNetwork(ctx, networkId).Execute()
 		if lerr == nil && resp != nil {
 			for _, t := range resp.Data {
-				if t.TunnelName == tunnelName {
+				if dynamicTunnelNameIsDerivedFrom(t.TunnelName, tunnelName) {
 					dynamicTunnelId = t.Id
 					break
 				}
@@ -492,7 +602,11 @@ func resourceEnhancedDynamicTunnelRead(ctx context.Context, d *schema.ResourceDa
 
 	if len(tunnelsData) > 0 {
 		tunnel := tunnelsData[0]
-		if err := d.Set("tunnel_name", tunnel.TunnelName); err != nil {
+		// tunnel_name is the one attribute whose server-side value is not the
+		// value that was sent: the server appends `01` to derive the endpoint's
+		// interface name. Writing that back verbatim is what made the name grow
+		// by two characters on every apply — see dynamicTunnelNameForState.
+		if err := setEnhancedDynamicTunnelNameState(d, tunnel.TunnelName); err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel tunnel_name", err)
 		}

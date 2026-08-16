@@ -75,7 +75,7 @@ resource "checkpointsase_enhanced_dynamic_tunnel" "example" {
 - `phase2` (Block List, Min: 1, Max: 1) Phase 2 (ESP/IPSec) configuration. (see [below for nested schema](#nestedblock--phase2))
 - `remote_gateway_subnets` (List of String) List of remote gateway subnet CIDR blocks (shared settings).
 - `tunnel` (Block List, Min: 1) The list of individual tunnel endpoints for this dynamic tunnel group. **Adding** an endpoint to an existing dynamic tunnel is applied in place. **Changing or removing** an existing endpoint is not: the v3 update request identifies an endpoint by a server-assigned id that the provider has no way to obtain, so such a change fails the apply with an explanatory error instead of being silently dropped. Use `terraform apply -replace=...` to change or remove an endpoint, which destroys and recreates the whole tunnel group. An **imported** dynamic tunnel records no endpoints in state (the read API returns none of `remote_asn`, `p81_gw_internal_ip` or `remote_gw_internal_ip`), so the provider refuses to change its endpoint list at all rather than risk duplicating endpoints. (see [below for nested schema](#nestedblock--tunnel))
-- `tunnel_name` (String) The name of the dynamic IPSec tunnel. Must be 15 characters or fewer.
+- `tunnel_name` (String) The name of the dynamic IPSec tunnel. Must be 15 characters or fewer. The server derives each endpoint's interface name by appending `01` to this value (`interfaceName: ${tunnelName}0${i+1}`) and reports that decorated form on read. Terraform records the name **you** configured, not the decorated one, so a plan straight after an apply is empty and a name you deliberately end with `01` is sent and kept exactly as written.
 
 ### Optional
 

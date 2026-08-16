@@ -37,6 +37,15 @@ var randNameEnhancedDynamicTunnel string = randStringBytesRmndr()
 // shape was wrong in exactly this way until SDK overlay A19. See the task-35
 // report.
 //
+// Step 2 is also what found the compounding-name defect on 2026-08-16: the
+// tunnel_name assertion came back "EnhDynTun10101" where "EnhDynTun1" or
+// "EnhDynTun101" was expected. Read had been storing the server's decorated
+// name and a DiffSuppressFunc hid the difference, which left the decorated name
+// in place for the apply, so Update sent it and the server decorated it again —
+// two characters per apply against a 15-character cap. Fixed by reconciling in
+// Read; see dynamicTunnelNameForState and the offline lifecycle tests in
+// resource_enhanced_dynamic_tunnel_name_test.go.
+//
 // Note that step 2 leaves the `tunnel` block untouched. That is not
 // incidental: changing an existing endpoint is refused by the provider (no
 // server-side endpoint id is obtainable — see planDynamicTunnelEndpointChanges),
@@ -78,6 +87,11 @@ func TestAccEnhancedDynamicTunnel_basic(t *testing.T) {
 						},
 					}),
 					testAccCheckEnhancedDynamicTunnelRegionID("checkpointsase_enhanced_dynamic_tunnel.demo", &tunnel),
+					// State must hold the name the config asked for, not the
+					// decorated one the server reports. This is the other half
+					// of the check above: the server-side assertion catches the
+					// name growing, this catches the reason it grew.
+					resource.TestCheckResourceAttr("checkpointsase_enhanced_dynamic_tunnel.demo", "tunnel_name", "EnhDynTun1"),
 				),
 			},
 			{
@@ -104,6 +118,7 @@ func TestAccEnhancedDynamicTunnel_basic(t *testing.T) {
 							KeyExchangeMethod: []string{"modp2048"},
 						},
 					}),
+					resource.TestCheckResourceAttr("checkpointsase_enhanced_dynamic_tunnel.demo", "tunnel_name", "EnhDynTun1"),
 				),
 			},
 		},
@@ -163,11 +178,20 @@ type testAccEnhancedDynamicTunnelExpectedAttributes struct {
 // setEnhancedTunnelSharedSubnetState.
 func testAccCheckEnhancedDynamicTunnelAttributes(tunnel *perimeter81Sdk.EnhancedTunnel, want *testAccEnhancedDynamicTunnelExpectedAttributes) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
-		// The upstream model auto-suffixes the tunnel name with "01" (see the
-		// tunnel_name DiffSuppressFunc in resource_enhanced_dynamic_tunnel.go);
-		// accept either form rather than hardcoding the suffix as fact.
-		if tunnel.TunnelName != want.TunnelNameBase && tunnel.TunnelName != want.TunnelNameBase+"01" {
-			return fmt.Errorf("got tunnel_name %q; want %q (optionally with a server-appended \"01\" suffix)", tunnel.TunnelName, want.TunnelNameBase)
+		// The upstream model derives the endpoint's interface name by appending
+		// "01" to the tunnel name (see dynamicTunnelNameForState in
+		// resource_enhanced_dynamic_tunnel.go); accept either form rather than
+		// hardcoding the suffix as fact.
+		//
+		// This assertion is what caught the compounding-name defect live: after
+		// one update the server held "EnhDynTun10101", because Read had stored
+		// the decorated name and Update sent it back to be decorated again.
+		// Nothing weaker than "exactly the base name, or exactly the base name
+		// plus one suffix" would have noticed.
+		if !dynamicTunnelNameIsDerivedFrom(tunnel.TunnelName, want.TunnelNameBase) {
+			return fmt.Errorf("got tunnel_name %q; want %q (optionally with a server-appended \"01\" suffix). "+
+				"A name with more than one suffix means the provider sent the server's decorated name back to it — "+
+				"see dynamicTunnelNameForState", tunnel.TunnelName, want.TunnelNameBase)
 		}
 		if tunnel.KeyExchange != want.KeyExchange {
 			return fmt.Errorf("got key_exchange %q; want %q", tunnel.KeyExchange, want.KeyExchange)
