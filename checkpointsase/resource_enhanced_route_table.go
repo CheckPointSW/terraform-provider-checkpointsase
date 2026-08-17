@@ -2,6 +2,7 @@ package checkpointsase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -13,6 +14,42 @@ import (
 )
 
 /*
+enhancedRouteTableStaticNotSupported is what a user sees, at plan time, instead
+of a 422 half-way through an apply.
+
+It is deliberately the whole explanation rather than "invalid value": the
+config the user wrote is not merely mistyped, it is asking for an object the
+API never lets anyone create, and the thing they actually want is one
+attribute away on a different resource. A message that only rejected the value
+would leave them looking for a spelling mistake.
+*/
+const enhancedRouteTableStaticNotSupported = `checkpointsase_enhanced_route_table does not support type = "static".
+
+A static tunnel's route is part of the tunnel, not a separate object. Harmony
+SASE creates the route at the moment the tunnel is created, and that route's
+subnets ARE the tunnel's own remote_gateway_subnets — one value shown in two
+places, so changing either one changes both. That leaves nothing here for
+Terraform to create: the tunnel already has its route, and asking for a second
+one fails the apply with "routes position 1 contains a duplicate value".
+
+To choose which subnets a static tunnel routes, set them on the tunnel:
+
+    resource "checkpointsase_enhanced_static_tunnel" "example" {
+      # ...
+      remote_gateway_subnets = ["10.50.0.0/16"]
+    }
+
+To read the resulting route back, use the matching data source, which lists
+every route on the network:
+
+    data "checkpointsase_enhanced_route_table" "example" {
+      network_id = checkpointsase_enhanced_network.example.id
+    }
+
+Then remove this resource from your configuration. type = "dynamic" with
+tunnel_ids is not affected and still works.`
+
+/*
 resourceEnhancedRouteTable Setup the Enhanced Route Table Resource CRUD operations
 
 @return &schema.Resource
@@ -20,17 +57,21 @@ resourceEnhancedRouteTable Setup the Enhanced Route Table Resource CRUD operatio
 func resourceEnhancedRouteTable() *schema.Resource {
 	return &schema.Resource{
 		Description: "Manages a route-table entry for a `checkpointsase_enhanced_network`. " +
-			"A route directs traffic for the specified `subnets` through a tunnel " +
-			"(or list of dynamic tunnels). " +
-			"Use `type = \"static\"` with `tunnel_id` for static tunnels, or " +
-			"`type = \"dynamic\"` with `tunnel_ids` for dynamic tunnels. " +
-			"The selected tunnel(s) must not already have a route table attached. " +
-			"**`network_id`, `type`, and the chosen tunnel field are immutable** — " +
+			"A route directs traffic for the specified `subnets` through a list of " +
+			"dynamic tunnels. " +
+			"Only `type = \"dynamic\"` with `tunnel_ids` is supported. " +
+			"**`type = \"static\"` is rejected during `terraform plan`**: a static " +
+			"tunnel's route is created together with the tunnel and its subnets are " +
+			"the tunnel's own `remote_gateway_subnets`, so set them on " +
+			"`checkpointsase_enhanced_static_tunnel` and read the resulting route " +
+			"with the `checkpointsase_enhanced_route_table` data source. " +
+			"**`network_id`, `type`, and `tunnel_ids` are immutable** — " +
 			"changing any of them forces resource replacement.",
 		CreateContext: resourceEnhancedRouteTableCreate,
 		ReadContext:   resourceEnhancedRouteTableRead,
 		UpdateContext: resourceEnhancedRouteTableUpdate,
 		DeleteContext: resourceEnhancedRouteTableDelete,
+		CustomizeDiff: resourceEnhancedRouteTableCustomizeDiff,
 		Schema: map[string]*schema.Schema{
 			"last_updated": {
 				Type:        schema.TypeString,
@@ -48,8 +89,15 @@ func resourceEnhancedRouteTable() *schema.Resource {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
-				Description: "The route type. Must be either `static` or `dynamic`. " +
-					"Use with `tunnel_id` for static, or `tunnel_ids` for dynamic.",
+				Description: "The route type. Only `dynamic` is supported, paired with `tunnel_ids`. " +
+					"`static` is still accepted by the schema but rejected at plan time with an " +
+					"explanation: a static tunnel's route is its own `remote_gateway_subnets` on " +
+					"`checkpointsase_enhanced_static_tunnel`, not a separate object.",
+				// `static` stays in the allowed list on purpose. Removing it here
+				// would reduce the plan-time failure to "expected type to be one
+				// of [dynamic], got static", which tells the user nothing about
+				// where the route actually lives. CustomizeDiff produces the real
+				// message; this ValidateFunc still catches genuine typos.
 				ValidateFunc: validation.StringInSlice([]string{"static", "dynamic"}, false),
 			},
 			"tunnel_id": {
@@ -57,15 +105,23 @@ func resourceEnhancedRouteTable() *schema.Resource {
 				Optional:      true,
 				ForceNew:      true,
 				ConflictsWith: []string{"tunnel_ids"},
-				Description:   "The static tunnel ID. Required when type is `static`. Mutually exclusive with `tunnel_ids`. The selected static tunnel must not already have a route table.",
+				Description: "The static tunnel ID. **Not usable** — it pairs with `type = \"static\"`, " +
+					"which is rejected at plan time. A static tunnel already has a route the moment it " +
+					"is created, carrying that tunnel's `remote_gateway_subnets`; set the subnets there " +
+					"instead. Kept in the schema so existing configurations and state still parse and " +
+					"can be removed cleanly.",
 			},
 			"tunnel_ids": {
 				Type:          schema.TypeList,
 				Optional:      true,
 				ForceNew:      true,
 				ConflictsWith: []string{"tunnel_id"},
-				Description:   "The list of dynamic tunnel IDs. Required when type is `dynamic`. Mutually exclusive with `tunnel_id`. The selected dynamic tunnels must not already have a route table.",
-				Elem:          &schema.Schema{Type: schema.TypeString},
+				Description: "The list of dynamic tunnel IDs. Required when type is `dynamic`. " +
+					"Mutually exclusive with `tunnel_id`. Whether a dynamic tunnel is also given a " +
+					"route automatically at creation, the way a static tunnel is, has not been " +
+					"measured; if it is, creating this resource for such a tunnel will fail the same " +
+					"way the static path does.",
+				Elem: &schema.Schema{Type: schema.TypeString},
 			},
 			"subnets": {
 				Type:        schema.TypeList,
@@ -88,6 +144,49 @@ func resourceEnhancedRouteTable() *schema.Resource {
 			Delete: schema.DefaultTimeout(asyncResourceTimeout),
 		},
 	}
+}
+
+/*
+resourceEnhancedRouteTableCustomizeDiff refuses `type = "static"` before any
+API call is made.
+
+Measured live 2026-08-17, not inferred. A static tunnel's remote_gateway_subnets
+and its route-table entry's subnets are the same server value reachable through
+two endpoints; writing through either one moves both:
+
+	baseline            tunnel = 172.31.250.0/24   route = 172.31.250.0/24
+	write via ROUTE     tunnel = 172.31.240.0/24   route = 172.31.240.0/24
+	write via TUNNEL    tunnel = 172.31.230.0/24   route = 172.31.230.0/24
+
+Creating a static tunnel immediately produces the route entry carrying that
+tunnel's remoteGatewaySubnets — there is no window in which the tunnel has no
+route. POST .../route-table/static for a tunnel that already has an entry then
+fails 422 "routes position 1 contains a duplicate value" even for a different
+subnet, because the duplicate key is the tunnel and not the subnet; deleting the
+entry first makes the same POST succeed. And remote_gateway_subnets is Required
+on checkpointsase_enhanced_static_tunnel, so every static tunnel Terraform can
+build has one. Create could therefore never succeed. Adoption is not a way out
+either: two Terraform resources writing one value means each plan reports drift
+from the other's last apply, forever.
+
+OPEN QUESTION, deliberately not acted on: dynamic tunnels also carry
+remote_gateway_subnets in their shared settings, so the same coupling is
+plausible for them. It has NOT been measured. `dynamic` is left working rather
+than blocked on an inference.
+
+Two things this does not catch, both stated rather than papered over:
+  - A `type` whose value is not known until apply (computed from another
+    resource) reads as "" here, so the block does not fire and the user meets
+    the failure at apply instead. resourceEnhancedRouteTableCreate raises the
+    same message there.
+  - Destroy plans never reach CustomizeDiff in SDKv2, which is what we want:
+    someone holding a static entry in state can still remove it.
+*/
+func resourceEnhancedRouteTableCustomizeDiff(_ context.Context, d *schema.ResourceDiff, _ interface{}) error {
+	if d.Get("type").(string) != "static" {
+		return nil
+	}
+	return errors.New(enhancedRouteTableStaticNotSupported)
 }
 
 /*
@@ -131,15 +230,14 @@ func resourceEnhancedRouteTableCreate(ctx context.Context, d *schema.ResourceDat
 
 	switch routeType {
 	case "static":
-		tunnelId, ok := d.GetOk("tunnel_id")
-		if !ok {
-			return appendErrorDiags(diags, "tunnel_id is required for static route type", fmt.Errorf("tunnel_id must be set when type is 'static'"))
-		}
-		payload := perimeter81Sdk.EnhancedRouteTableStaticCreate{
-			TunnelId: tunnelId.(string),
-			Subnets:  subnets,
-		}
-		status, _, err = client.EnhancedRouteTablesAPI.CreateStaticRoute(ctx, networkId).EnhancedRouteTableStaticCreate(payload).Execute()
+		// Normally unreachable: resourceEnhancedRouteTableCustomizeDiff rejects
+		// this during plan. It survives for the one case that slips past — a
+		// `type` not known until apply — so that user gets the same explanation
+		// instead of the raw 422. The CreateStaticRoute call it used to make is
+		// gone rather than kept behind a guard, because the endpoint refuses it
+		// for every tunnel the provider is able to build; see the CustomizeDiff
+		// comment, and git history for the payload if the API ever changes.
+		return appendErrorDiags(diags, "Unsupported route type", errors.New(enhancedRouteTableStaticNotSupported))
 	case "dynamic":
 		tunnelIds := flattenStringsArrayData(d.Get("tunnel_ids").([]interface{}))
 		if len(tunnelIds) == 0 {

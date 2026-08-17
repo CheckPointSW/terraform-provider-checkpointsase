@@ -2,232 +2,172 @@ package checkpointsase
 
 import (
 	"context"
-	"fmt"
+	"strings"
 	"testing"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
-
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
 
-var randNameEnhancedRouteTable string = randStringBytesRmndr()
+/*
+There is no acceptance test for checkpointsase_enhanced_route_table any more.
 
-// TestAccEnhancedRouteTable_basic is the first live exercise of
-// checkpointsase_enhanced_route_table. It builds its own enhanced network
-// and static tunnel (rather than depending on the enhanced_static_tunnel
-// test file, so this test stays independently runnable — the same
-// independence the validated demo/enhanced_route_table/main.tf documents),
-// attaches a static route table entry to that tunnel, confirms it exists
-// server-side with the configured subnets and is attached to the right
-// tunnel, then exercises the Update path by adding a second subnet CIDR
-// (network_id, type, and the tunnel reference are all ForceNew — subnets is
-// the only in-place-mutable attribute) and confirms the change round-trips.
-func TestAccEnhancedRouteTable_basic(t *testing.T) {
-	var route perimeter81Sdk.EnhancedRouteTable
+There used to be one — TestAccEnhancedRouteTable_basic — and it built a network,
+a static tunnel and a `type = "static"` route entry. It could never have passed.
+Measured live 2026-08-17: the API creates a route entry for a static tunnel at
+the moment the tunnel itself is created, carrying that tunnel's
+remoteGatewaySubnets, and a second POST for the same tunnel comes back
+422 "routes position 1 contains a duplicate value" — even for a different
+subnet, because the duplicate key is the tunnel, not the subnet. Every static
+tunnel Terraform can build has a route already, so Create always failed at
+step 1. The test was removed rather than left as coverage for something the
+provider now refuses on purpose, and its fixtures and check helpers went with
+it; nothing else referenced them.
 
-	resource.Test(t, resource.TestCase{
-		PreCheck:  func() { testAccPreCheck(t) },
-		Providers: testAccProviders,
-		Steps: []resource.TestStep{
-			{
-				Config: testAccEnhancedRouteTableConfig(),
-				Check: resource.ComposeTestCheckFunc(
-					testAccCheckEnhancedRouteTableExists("checkpointsase_enhanced_route_table.demo", &route),
-					testAccCheckEnhancedRouteTableSubnets(&route, []string{"192.0.2.0/24"}),
-					testAccCheckEnhancedRouteTableTunnelID("checkpointsase_enhanced_route_table.demo", "checkpointsase_enhanced_static_tunnel.demo", &route),
-				),
-			},
-			{
-				Config: testAccEnhancedRouteTableUpdateConfig(),
-				Check: resource.ComposeTestCheckFunc(
-					testAccCheckEnhancedRouteTableExists("checkpointsase_enhanced_route_table.demo", &route),
-					testAccCheckEnhancedRouteTableSubnets(&route, []string{"192.0.2.0/24", "203.0.113.0/24"}),
-					testAccCheckEnhancedRouteTableTunnelID("checkpointsase_enhanced_route_table.demo", "checkpointsase_enhanced_static_tunnel.demo", &route),
-				),
-			},
-		},
+The dynamic path has no acceptance test either, and did not have one before.
+Writing one would need a dynamic tunnel whose BGP endpoints the API accepts, and
+the coupling question below is unresolved, so this is an honest gap and not a
+silently dropped case.
+
+What is covered here instead is the part that is now the provider's own
+behaviour rather than the server's: the plan-time refusal, and the wording of
+the message that refusal produces. Both run offline in milliseconds.
+*/
+
+// planEnhancedRouteTable runs the SDK's real diff machinery — including
+// CustomizeDiff — over a configuration, exactly as `terraform plan` would.
+// A nil prior state is a create; a populated one is a plan against an
+// existing resource.
+func planEnhancedRouteTable(t *testing.T, state *terraform.InstanceState, config map[string]interface{}) (*terraform.InstanceDiff, error) {
+	t.Helper()
+	return resourceEnhancedRouteTable().Diff(
+		context.Background(),
+		state,
+		terraform.NewResourceConfigRaw(config),
+		nil,
+	)
+}
+
+/*
+TestEnhancedRouteTableStaticIsRejectedAtPlanTime is the regression test for the
+whole point of the change: a user who writes `type = "static"` must be told so
+by `terraform plan`, before anything is sent to the API.
+
+Before this, the config planned cleanly and the apply died part-way through on a
+422 about duplicate values that named neither the cause nor the fix.
+*/
+func TestEnhancedRouteTableStaticIsRejectedAtPlanTime(t *testing.T) {
+	_, err := planEnhancedRouteTable(t, nil, map[string]interface{}{
+		"network_id": "fake-network-1",
+		"type":       "static",
+		"tunnel_id":  "fake-static-tunnel-1",
+		"subnets":    []interface{}{"192.0.2.0/24"},
 	})
-}
-
-// testAccCheckEnhancedRouteTableExists fetches the route table entry
-// directly from the API by network_id + route id from state, so this fails
-// if Create never actually produced a server-side route.
-func testAccCheckEnhancedRouteTableExists(n string, route *perimeter81Sdk.EnhancedRouteTable) resource.TestCheckFunc {
-	return func(s *terraform.State) error {
-		rs, ok := s.RootModule().Resources[n]
-		if !ok {
-			return fmt.Errorf("Not Found: %s", n)
-		}
-
-		routeId := rs.Primary.ID
-		if routeId == "" {
-			return fmt.Errorf("No route table id is set")
-		}
-		networkId := rs.Primary.Attributes["network_id"]
-		conn := testAccProvider.Meta().(*perimeter81Sdk.APIClient)
-		ctx := context.Background()
-		got, _, err := conn.EnhancedRouteTablesAPI.GetRouteEntry(ctx, networkId, routeId).Execute()
-		if err != nil {
-			return err
-		}
-		*route = *got
-		return nil
+	if err == nil {
+		t.Fatal("planning a static route succeeded; it must fail at plan time, not at apply")
+	}
+	if err.Error() != enhancedRouteTableStaticNotSupported {
+		t.Errorf("the plan failed with the wrong error:\n%v", err)
 	}
 }
 
-// testAccCheckEnhancedRouteTableSubnets compares the API's subnets (which
-// resourceEnhancedRouteTableRead sets directly from the same GetRouteEntry
-// response) against what was configured.
-func testAccCheckEnhancedRouteTableSubnets(route *perimeter81Sdk.EnhancedRouteTable, want []string) resource.TestCheckFunc {
-	return func(s *terraform.State) error {
-		if !testComparableArraiesEq(route.Subnets, want) {
-			return fmt.Errorf("got subnets %q; want %q", route.Subnets, want)
-		}
-		return nil
+/*
+TestEnhancedRouteTableStaticIsRejectedForAnExistingEntry covers the case the
+refusal would be easy to miss: someone who already has a static entry in state,
+from an import or from an earlier provider version.
+
+The refusal is not create-only. Two Terraform resources writing one server value
+means each plan reports drift from the other's last apply, forever, so adopting
+an existing entry is not a supported halfway house either. Removing the resource
+is still possible — SDKv2 short-circuits destroy plans before CustomizeDiff runs
+— so this does not trap anyone.
+*/
+func TestEnhancedRouteTableStaticIsRejectedForAnExistingEntry(t *testing.T) {
+	prior := &terraform.InstanceState{
+		ID: "fake-route-1",
+		Attributes: map[string]string{
+			"id":         "fake-route-1",
+			"network_id": "fake-network-1",
+			"type":       "static",
+			"tunnel_id":  "fake-static-tunnel-1",
+			"subnets.#":  "1",
+			"subnets.0":  "192.0.2.0/24",
+		},
+	}
+	_, err := planEnhancedRouteTable(t, prior, map[string]interface{}{
+		"network_id": "fake-network-1",
+		"type":       "static",
+		"tunnel_id":  "fake-static-tunnel-1",
+		"subnets":    []interface{}{"192.0.2.0/24"},
+	})
+	if err == nil {
+		t.Fatal("planning an existing static route succeeded; the refusal must not be create-only")
+	}
+	if err.Error() != enhancedRouteTableStaticNotSupported {
+		t.Errorf("the plan failed with the wrong error:\n%v", err)
 	}
 }
 
-// testAccCheckEnhancedRouteTableTunnelID confirms the route was actually
-// attached to the static tunnel this test created — not merely that some
-// route object exists with no error. tunnelResource's ID (the static
-// tunnel's server-assigned ID) is read from state rather than hardcoded, so
-// this works across reruns.
-func testAccCheckEnhancedRouteTableTunnelID(routeResource, tunnelResource string, route *perimeter81Sdk.EnhancedRouteTable) resource.TestCheckFunc {
-	return func(s *terraform.State) error {
-		trs, ok := s.RootModule().Resources[tunnelResource]
-		if !ok {
-			return fmt.Errorf("Not Found: %s", tunnelResource)
-		}
-		tunnelId := trs.Primary.ID
-		if tunnelId == "" {
-			return fmt.Errorf("No tunnel id is set on %s", tunnelResource)
-		}
-		if !testComparableArraiesEq(route.TunnelIds, []string{tunnelId}) {
-			return fmt.Errorf("got tunnel_ids %q; want [%q]", route.TunnelIds, tunnelId)
-		}
-		return nil
+/*
+TestEnhancedRouteTableDynamicStillPlans is the other half, and the reason the
+block is a CustomizeDiff on `type` rather than something broader.
+
+Dynamic tunnels also carry remote_gateway_subnets in their shared settings, so
+the same coupling is plausible for them — but it has NOT been measured, and this
+resource is not going to refuse a configuration on the strength of an inference.
+If that measurement is ever taken and the coupling is there, this test is the
+one that has to change, deliberately.
+*/
+func TestEnhancedRouteTableDynamicStillPlans(t *testing.T) {
+	diff, err := planEnhancedRouteTable(t, nil, map[string]interface{}{
+		"network_id": "fake-network-1",
+		"type":       "dynamic",
+		"tunnel_ids": []interface{}{"fake-dynamic-tunnel-1"},
+		"subnets":    []interface{}{"192.0.2.0/24"},
+	})
+	if err != nil {
+		t.Fatalf("planning a dynamic route failed, but only static is unsupported: %v", err)
+	}
+	if diff == nil || diff.Empty() {
+		t.Fatal("planning a dynamic route from no prior state produced no changes")
 	}
 }
 
-func testAccEnhancedRouteTableConfig() string {
-	config := `
-data "checkpointsase_enhanced_regions" "catalog" {}
+/*
+TestEnhancedRouteTableStaticMessageTellsTheUserWhatToDo pins the message itself,
+because the message is the deliverable. It is the only thing most users will
+ever see of this finding, and it replaces a 422 they could not act on.
 
-locals {
-  selected_region = data.checkpointsase_enhanced_regions.catalog.regions[0]
-}
+Each assertion is a thing the user needs in order to fix their config without
+reading anything else: where the route actually lives, which resource to set it
+on, which attribute, and how to read the result back. An edit that drops one of
+these turns the message back into "no".
+*/
+func TestEnhancedRouteTableStaticMessageTellsTheUserWhatToDo(t *testing.T) {
+	for _, want := range []string{
+		// What is wrong.
+		`does not support type = "static"`,
+		// Why — the route is not a separate object.
+		"part of the tunnel, not a separate object",
+		// Exactly what to do instead: this attribute, on this resource.
+		"remote_gateway_subnets",
+		"checkpointsase_enhanced_static_tunnel",
+		// How to see the result: the data source of the same name, shown as
+		// `data "..."` so it cannot be mistaken for this resource.
+		"data source",
+		`data "checkpointsase_enhanced_route_table"`,
+		// What is not affected, so nobody assumes the resource is dead.
+		`type = "dynamic"`,
+	} {
+		if !strings.Contains(enhancedRouteTableStaticNotSupported, want) {
+			t.Errorf("the plan-time message no longer mentions %q:\n%s", want, enhancedRouteTableStaticNotSupported)
+		}
+	}
 
-resource "checkpointsase_enhanced_network" "demo" {
-  name   = "qa-enh-route-%s"
-  subnet = "10.92.0.0/22"
-  tags   = ["qa-demo"]
-
-  region {
-    harmony_sase_region_id = local.selected_region.id
-    scale_units            = 1
-    idle                   = true
-  }
-}
-
-resource "checkpointsase_enhanced_static_tunnel" "demo" {
-  network_id  = checkpointsase_enhanced_network.demo.id
-  region_id   = one(checkpointsase_enhanced_network.demo.region[*].id)
-  tunnel_name = "EnhRouteTun1"
-
-  auth_type        = "psk"
-  passphrase       = "CHANGEMEenhRoute1"
-  remote_public_ip = "198.51.100.44"
-  remote_id        = "198.51.100.44"
-
-  key_exchange  = "ikev1"
-  ike_life_time = "9h"
-  lifetime      = "2h"
-  dpd_delay     = "20s"
-  dpd_timeout   = "40s"
-
-  p81_gateway_subnets    = ["0.0.0.0/0"]
-  remote_gateway_subnets = ["0.0.0.0/0"]
-
-  phase1 {
-    auth                = ["sha256"]
-    encryption          = ["3des"]
-    key_exchange_method = ["modp2048"]
-  }
-  phase2 {
-    auth                = ["sha256"]
-    encryption          = ["3des"]
-    key_exchange_method = ["modp2048"]
-  }
-}
-
-resource "checkpointsase_enhanced_route_table" "demo" {
-  network_id = checkpointsase_enhanced_network.demo.id
-  type       = "static"
-  tunnel_id  = checkpointsase_enhanced_static_tunnel.demo.id
-  subnets    = ["192.0.2.0/24"]
-}
-  `
-	return fmt.Sprintf(config, randNameEnhancedRouteTable)
-}
-
-func testAccEnhancedRouteTableUpdateConfig() string {
-	config := `
-data "checkpointsase_enhanced_regions" "catalog" {}
-
-locals {
-  selected_region = data.checkpointsase_enhanced_regions.catalog.regions[0]
-}
-
-resource "checkpointsase_enhanced_network" "demo" {
-  name   = "qa-enh-route-%s"
-  subnet = "10.92.0.0/22"
-  tags   = ["qa-demo"]
-
-  region {
-    harmony_sase_region_id = local.selected_region.id
-    scale_units            = 1
-    idle                   = true
-  }
-}
-
-resource "checkpointsase_enhanced_static_tunnel" "demo" {
-  network_id  = checkpointsase_enhanced_network.demo.id
-  region_id   = one(checkpointsase_enhanced_network.demo.region[*].id)
-  tunnel_name = "EnhRouteTun1"
-
-  auth_type        = "psk"
-  passphrase       = "CHANGEMEenhRoute1"
-  remote_public_ip = "198.51.100.44"
-  remote_id        = "198.51.100.44"
-
-  key_exchange  = "ikev1"
-  ike_life_time = "9h"
-  lifetime      = "2h"
-  dpd_delay     = "20s"
-  dpd_timeout   = "40s"
-
-  p81_gateway_subnets    = ["0.0.0.0/0"]
-  remote_gateway_subnets = ["0.0.0.0/0"]
-
-  phase1 {
-    auth                = ["sha256"]
-    encryption          = ["3des"]
-    key_exchange_method = ["modp2048"]
-  }
-  phase2 {
-    auth                = ["sha256"]
-    encryption          = ["3des"]
-    key_exchange_method = ["modp2048"]
-  }
-}
-
-resource "checkpointsase_enhanced_route_table" "demo" {
-  network_id = checkpointsase_enhanced_network.demo.id
-  type       = "static"
-  tunnel_id  = checkpointsase_enhanced_static_tunnel.demo.id
-  subnets    = ["192.0.2.0/24", "203.0.113.0/24"]
-}
-  `
-	return fmt.Sprintf(config, randNameEnhancedRouteTable)
+	// The message is read by users who have never seen this repository. Internal
+	// tracking identifiers, file paths and ticket numbers do not belong in it.
+	for _, unwanted := range []string{"task", "Task", "TODO", "superpowers", ".go"} {
+		if strings.Contains(enhancedRouteTableStaticNotSupported, unwanted) {
+			t.Errorf("the plan-time message leaks internal detail %q:\n%s", unwanted, enhancedRouteTableStaticNotSupported)
+		}
+	}
 }
