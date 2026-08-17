@@ -3,42 +3,42 @@
 page_title: "checkpointsase_enhanced_route_table Resource - checkpointsase"
 subcategory: ""
 description: |-
-  Manages a route-table entry for a checkpointsase_enhanced_network. A route directs traffic for the specified subnets through a list of dynamic tunnels. Only type = "dynamic" with tunnel_ids is supported. type = "static" is rejected during terraform plan: a static tunnel's route is created together with the tunnel and its subnets are the tunnel's own remote_gateway_subnets, so set them on checkpointsase_enhanced_static_tunnel and read the resulting route with the checkpointsase_enhanced_route_table data source. network_id, type, and tunnel_ids are immutable — changing any of them forces resource replacement.
+  This resource cannot create routes and every configuration using it is rejected during terraform plan, for type = "static" and type = "dynamic" alike. A route is not a separate object: it belongs to its tunnel, Harmony SASE creates it together with the tunnel, and its subnets are that tunnel's own remote_gateway_subnets — one value shown in two places. To choose which subnets a tunnel routes, set remote_gateway_subnets on checkpointsase_enhanced_static_tunnel or checkpointsase_enhanced_dynamic_tunnel; to read the resulting routes, use the checkpointsase_enhanced_route_table data source, which is unaffected. Then remove this resource from your configuration. It is kept in the provider so that existing configurations and state still parse and can be removed cleanly.
 ---
 
 # checkpointsase_enhanced_route_table (Resource)
 
-Manages a route-table entry for a `checkpointsase_enhanced_network`. A route directs traffic for the specified `subnets` through a list of dynamic tunnels. Only `type = "dynamic"` with `tunnel_ids` is supported. **`type = "static"` is rejected during `terraform plan`**: a static tunnel's route is created together with the tunnel and its subnets are the tunnel's own `remote_gateway_subnets`, so set them on `checkpointsase_enhanced_static_tunnel` and read the resulting route with the `checkpointsase_enhanced_route_table` data source. **`network_id`, `type`, and `tunnel_ids` are immutable** — changing any of them forces resource replacement.
+**This resource cannot create routes and every configuration using it is rejected during `terraform plan`**, for `type = "static"` and `type = "dynamic"` alike. A route is not a separate object: it belongs to its tunnel, Harmony SASE creates it together with the tunnel, and its subnets are that tunnel's own `remote_gateway_subnets` — one value shown in two places. To choose which subnets a tunnel routes, set `remote_gateway_subnets` on `checkpointsase_enhanced_static_tunnel` or `checkpointsase_enhanced_dynamic_tunnel`; to read the resulting routes, use the `checkpointsase_enhanced_route_table` **data source**, which is unaffected. Then remove this resource from your configuration. It is kept in the provider so that existing configurations and state still parse and can be removed cleanly.
 
 ## Example Usage
 
 ```terraform
-# A route attached to one or more dynamic (BGP) tunnels.
-# `propagated` is a computed attribute and must not be set in configuration.
-resource "checkpointsase_enhanced_route_table" "example" {
-  network_id = "ZwAeo5wqiF"
-  type       = "dynamic"
-  tunnel_ids = ["tun-abc12345"]
-  subnets    = ["10.50.0.0/16"]
+# There is no working example of this resource, because there is no working
+# configuration of it. Every use is rejected during `terraform plan`, for
+# `type = "static"` and `type = "dynamic"` alike.
+#
+# A route is not a separate object — it belongs to its tunnel. Harmony SASE
+# creates the route when the tunnel is created, and the route's subnets are the
+# tunnel's own `remote_gateway_subnets`: one value, two views. So there is
+# never a tunnel without a route, and nothing here for Terraform to create.
+#
+# Set the routed subnets on the tunnel, whichever kind you have.
+
+resource "checkpointsase_enhanced_static_tunnel" "example" {
+  # ... the rest of the tunnel's configuration ...
+  remote_gateway_subnets = ["10.50.0.0/16"]
 }
 
-# Read every route on the network — including the ones the API creates by
-# itself — through the data source of the same name.
+resource "checkpointsase_enhanced_dynamic_tunnel" "example" {
+  # ... the rest of the tunnel's configuration ...
+  remote_gateway_subnets = ["10.60.0.0/16"]
+}
+
+# Read every route on the network — all of them are created by the API itself —
+# through the data source of the same name.
 data "checkpointsase_enhanced_route_table" "example" {
   network_id = "ZwAeo5wqiF"
 }
-
-# `type = "static"` is rejected during `terraform plan`. A static tunnel's route
-# is created together with the tunnel and its subnets are the tunnel's own
-# `remote_gateway_subnets` — one value, two views — so there is no separate
-# object here for Terraform to manage. Set the subnets on the tunnel instead:
-#
-#   resource "checkpointsase_enhanced_static_tunnel" "example" {
-#     # ... the rest of the tunnel's configuration ...
-#     remote_gateway_subnets = ["10.60.0.0/16"]
-#   }
-#
-# and read the route back with the data source above.
 ```
 
 <!-- schema generated by tfplugindocs -->
@@ -48,14 +48,14 @@ data "checkpointsase_enhanced_route_table" "example" {
 
 - `network_id` (String) The ID of the enhanced network this route table entry belongs to.
 - `subnets` (List of String) List of subnet CIDR blocks for the route table entry.
-- `type` (String) The route type. Only `dynamic` is supported, paired with `tunnel_ids`. `static` is still accepted by the schema but rejected at plan time with an explanation: a static tunnel's route is its own `remote_gateway_subnets` on `checkpointsase_enhanced_static_tunnel`, not a separate object.
+- `type` (String) The route type, `static` or `dynamic`. **Neither is usable** — both are rejected at plan time with an explanation. A tunnel's route is its own `remote_gateway_subnets`, on `checkpointsase_enhanced_static_tunnel` or `checkpointsase_enhanced_dynamic_tunnel`, not a separate object.
 
 ### Optional
 
 - `last_updated` (String) Timestamp of the last update to this resource.
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
-- `tunnel_id` (String) The static tunnel ID. **Not usable** — it pairs with `type = "static"`, which is rejected at plan time. A static tunnel already has a route the moment it is created, carrying that tunnel's `remote_gateway_subnets`; set the subnets there instead. Kept in the schema so existing configurations and state still parse and can be removed cleanly.
-- `tunnel_ids` (List of String) The list of dynamic tunnel IDs. Required when type is `dynamic`. Mutually exclusive with `tunnel_id`. Whether a dynamic tunnel is also given a route automatically at creation, the way a static tunnel is, has not been measured; if it is, creating this resource for such a tunnel will fail the same way the static path does.
+- `tunnel_id` (String) The static tunnel ID. **Not usable** — it pairs with `type = "static"`, which is rejected at plan time. A static tunnel already has a route the moment it is created, carrying that tunnel's `remote_gateway_subnets`; set the subnets on `checkpointsase_enhanced_static_tunnel` instead. Kept in the schema so existing configurations and state still parse and can be removed cleanly.
+- `tunnel_ids` (List of String) The list of dynamic tunnel IDs. **Not usable** — it pairs with `type = "dynamic"`, which is rejected at plan time. Measured 2026-08-17: a dynamic tunnel is given a route automatically at creation exactly as a static tunnel is, carrying that tunnel's `remote_gateway_subnets`, and a second route for it is refused with the same `422 "routes" position 1 contains a duplicate value`; set the subnets on `checkpointsase_enhanced_dynamic_tunnel` instead. Kept in the schema so existing configurations and state still parse and can be removed cleanly.
 
 ### Read-Only
 

@@ -20,10 +20,12 @@ resourceEnhancedNetwork Setup the Enhanced Network Resource CRUD operations
 func resourceEnhancedNetwork() *schema.Resource {
 	return &schema.Resource{
 		Description: "Manages an enhanced (SD-WAN-capable) network in Check Point SASE. " +
-			"Enhanced networks support multi-region deployment, IPsec tunnels (static and " +
-			"BGP-routed dynamic), and route tables — see `checkpointsase_enhanced_region`, " +
-			"`checkpointsase_enhanced_static_tunnel`, `checkpointsase_enhanced_dynamic_tunnel`, " +
-			"and `checkpointsase_enhanced_route_table`. " +
+			"Enhanced networks support multi-region deployment and IPsec tunnels (static and " +
+			"BGP-routed dynamic) — see `checkpointsase_enhanced_region`, " +
+			"`checkpointsase_enhanced_static_tunnel` and " +
+			"`checkpointsase_enhanced_dynamic_tunnel`. Each tunnel carries its own route, " +
+			"set through that tunnel's `remote_gateway_subnets` and readable through the " +
+			"`checkpointsase_enhanced_route_table` **data source**. " +
 			"**`subnet` is immutable** — changing it forces resource replacement.",
 		CreateContext: resourceEnhancedNetworkCreate,
 		ReadContext:   resourceEnhancedNetworkRead,

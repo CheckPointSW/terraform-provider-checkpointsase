@@ -25,8 +25,12 @@ func resourceEnhancedDynamicTunnel() *schema.Resource {
 			"`checkpointsase_enhanced_network`. A dynamic tunnel can span multiple " +
 			"regions: each `tunnel` block declares one endpoint, and shared phase1 / " +
 			"phase2 / lifetime parameters apply to all of them. " +
-			"Use `checkpointsase_enhanced_route_table` with `type = \"dynamic\"` to " +
-			"attach routes to the resulting tunnel group. " +
+			"The tunnel's route is part of the tunnel: Harmony SASE creates it with the " +
+			"tunnel, and its subnets are this resource's own `remote_gateway_subnets`, so " +
+			"set the routed subnets there. The `checkpointsase_enhanced_route_table` " +
+			"**resource** is rejected during `terraform plan` and cannot attach a route " +
+			"here; read the resulting route with the " +
+			"`checkpointsase_enhanced_route_table` **data source**. " +
 			"**`network_id` is immutable** — changing it forces resource replacement.",
 		CreateContext: resourceEnhancedDynamicTunnelCreate,
 		ReadContext:   resourceEnhancedDynamicTunnelRead,

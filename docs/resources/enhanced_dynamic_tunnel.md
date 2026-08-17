@@ -3,12 +3,12 @@
 page_title: "checkpointsase_enhanced_dynamic_tunnel Resource - checkpointsase"
 subcategory: ""
 description: |-
-  Manages a dynamic (BGP-routed) IPsec tunnel attached to a checkpointsase_enhanced_network. A dynamic tunnel can span multiple regions: each tunnel block declares one endpoint, and shared phase1 / phase2 / lifetime parameters apply to all of them. Use checkpointsase_enhanced_route_table with type = "dynamic" to attach routes to the resulting tunnel group. network_id is immutable — changing it forces resource replacement.
+  Manages a dynamic (BGP-routed) IPsec tunnel attached to a checkpointsase_enhanced_network. A dynamic tunnel can span multiple regions: each tunnel block declares one endpoint, and shared phase1 / phase2 / lifetime parameters apply to all of them. The tunnel's route is part of the tunnel: Harmony SASE creates it with the tunnel, and its subnets are this resource's own remote_gateway_subnets, so set the routed subnets there. The checkpointsase_enhanced_route_table resource is rejected during terraform plan and cannot attach a route here; read the resulting route with the checkpointsase_enhanced_route_table data source. network_id is immutable — changing it forces resource replacement.
 ---
 
 # checkpointsase_enhanced_dynamic_tunnel (Resource)
 
-Manages a dynamic (BGP-routed) IPsec tunnel attached to a `checkpointsase_enhanced_network`. A dynamic tunnel can span multiple regions: each `tunnel` block declares one endpoint, and shared phase1 / phase2 / lifetime parameters apply to all of them. Use `checkpointsase_enhanced_route_table` with `type = "dynamic"` to attach routes to the resulting tunnel group. **`network_id` is immutable** — changing it forces resource replacement.
+Manages a dynamic (BGP-routed) IPsec tunnel attached to a `checkpointsase_enhanced_network`. A dynamic tunnel can span multiple regions: each `tunnel` block declares one endpoint, and shared phase1 / phase2 / lifetime parameters apply to all of them. The tunnel's route is part of the tunnel: Harmony SASE creates it with the tunnel, and its subnets are this resource's own `remote_gateway_subnets`, so set the routed subnets there. The `checkpointsase_enhanced_route_table` **resource** is rejected during `terraform plan` and cannot attach a route here; read the resulting route with the `checkpointsase_enhanced_route_table` **data source**. **`network_id` is immutable** — changing it forces resource replacement.
 
 ## Example Usage
 
