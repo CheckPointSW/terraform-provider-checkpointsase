@@ -57,7 +57,13 @@ lists every route on the network:
       network_id = checkpointsase_enhanced_network.example.id
     }
 
-Then remove this resource from your configuration.`
+Then remove this resource from your configuration.
+
+One exception. If Terraform is already tracking a route entry -- only possible
+if you imported one, since creating one has never worked -- run
+"terraform state rm" on it instead of deleting the resource. Deleting it makes
+Terraform remove the entry server-side, which takes away the tunnel's only
+route and stops traffic flowing through it.`
 
 /*
 resourceEnhancedRouteTable Setup the Enhanced Route Table Resource CRUD operations
@@ -76,7 +82,11 @@ func resourceEnhancedRouteTable() *schema.Resource {
 			"`checkpointsase_enhanced_static_tunnel` or " +
 			"`checkpointsase_enhanced_dynamic_tunnel`; to read the resulting routes, " +
 			"use the `checkpointsase_enhanced_route_table` **data source**, which is " +
-			"unaffected. Then remove this resource from your configuration. " +
+			"unaffected. Then remove this resource from your configuration — but if " +
+			"Terraform is already tracking an entry (only possible via `terraform " +
+			"import`, since creating one has never worked), use `terraform state rm` " +
+			"instead: deleting the resource removes the entry server-side, which takes " +
+			"away the tunnel's only route. " +
 			"It is kept in the provider so that existing configurations and state " +
 			"still parse and can be removed cleanly.",
 		CreateContext: resourceEnhancedRouteTableCreate,
