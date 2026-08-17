@@ -25,8 +25,12 @@ func resourceEnhancedStaticTunnel() *schema.Resource {
 			"`checkpointsase_enhanced_network`. A static tunnel terminates at a single " +
 			"remote endpoint identified by `remote_public_ip` (PSK) or via certificate " +
 			"authentication (`auth_type = \"cert\"` + `customer_root_ca`). " +
-			"Use `checkpointsase_enhanced_route_table` with `type = \"static\"` and the " +
-			"tunnel's ID to attach routes. " +
+			"The tunnel's route is part of the tunnel: Harmony SASE creates it with the " +
+			"tunnel, and its subnets are this resource's own `remote_gateway_subnets`, so " +
+			"set the routed subnets there. `checkpointsase_enhanced_route_table` with " +
+			"`type = \"static\"` is rejected during `terraform plan` and cannot be used to " +
+			"attach a route here; read the resulting route with the " +
+			"`checkpointsase_enhanced_route_table` data source. " +
 			"**`network_id` and `region_id` are immutable** — changing either forces " +
 			"resource replacement.",
 		CreateContext: resourceEnhancedStaticTunnelCreate,
