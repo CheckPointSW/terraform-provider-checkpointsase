@@ -129,7 +129,7 @@ Required:
 
 Required:
 
-- `p81_gateway_subnets` (List of String) Check Point SASE gateway subnet CIDR blocks reachable through either tunnel.
+- `p81_gateway_subnets` (List of String) Check Point SASE gateway subnet CIDR blocks reachable through either tunnel. The enhanced-network tunnel endpoints restrict this list to `0.0.0.0/0` or the network's own subnet; whether `/v3/networks/standard/...` applies the same rule has not been measured. The plan-time validator checks CIDR format only.
 - `remote_gateway_subnets` (List of String) Remote-side subnet CIDR blocks reachable through either tunnel.
 
 Optional:

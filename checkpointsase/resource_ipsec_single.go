@@ -134,11 +134,21 @@ func resourceIpsecSingle() *schema.Resource {
 				Description: "Timestamp when the tunnel was last updated server-side.",
 			},
 			"p81_gateway_subnets": {
-				Type:        schema.TypeList,
-				Required:    true,
-				Description: "Check Point SASE gateway subnet CIDR blocks reachable through this tunnel.",
+				Type:     schema.TypeList,
+				Required: true,
+				Description: "Check Point SASE gateway subnet CIDR blocks reachable through this tunnel. " +
+					"The enhanced-network tunnel endpoints restrict this list to `0.0.0.0/0` or the " +
+					"network's own subnet; whether `/v3/networks/standard/...` applies the same rule " +
+					"has not been measured. The plan-time validator checks CIDR format only.",
+				// This resource writes /v3/networks/standard/..., a different
+				// endpoint family from the enhanced tunnels where the
+				// "0.0.0.0/0 or the network Subnet" 409 was measured
+				// (see p81GatewaySubnetsEnhancedRule in utils.go). The rule is not
+				// asserted here because it was not measured here; only the CIDR
+				// format check, which holds for any list of CIDRs, is applied.
 				Elem: &schema.Schema{
-					Type: schema.TypeString,
+					Type:         schema.TypeString,
+					ValidateFunc: validation.IsCIDR,
 				},
 			},
 			"remote_gateway_subnets": {

@@ -142,10 +142,20 @@ func resourceEnhancedDynamicTunnel() *schema.Resource {
 				},
 			},
 			"p81_gateway_subnets": {
-				Type:        schema.TypeList,
-				Required:    true,
-				Description: "List of Check Point SASE gateway subnet CIDR blocks (shared settings).",
-				Elem:        &schema.Schema{Type: schema.TypeString},
+				Type:     schema.TypeList,
+				Required: true,
+				Description: "List of Check Point SASE gateway subnet CIDR blocks (shared settings). " +
+					p81GatewaySubnetsEnhancedRule +
+					" The 409 above was measured on the static-tunnel endpoint; the dynamic " +
+					"endpoint was not separately exercised, but both write the same " +
+					"`p81GatewaySubnets` field of the same enhanced network.",
+				// Same split as the static tunnel: CIDR format is checkable at plan
+				// time, the allowed-value half is not. See
+				// p81GatewaySubnetsEnhancedRule in utils.go.
+				Elem: &schema.Schema{
+					Type:         schema.TypeString,
+					ValidateFunc: validation.IsCIDR,
+				},
 			},
 			"remote_gateway_subnets": {
 				Type:        schema.TypeList,

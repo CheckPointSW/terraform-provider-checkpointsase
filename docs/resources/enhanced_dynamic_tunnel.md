@@ -18,6 +18,8 @@ Manages a dynamic (BGP-routed) IPsec tunnel attached to a `checkpointsase_enhanc
 # Encryption values must match the public-api enum (PhaseEncryptionV2_1) — use
 # "aes256", "aes128", etc. Passphrases must satisfy the IsPassphrase regex
 # (letters/digits/`.`/`_`, 8-64 chars — no hyphens).
+# `p81_gateway_subnets` must equal the parent enhanced network's own subnet
+# (or `0.0.0.0/0` for a default route); arbitrary CIDRs are rejected.
 resource "checkpointsase_enhanced_dynamic_tunnel" "example" {
   network_id             = "ZwAeo5wqiF"
   tunnel_name            = "dynamicTunnel01"
@@ -70,7 +72,7 @@ resource "checkpointsase_enhanced_dynamic_tunnel" "example" {
 - `left_asn` (Number) The local (Check Point SASE) BGP autonomous-system number for this dynamic tunnel. Required by the API; valid ranges per IsValidASN. **Effectively set-once:** the v3 update request body has no field for it (`leftASN` exists only on the create shape), so changing this value cannot be applied in place. The provider raises a warning and leaves the server-side ASN unchanged; use `terraform apply -replace=...` to change it.
 - `lifetime` (String) IPSec SA lifetime as a `<int><unit>` duration string, e.g. `3600s`, `60m`, or `1h`. Server-enforced ranges: `s` 10–86400, `m` 1–1440, `h` 1–24.
 - `network_id` (String) The ID of the enhanced network this dynamic tunnel belongs to.
-- `p81_gateway_subnets` (List of String) List of Check Point SASE gateway subnet CIDR blocks (shared settings).
+- `p81_gateway_subnets` (List of String) List of Check Point SASE gateway subnet CIDR blocks (shared settings). Server-enforced: the list can hold only `0.0.0.0/0` or the parent `checkpointsase_enhanced_network`'s own `subnet`; any other CIDR is refused at apply time with `409 The list of Harmony SASE Subnets can only be "0.0.0.0/0" or the network Subnet`. The plan-time validator checks CIDR format only — the permitted subnet lives on another resource and is usually unknown while planning, so the allowed-value half of the rule cannot be checked before apply. The 409 above was measured on the static-tunnel endpoint; the dynamic endpoint was not separately exercised, but both write the same `p81GatewaySubnets` field of the same enhanced network.
 - `phase1` (Block List, Min: 1, Max: 1) Phase 1 (IKE) IPSec configuration. (see [below for nested schema](#nestedblock--phase1))
 - `phase2` (Block List, Min: 1, Max: 1) Phase 2 (ESP/IPSec) configuration. (see [below for nested schema](#nestedblock--phase2))
 - `remote_gateway_subnets` (List of String) List of remote gateway subnet CIDR blocks (shared settings).

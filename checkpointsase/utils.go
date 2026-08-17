@@ -54,6 +54,52 @@ func validateRemoteID(v interface{}, k string) (warns []string, errs []error) {
 }
 
 /*
+p81GatewaySubnetsEnhancedRule is the server's own restriction on
+p81_gateway_subnets for the enhanced-network tunnel endpoints, carried in the
+attribute Description so a reader can tell it is the API's rule and not the
+provider's.
+
+Measured live 2026-08-17. Creating an enhanced static tunnel
+(POST /v3/networks/enhanced/{networkId}/tunnels/ipsec/static) with
+p81GatewaySubnets set to an arbitrary CIDR is refused:
+
+	409 {"message":"The list of Harmony SASE Subnets can only be \"0.0.0.0/0\"
+	     or the network Subnet","messageCode":"CONFLICT"}
+
+So the permitted values are exactly two: the default route, or the enclosing
+network's own subnet.
+
+WHY THAT FULL RULE IS NOT ENFORCED AT PLAN TIME — deliberate, do not "fix" it.
+The permitted non-default value is another resource's attribute,
+checkpointsase_enhanced_network.subnet. A resource's CustomizeDiff sees only
+its own configuration and state; it cannot read a sibling resource, and the
+sibling is usually being created in the same apply, so its subnet is an unknown
+value during plan (network_id itself commonly is too). Anything written here
+would therefore have to guess. Guessing has one plausible shape — allow only
+"0.0.0.0/0" — and it would fail every configuration that correctly names its
+network's subnet, which is the other half of what the server allows. A plan
+that refuses a valid config is worse than the 409 the server already returns
+for an invalid one, so the rule is documented and the server keeps enforcing
+it.
+
+What IS enforced is the part that needs no outside knowledge: every element
+parses as a CIDR (validation.IsCIDR on the element schema). That turns a typo
+into a plan-time failure instead of an apply-time one, without overclaiming.
+
+Not measured: whether the dynamic-tunnel endpoint
+(.../tunnels/ipsec/dynamic) applies the same restriction — only the static
+endpoint was exercised — and whether the standard-network endpoints
+(/v3/networks/standard/...) do. See those resources' descriptions.
+*/
+const p81GatewaySubnetsEnhancedRule = "Server-enforced: the list can hold only " +
+	"`0.0.0.0/0` or the parent `checkpointsase_enhanced_network`'s own `subnet`; " +
+	"any other CIDR is refused at apply time with " +
+	"`409 The list of Harmony SASE Subnets can only be \"0.0.0.0/0\" or the network Subnet`. " +
+	"The plan-time validator checks CIDR format only — the permitted subnet lives on " +
+	"another resource and is usually unknown while planning, so the allowed-value half " +
+	"of the rule cannot be checked before apply."
+
+/*
 setIfPresent writes value to the ResourceData attribute key only when present
 is true. present is expected to be the SDK model's nil-safety check for the
 field being written (e.g. tunnel.HasSecretAccessKey()) — a no-op otherwise.

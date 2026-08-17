@@ -146,11 +146,17 @@ func resourceEnhancedStaticTunnel() *schema.Resource {
 					"must be a duration like `5s`–`60s`"),
 			},
 			"p81_gateway_subnets": {
-				Type:        schema.TypeList,
-				Required:    true,
-				Description: "List of Check Point SASE gateway subnet CIDR blocks.",
+				Type:     schema.TypeList,
+				Required: true,
+				Description: "List of Check Point SASE gateway subnet CIDR blocks. " +
+					p81GatewaySubnetsEnhancedRule,
+				// The 409 quoted in p81GatewaySubnetsEnhancedRule was measured on
+				// this endpoint. Only the CIDR-format half is checkable at plan
+				// time; see that constant's comment for why the allowed-value half
+				// is left to the server.
 				Elem: &schema.Schema{
-					Type: schema.TypeString,
+					Type:         schema.TypeString,
+					ValidateFunc: validation.IsCIDR,
 				},
 			},
 			"remote_gateway_subnets": {

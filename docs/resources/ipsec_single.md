@@ -58,7 +58,7 @@ resource "checkpointsase_ipsec_single" "example" {
 - `key_exchange` (String) IKE version for key exchange. Must be `ikev1` or `ikev2`.
 - `lifetime` (String) IPSec SA lifetime as a `<int><unit>` duration string, e.g. `3600s`, `60m`, or `1h`. Server-enforced ranges: `s` 10–86400, `m` 1–1440, `h` 1–24.
 - `network_id` (String) The ID of the standard network the tunnel belongs to.
-- `p81_gateway_subnets` (List of String) Check Point SASE gateway subnet CIDR blocks reachable through this tunnel.
+- `p81_gateway_subnets` (List of String) Check Point SASE gateway subnet CIDR blocks reachable through this tunnel. The enhanced-network tunnel endpoints restrict this list to `0.0.0.0/0` or the network's own subnet; whether `/v3/networks/standard/...` applies the same rule has not been measured. The plan-time validator checks CIDR format only.
 - `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).
 - `phase1` (Block List, Min: 1) Phase 1 (IKE) IPSec proposal lists. (see [below for nested schema](#nestedblock--phase1))
 - `phase2` (Block List, Min: 1) Phase 2 (ESP/IPSec) proposal lists. (see [below for nested schema](#nestedblock--phase2))

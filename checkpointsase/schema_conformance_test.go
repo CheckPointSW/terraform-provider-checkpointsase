@@ -141,3 +141,132 @@ func TestSchemaEveryResourceHasATopLevelDescription(t *testing.T) {
 			len(missing), strings.Join(missing, "\n  "))
 	}
 }
+
+/*
+p81GatewaySubnetsAttributes is the enumerated answer to "which registered types
+actually carry p81_gateway_subnets", found by walking the provider rather than
+assumed. Writing it down as an exact set means a new resource carrying the
+attribute has to be added here on purpose, along with the CIDR validation and
+the wording that belongs with it, instead of quietly shipping with neither.
+
+data.checkpointsase_enhanced_tunnels also exposes p81_gateway_subnets and is
+deliberately absent: it is Computed, so no user-supplied value ever reaches it
+and there is nothing to validate.
+*/
+var p81GatewaySubnetsAttributes = map[string][]string{
+	"resource.checkpointsase_enhanced_static_tunnel":  {"p81_gateway_subnets"},
+	"resource.checkpointsase_enhanced_dynamic_tunnel": {"p81_gateway_subnets"},
+	"resource.checkpointsase_ipsec_single":            {"p81_gateway_subnets"},
+	"resource.checkpointsase_ipsec_redundant":         {"shared_settings.p81_gateway_subnets"},
+}
+
+/*
+TestSchemaP81GatewaySubnetsValidateCIDRFormat covers the half of the server's
+p81_gateway_subnets rule that a plan can actually check.
+
+The whole rule — "0.0.0.0/0 or the network Subnet", measured live 2026-08-17 as
+a 409 on the enhanced static-tunnel endpoint — is NOT enforced, and this test
+does not pretend it is: the permitted subnet belongs to another resource and is
+routinely unknown while planning, so a validator asserting it would fail valid
+configurations. See p81GatewaySubnetsEnhancedRule in utils.go.
+
+What is asserted here is that a malformed CIDR fails during plan rather than at
+apply, on every writable copy of the attribute, and that 0.0.0.0/0 — one of the
+only two values the enhanced endpoints accept — still passes.
+*/
+func TestSchemaP81GatewaySubnetsValidateCIDRFormat(t *testing.T) {
+	seen := map[string][]string{}
+	for owner, s := range allRegistered() {
+		if strings.HasPrefix(owner, "data.") {
+			continue
+		}
+		walkSchema("", s, func(path string, attr *schema.Schema) {
+			leaf := path
+			if i := strings.LastIndex(path, "."); i >= 0 {
+				leaf = path[i+1:]
+			}
+			if leaf != "p81_gateway_subnets" {
+				return
+			}
+			seen[owner] = append(seen[owner], path)
+
+			elem, ok := attr.Elem.(*schema.Schema)
+			if !ok {
+				t.Errorf("%s: %s has no element schema to validate", owner, path)
+				return
+			}
+			if elem.ValidateFunc == nil {
+				t.Errorf("%s: %s elements have no ValidateFunc; a typo reaches the API instead of failing the plan", owner, path)
+				return
+			}
+			if _, errs := elem.ValidateFunc("not-a-cidr", path); len(errs) == 0 {
+				t.Errorf("%s: %s accepted the malformed CIDR %q at plan time", owner, path, "not-a-cidr")
+			}
+			// 0.0.0.0/0 is one of exactly two values the enhanced endpoints
+			// accept, so a validator that rejected it would be worse than none.
+			if _, errs := elem.ValidateFunc("0.0.0.0/0", path); len(errs) != 0 {
+				t.Errorf("%s: %s rejected the default route %q, which the server accepts: %v", owner, path, "0.0.0.0/0", errs)
+			}
+		})
+	}
+
+	for owner, want := range p81GatewaySubnetsAttributes {
+		got := seen[owner]
+		if len(got) == 0 {
+			t.Errorf("%s no longer carries p81_gateway_subnets; update p81GatewaySubnetsAttributes", owner)
+			continue
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s carries p81_gateway_subnets at %v; expected %v", owner, got, want)
+		}
+	}
+	for owner, got := range seen {
+		if _, known := p81GatewaySubnetsAttributes[owner]; !known {
+			t.Errorf("%s carries p81_gateway_subnets at %v but is not listed in p81GatewaySubnetsAttributes — decide what its description and validation should say", owner, got)
+		}
+	}
+}
+
+/*
+TestSchemaP81GatewaySubnetsDocumentTheServerRule pins the wording, because the
+wording is the only place the unenforceable half of the rule exists.
+
+A reader who hits the 409 has no way to discover "0.0.0.0/0 or the network
+Subnet" other than this description, so it quotes the server's own message
+verbatim — making clear whose rule it is — and says outright that the plan
+checks format only. Dropping either turns a documented constraint back into a
+surprise at apply time.
+*/
+func TestSchemaP81GatewaySubnetsDocumentTheServerRule(t *testing.T) {
+	enhanced := []string{
+		"checkpointsase_enhanced_static_tunnel",
+		"checkpointsase_enhanced_dynamic_tunnel",
+	}
+	wants := []string{
+		// The server's message, quoted so the reader knows it is the API's rule.
+		`The list of Harmony SASE Subnets can only be "0.0.0.0/0" or the network Subnet`,
+		// The status code, so it is recognisable when it arrives.
+		"409",
+		// Where the other permitted value comes from.
+		"subnet",
+		// The honest limit of what the plan checks.
+		"CIDR format only",
+	}
+
+	resources := Provider().ResourcesMap
+	for _, name := range enhanced {
+		r, ok := resources[name]
+		if !ok {
+			t.Fatalf("%s is not registered", name)
+		}
+		attr, ok := r.Schema["p81_gateway_subnets"]
+		if !ok {
+			t.Fatalf("%s no longer has p81_gateway_subnets", name)
+		}
+		for _, want := range wants {
+			if !strings.Contains(attr.Description, want) {
+				t.Errorf("%s.p81_gateway_subnets description no longer states %q:\n%s", name, want, attr.Description)
+			}
+		}
+	}
+}
