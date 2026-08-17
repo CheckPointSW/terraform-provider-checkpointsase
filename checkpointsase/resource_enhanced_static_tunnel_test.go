@@ -51,7 +51,7 @@ func TestAccEnhancedStaticTunnel_basic(t *testing.T) {
 						DpdDelay:             "20s",
 						DpdTimeout:           "40s",
 						P81GatewaySubnets:    []string{"0.0.0.0/0"},
-						RemoteGatewaySubnets: []string{"0.0.0.0/0"},
+						RemoteGatewaySubnets: []string{"172.31.250.0/24"},
 						PeakBandwidthMbps:    1000,
 						Phase1: perimeter81Sdk.IPSecPhaseConfigV23{
 							Auth:              []string{"sha256"},
@@ -90,7 +90,7 @@ func TestAccEnhancedStaticTunnel_basic(t *testing.T) {
 						DpdDelay:             "30s",
 						DpdTimeout:           "50s",
 						P81GatewaySubnets:    []string{"0.0.0.0/0"},
-						RemoteGatewaySubnets: []string{"0.0.0.0/0"},
+						RemoteGatewaySubnets: []string{"172.31.250.0/24"},
 						PeakBandwidthMbps:    1000,
 						Phase1: perimeter81Sdk.IPSecPhaseConfigV23{
 							Auth:              []string{"sha256"},
@@ -290,8 +290,22 @@ resource "checkpointsase_enhanced_static_tunnel" "demo" {
   dpd_delay     = "20s"
   dpd_timeout   = "40s"
 
+  # remote_gateway_subnets must NOT be the default route here. A static tunnel
+  # created with remote_gateway_subnets = ["0.0.0.0/0"] can be created and read
+  # but never updated: every PUT comes back
+  #   404 {"message":"Remote gateway subnets not found"}
+  # even for a body that omits the subnet fields entirely, and even though
+  # GET .../route-table shows the tunnel's own entry. Measured 2026-08-17 by
+  # building three tunnels differing only in these two values -- the one with a
+  # real CIDR here updated with 202, the default-route ones all 404'd.
+  # This is server-side; the provider sends the same body either way.
+  #
+  # p81_gateway_subnets is separately constrained -- create answers
+  #   409 "The list of Harmony SASE Subnets can only be "0.0.0.0/0" or the
+  #        network Subnet"
+  # for anything else, so the default route is the correct value for it.
   p81_gateway_subnets    = ["0.0.0.0/0"]
-  remote_gateway_subnets = ["0.0.0.0/0"]
+  remote_gateway_subnets = ["172.31.250.0/24"]
 
   phase1 {
     auth                = ["sha256"]
@@ -344,8 +358,22 @@ resource "checkpointsase_enhanced_static_tunnel" "demo" {
   dpd_delay     = "30s"
   dpd_timeout   = "50s"
 
+  # remote_gateway_subnets must NOT be the default route here. A static tunnel
+  # created with remote_gateway_subnets = ["0.0.0.0/0"] can be created and read
+  # but never updated: every PUT comes back
+  #   404 {"message":"Remote gateway subnets not found"}
+  # even for a body that omits the subnet fields entirely, and even though
+  # GET .../route-table shows the tunnel's own entry. Measured 2026-08-17 by
+  # building three tunnels differing only in these two values -- the one with a
+  # real CIDR here updated with 202, the default-route ones all 404'd.
+  # This is server-side; the provider sends the same body either way.
+  #
+  # p81_gateway_subnets is separately constrained -- create answers
+  #   409 "The list of Harmony SASE Subnets can only be "0.0.0.0/0" or the
+  #        network Subnet"
+  # for anything else, so the default route is the correct value for it.
   p81_gateway_subnets    = ["0.0.0.0/0"]
-  remote_gateway_subnets = ["0.0.0.0/0"]
+  remote_gateway_subnets = ["172.31.250.0/24"]
 
   phase1 {
     auth                = ["sha256"]

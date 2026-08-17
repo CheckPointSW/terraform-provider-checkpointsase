@@ -686,10 +686,29 @@ func resourceEnhancedStaticTunnelUpdate(ctx context.Context, d *schema.ResourceD
 	// This is a real capability regression forced by the type restructure,
 	// not a design choice — flagged in the Task 12A report for a later phase.
 
-	_, _, err := client.EnhancedTunnelsAPI.UpdateStaticTunnel(ctx, networkId, tunnelId).StaticTunnelUpdate(payload).Execute()
+	status, _, err := client.EnhancedTunnelsAPI.UpdateStaticTunnel(ctx, networkId, tunnelId).StaticTunnelUpdate(payload).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to update Enhanced Static Tunnel", err)
+	}
+	// UpdateStaticTunnel is async, exactly like Create and Delete: it returns
+	// an AsyncOperationResponse and the change is NOT applied when it does.
+	// Dropping that response meant the Read below could observe pre-update
+	// values and write them straight back into state, so a successful update
+	// looked like a no-op. Measured live on 2026-08-17: the PUT returned 202
+	// and the acceptance test then failed with
+	//   got tunnel_name "EnhStaticTun1"; want "EnhStaticTun2"
+	// because it read the tunnel before the rename had been applied.
+	//
+	// Same fix and same shape as resourceEnhancedDynamicTunnelUpdate.
+	// statusUrl is optional on the response, so poll only when there is
+	// something to poll; a missing URL must not turn a successful update into
+	// a 404 against the status endpoint.
+	if statusId := getIdFromUrl(status.GetStatusUrl()); statusId != "" {
+		if err := pollStandardNetworkStatus(ctx, client, statusId, standardNetworkPollInterval); err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to update Enhanced Static Tunnel", err)
+		}
 	}
 	d.Set("last_updated", time.Now().Format(time.RFC850))
 
