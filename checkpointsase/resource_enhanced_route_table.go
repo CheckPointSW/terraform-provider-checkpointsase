@@ -229,10 +229,29 @@ func resourceEnhancedRouteTableUpdate(ctx context.Context, d *schema.ResourceDat
 			Subnets: subnets,
 		}
 
-		_, _, err := client.EnhancedRouteTablesAPI.UpdateRouteEntry(ctx, networkId, routeId).RouteTableUpdate(payload).Execute()
+		status, _, err := client.EnhancedRouteTablesAPI.UpdateRouteEntry(ctx, networkId, routeId).RouteTableUpdate(payload).Execute()
 		if err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to update Enhanced Route Table entry", err)
+		}
+		// UpdateRouteEntry returns an AsyncOperationResponse, so the change is
+		// not applied when the call returns. Dropping it let the Read below
+		// observe pre-update values and write them back into state, making a
+		// successful update look like a no-op.
+		//
+		// The identical defect was confirmed live on the static tunnel
+		// (2026-08-17): its PUT returned 202 and the acceptance test then read
+		// the old tunnel_name. UpdateEnhancedNetwork, by contrast, returns
+		// *EnhancedNetwork and is genuinely synchronous — checked, not assumed.
+		//
+		// NOT verified live here: this resource's acceptance test cannot run
+		// yet, because the API auto-creates one route per tunnel and rejects a
+		// second, so Create fails before Update is ever reached.
+		if statusId := getIdFromUrl(status.GetStatusUrl()); statusId != "" {
+			if err := pollStandardNetworkStatus(ctx, client, statusId, standardNetworkPollInterval); err != nil {
+				d.Partial(true)
+				return appendErrorDiags(diags, "Unable to update Enhanced Route Table entry", err)
+			}
 		}
 		d.Set("last_updated", time.Now().Format(time.RFC850))
 	}
