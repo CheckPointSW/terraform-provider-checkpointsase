@@ -233,7 +233,7 @@ func pollStandardNetworkStatusForResource(ctx context.Context, client *perimeter
 		}
 		return out, resp, nil
 	}, interval, standardNetworkTransientBudget)
-	return resource, err
+	return resource, withStatusID(statusId, err)
 }
 
 // pollStandardNetworkStatus polls the standard-networks async status endpoint
@@ -273,5 +273,24 @@ func pollApplicationStatusForResource(ctx context.Context, client *perimeter81Sd
 		}
 		return out, resp, nil
 	}, interval, applicationTransientBudget)
-	return resource, err
+	return resource, withStatusID(statusId, err)
+}
+
+/*
+withStatusID names the async operation an error came from.
+
+Without it the whole diagnostic is "polling async operation: 403 Forbidden" --
+no id, no URL, nothing to correlate against the server's own logs. That is
+exactly what happened on 2026-08-18: a gateway create failed on an intermittent
+403 mid-poll and the status id was unrecoverable afterwards, so the failure
+could only be reasoned about from stack traces and timings.
+
+The id is what makes an intermittent server-side failure searchable, so it goes
+in the message even though it means nothing to most readers.
+*/
+func withStatusID(statusId string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("status %s: %w", statusId, err)
 }
