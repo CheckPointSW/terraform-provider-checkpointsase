@@ -9,7 +9,11 @@ resource "checkpointsase_ipsec_single" "example" {
   remote_public_ip       = "203.0.113.20"
   p81_gateway_subnets    = ["10.99.0.0/24"]
   remote_gateway_subnets = ["192.168.20.0/24"]
-  passphrase             = "ChangeMe-shared-secret"
+  # No hyphens: the server's passphrase regex allows letters, digits, "." and
+  # "_" only, 8-64 characters. The provider enforces it at plan time, so the
+  # previous value here would have failed `terraform plan` for anyone who
+  # copied this example.
+  passphrase = "ChangeMe.shared.secret"
 
   key_exchange  = "ikev2"
   ike_life_time = "28800s"

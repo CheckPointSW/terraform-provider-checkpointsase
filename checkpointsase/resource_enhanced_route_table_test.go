@@ -283,3 +283,35 @@ func TestEnhancedRouteTableSchemaDoesNotClaimDynamicWorks(t *testing.T) {
 		}
 	}
 }
+
+// TestSameStringSet covers the matcher that re-points a route entry's id after
+// an update. The server rebuilds the whole route table on every write, giving
+// each entry a fresh id, so the tunnel set is the only durable handle on "the
+// same route". The API gives no ordering guarantee for tunnelIds, which is why
+// this compares membership rather than sequence.
+func TestSameStringSet(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		a, b []string
+		want bool
+	}{
+		{"identical", []string{"t1"}, []string{"t1"}, true},
+		{"same members, different order", []string{"t1", "t2"}, []string{"t2", "t1"}, true},
+		{"different lengths", []string{"t1"}, []string{"t1", "t2"}, false},
+		{"disjoint", []string{"t1"}, []string{"t2"}, false},
+		{"overlapping but not equal", []string{"t1", "t2"}, []string{"t1", "t3"}, false},
+		{"both empty", nil, nil, true},
+		// A dynamic route covers an HA pair, so duplicates within one side must
+		// not make two different sets compare equal.
+		{"duplicate vs distinct, same length", []string{"t1", "t1"}, []string{"t1", "t2"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameStringSet(tc.a, tc.b); got != tc.want {
+				t.Errorf("sameStringSet(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+			if got := sameStringSet(tc.b, tc.a); got != tc.want {
+				t.Errorf("sameStringSet(%v, %v) = %v, want %v (must be symmetric)", tc.b, tc.a, got, tc.want)
+			}
+		})
+	}
+}

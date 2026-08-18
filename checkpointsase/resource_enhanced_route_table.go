@@ -276,6 +276,61 @@ resourceEnhancedRouteTableRead Read an Enhanced Route Table entry.
 
 @return diag.Diagnostics
 */
+/*
+resolveEnhancedRouteTableID re-points d.Id() at the entry the server now holds
+for this resource's tunnels.
+
+A route entry has no stable identity: the table is keyed on the tunnel, and any
+write rebuilds every entry with a fresh id. The tunnel set does not change --
+it is ForceNew on both `tunnel_id` and `tunnel_ids` -- so it is the only durable
+handle on "the same route" across a write.
+
+Read populates `tunnel_ids` for both route types, because the API returns
+`tunnelIds` either way. When it is empty there is nothing to match on, so the
+id is left as it was rather than guessed at.
+*/
+func resolveEnhancedRouteTableID(ctx context.Context, d *schema.ResourceData, client *perimeter81Sdk.APIClient, networkId string) error {
+	want := flattenStringsArrayData(d.Get("tunnel_ids").([]interface{}))
+	if len(want) == 0 {
+		return nil
+	}
+
+	response, _, err := client.EnhancedRouteTablesAPI.GetEnhancedRouteTable(ctx, networkId).Execute()
+	if err != nil {
+		return err
+	}
+	for _, route := range response.GetData() {
+		if sameStringSet(route.TunnelIds, want) {
+			d.SetId(route.Id)
+			return nil
+		}
+	}
+	return fmt.Errorf("the update was applied but no route entry for tunnel(s) %v remains on network %s; "+
+		"the entry is rebuilt with a new id on every write, and none of the current entries match", want, networkId)
+}
+
+/*
+sameStringSet reports whether two string slices hold the same members,
+regardless of order. Used to match a route entry by its tunnels, where the
+server gives no ordering guarantee.
+*/
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, s := range a {
+		seen[s]++
+	}
+	for _, s := range b {
+		seen[s]--
+		if seen[s] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func resourceEnhancedRouteTableRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
@@ -349,6 +404,21 @@ func resourceEnhancedRouteTableUpdate(ctx context.Context, d *schema.ResourceDat
 				d.Partial(true)
 				return appendErrorDiags(diags, "Unable to update Enhanced Route Table entry", err)
 			}
+		}
+		// The server does not mutate a route entry in place. Every write
+		// rebuilds the whole table -- see the API's
+		// convertRouteTableToUpdatedRouteTable, which flattens it to one
+		// element per tunnel -- so the entry comes back with a NEW id and the
+		// one in d.Id() no longer resolves. Measured 2026-08-17 across a single
+		// update: SULcgCHRcC became iHpcM6VSrg.
+		//
+		// Without this, the Read below would GET a route id that no longer
+		// exists and the resource would drop out of state after every
+		// successful update. Re-resolve by tunnel, which is the table's real
+		// key.
+		if err := resolveEnhancedRouteTableID(ctx, d, client, networkId); err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to update Enhanced Route Table entry", err)
 		}
 		d.Set("last_updated", time.Now().Format(time.RFC850))
 	}

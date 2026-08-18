@@ -30,7 +30,7 @@ resource "checkpointsase_ipsec_redundant" "example" {
 
   tunnel1 {
     gateway_id           = "abc12345DE"
-    passphrase           = "ChangeMe-tunnel1-secret"
+    passphrase           = "ChangeMe.tunnel1.secret"
     p81_gwinternal_ip    = "169.254.0.1"
     remote_gwinternal_ip = "169.254.0.2"
     remote_public_ip     = "203.0.113.30"
@@ -39,7 +39,7 @@ resource "checkpointsase_ipsec_redundant" "example" {
 
   tunnel2 {
     gateway_id           = "abc12345DF"
-    passphrase           = "ChangeMe-tunnel2-secret"
+    passphrase           = "ChangeMe.tunnel2.secret"
     p81_gwinternal_ip    = "169.254.1.1"
     remote_gwinternal_ip = "169.254.1.2"
     remote_public_ip     = "203.0.113.31"
