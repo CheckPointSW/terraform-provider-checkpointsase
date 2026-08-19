@@ -235,45 +235,62 @@ func flattenFirewallPolicyRules(rules []perimeter81Sdk.GranularFirewallPolicyRul
 }
 
 /*
+firewallPolicyUnrestricted returns the SourcesAndDestinations value that serialises to exactly
+`{}` — the wire shape the v3 firewall-policy endpoint requires for "this rule is not restricted
+by source (or destination)".
+
+Why this specific value, rather than the obvious ones:
+
+  - The zero value SourcesAndDestinations{} cannot be used. It is a oneOf wrapper whose
+    MarshalJSON returns (nil, nil) when no variant is set (see model_sources_and_destinations.go),
+    and encoding/json turns a (nil, nil) return into "unexpected end of JSON input". That fails
+    inside Execute()'s setBody, so the request never reaches the wire — for every policy_rules
+    entry, not just this one.
+  - The Addresses variant cannot produce `{}` either. Its only field is
+    `Addresses []string` with `json:"addresses"` and no omitempty, so an empty one marshals to
+    `{"addresses":[]}` and a nil one to `{"addresses":null}`. Measured live 2026-08-19,
+    `{"addresses":[]}` is a 400: `policyRules.0.sources.addresses must contain at least 1
+    elements`. The server's validator (sourcesAndDestinations.model.ts) marks each of users /
+    groups / addresses `@IsOptional` *and* `@ArrayMinSize(1)`, so the minimum applies only when
+    the key is present: omit the key, or send at least one element. Never send it empty.
+  - UsersAndGroups has omitempty on both of its fields, so an empty one marshals to `{}` — which
+    is what the server accepts (202, measured live 2026-08-19).
+
+Which oneOf variant carries the empty object is invisible on the wire: `{}` names no variant.
+The choice of UsersAndGroups here is purely a marshalling detail, not a claim that the rule is
+scoped by users or groups. TestPayloadMarshalGranularFirewallPolicy pins the resulting JSON.
+*/
+func firewallPolicyUnrestricted() perimeter81Sdk.SourcesAndDestinations {
+	return perimeter81Sdk.UsersAndGroupsAsSourcesAndDestinations(&perimeter81Sdk.UsersAndGroups{})
+}
+
+/*
 buildGranularFirewallPolicyRule converts a single policy_rules schema block (as produced by
 d.Get("policy_rules").([]interface{})) into a GranularFirewallPolicyRule SDK model. Factored out
 of resourceFirewallPolicyUpdate so it can be exercised directly by payload_marshal_test.go — this
 is the exact code path that produces Sources/Destinations, so a regression here (e.g. reverting to
-the zero-value SourcesAndDestinations{}) is caught by marshaling its output, not just by inspecting
-schema shape.
+the zero-value SourcesAndDestinations{}, or to an empty Addresses list) is caught by marshaling
+its output, not just by inspecting schema shape.
 */
 func buildGranularFirewallPolicyRule(ruleMap map[string]interface{}) perimeter81Sdk.GranularFirewallPolicyRule {
 	rule := perimeter81Sdk.GranularFirewallPolicyRule{
-		Name:       ruleMap["name"].(string),
-		Enabled:    ruleMap["enabled"].(bool),
-		Allowed:    ruleMap["allowed"].(bool),
-		LogEnabled: ruleMap["log_enabled"].(bool),
-		// Sources/Destinations are not yet managed by this resource — there
-		// is no sources/destinations schema attribute, so an empty address
-		// list is the only shape this provider can express today. Adding
-		// that schema surface is a deliberate later-release scope, not a
-		// gap to close here.
-		//
-		// IMPORTANT: SourcesAndDestinations is a oneOf wrapper whose
-		// MarshalJSON returns (nil, nil) when neither variant is set (see
-		// model_sources_and_destinations.go). encoding/json treats a
-		// (nil, nil) return from MarshalJSON as an error ("unexpected end
-		// of JSON input"), so leaving these as the zero value
-		// SourcesAndDestinations{} breaks every request that has at least
-		// one policy_rules entry — Execute() fails in setBody before any
-		// request reaches the wire. Wrapping an empty Addresses list is
-		// the fix; whether the server's *semantics* for an empty address
-		// list match "unchanged"/"no sources configured" has not been
-		// confirmed against a live tenant.
-		Sources: perimeter81Sdk.AddressesAsSourcesAndDestinations(
-			&perimeter81Sdk.Addresses{Addresses: []string{}}),
-		Destinations: perimeter81Sdk.AddressesAsSourcesAndDestinations(
-			&perimeter81Sdk.Addresses{Addresses: []string{}}),
+		Name:         ruleMap["name"].(string),
+		Enabled:      ruleMap["enabled"].(bool),
+		Allowed:      ruleMap["allowed"].(bool),
+		LogEnabled:   ruleMap["log_enabled"].(bool),
+		Sources:      firewallPolicyUnrestricted(),
+		Destinations: firewallPolicyUnrestricted(),
 	}
 	if v, ok := ruleMap["id"].(string); ok && v != "" {
 		rule.Id = &v
 	}
-	if v, ok := ruleMap["services"].([]interface{}); ok {
+	// The len > 0 guard is load-bearing, not defensive. `services` carries the same
+	// @IsOptional + @ArrayMinSize(1) pair as sources/destinations (networkPolicyRule.model.ts),
+	// and Services has omitempty but is a non-nil empty slice here whenever the user omits the
+	// attribute — d.Get returns []interface{}{}, and the SDK's IsNil() reports a non-nil empty
+	// slice as present. Assigning it unconditionally therefore sends `"services": []` and earns
+	// a 400 for every rule that is not scoped by service.
+	if v, ok := ruleMap["services"].([]interface{}); ok && len(v) > 0 {
 		rule.Services = flattenStringsArrayData(v)
 	}
 	return rule

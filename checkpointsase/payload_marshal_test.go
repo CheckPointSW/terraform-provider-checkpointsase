@@ -69,6 +69,14 @@ SourcesAndDestinations{} makes the "one rule" case below fail with a json.Marsha
 a body mismatch. The "zero rules" case documents that a rule-less policy always marshaled fine
 (PolicyRules is an empty slice either way), which is why the bug was easy to miss: it only
 reproduces once a config has at least one rule.
+
+The `{}` in the expected bodies is the second half of the same blocker and is the case to watch.
+Wrapping an *empty* Addresses list also marshals cleanly, so it looked like a fix; it is a 400
+(`policyRules.0.sources.addresses must contain at least 1 elements`, measured live 2026-08-19).
+Only `{}` is accepted for an unrestricted rule, and nothing but a golden body catches the
+difference offline — both shapes marshal without error. The same applies to `services`: the
+"unrestricted rule, no services" case exists because `"services": []` is a 400 for exactly the
+same reason, and the key must be absent rather than empty.
 */
 func TestPayloadMarshalGranularFirewallPolicy(t *testing.T) {
 	tests := []struct {
@@ -106,10 +114,53 @@ func TestPayloadMarshalGranularFirewallPolicy(t *testing.T) {
 						"name": "fake-allow-web",
 						"enabled": true,
 						"allowed": true,
-						"sources": {"addresses": []},
-						"destinations": {"addresses": []},
+						"sources": {},
+						"destinations": {},
 						"services": ["fake-svc-1", "fake-svc-2"],
 						"logEnabled": false
+					}
+				]
+			}`,
+		},
+		{
+			// A rule with neither sources, destinations nor services: the least
+			// restricted rule the resource can express, and the one whose body has
+			// the most keys that must be absent rather than empty.
+			name: "unrestricted rule, no services",
+			payload: func() perimeter81Sdk.GranularFirewallPolicy {
+				rule := buildGranularFirewallPolicyRule(map[string]interface{}{
+					"id":          "",
+					"name":        "fake-allow-all",
+					"enabled":     true,
+					"allowed":     true,
+					"log_enabled": true,
+					// d.Get on an unset Optional TypeList returns an empty, non-nil
+					// slice — not nil — which is exactly how `"services": []` used
+					// to reach the wire.
+					"services": []interface{}{},
+				})
+				policy := perimeter81Sdk.GranularFirewallPolicy{
+					Id:          "fake-policy-3",
+					Enabled:     true,
+					Allowed:     true,
+					PolicyRules: []perimeter81Sdk.GranularFirewallPolicyRule{rule},
+				}
+				policy.SetPolicyLoggingEnabled(false)
+				return policy
+			}(),
+			want: `{
+				"enabled": true,
+				"allowed": true,
+				"id": "fake-policy-3",
+				"policyLoggingEnabled": false,
+				"policyRules": [
+					{
+						"name": "fake-allow-all",
+						"enabled": true,
+						"allowed": true,
+						"sources": {},
+						"destinations": {},
+						"logEnabled": true
 					}
 				]
 			}`,
