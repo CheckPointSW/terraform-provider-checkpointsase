@@ -59,6 +59,7 @@ func resourceObjectAddresses() *schema.Resource {
 			"value": {
 				Type:        schema.TypeList,
 				Required:    true,
+				MinItems:    1,
 				Description: "Address values. Shape depends on `value_type`: exactly 1 element for `ip` / `cidr` / `fqdn`, 1+ elements for `list`.",
 				Elem: &schema.Schema{
 					Type: schema.TypeString,

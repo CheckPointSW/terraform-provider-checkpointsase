@@ -270,3 +270,196 @@ func TestSchemaP81GatewaySubnetsDocumentTheServerRule(t *testing.T) {
 		}
 	}
 }
+
+/*
+listEmptyVerdict is whether the server accepts an empty array for one list attribute.
+
+The distinction exists because "an optional array must be omitted, never sent as []" is true of some
+fields and false of others, and nothing on the provider side can tell them apart. Three separate
+release blockers on this branch were the same mistake — firewall_policy sources/destinations,
+firewall_policy services, and the applications access grant — each found by a live run costing 15
+minutes or more. The map below is the swept result, so the fourth is found by `go test` instead.
+*/
+type listEmptyVerdict int
+
+const (
+	// mustReject: the server refuses [], so the provider must refuse it at plan time.
+	mustReject listEmptyVerdict = iota
+	// mayBeEmpty: the server accepts [], so the provider must not add MinItems.
+	mayBeEmpty
+)
+
+/*
+listAttributeEmptyPolicy records, for every list attribute in the provider, whether the server
+accepts an empty array for it. The verdict for each entry comes from reading the field's validation
+decorators in perimeter81-public-api, not from inference:
+
+  - @IsOptional() with @ArrayMinSize(1) means the minimum applies only when the key is present, so an
+    empty array is a 400 and the key must be omitted or carry a member. mustReject.
+  - @IsOptional() with no minimum, or a validator that is vacuously true over zero elements, means []
+    is legal — and for anything a user can clear, [] is the *only* way to clear it, so refusing it at
+    plan time would be a bug of its own. mayBeEmpty.
+
+Adding MinItems to a mayBeEmpty attribute is the failure mode the second half of this map guards
+against: it looks like finishing the sweep and it silently removes the user's ability to empty a list.
+*/
+var listAttributeEmptyPolicy = map[string]struct {
+	verdict listEmptyVerdict
+	why     string
+}{
+	// --- mustReject: @ArrayMinSize(1) or an equivalent explicit minimum -------------------------
+	// ipSecPhase.model.ts: auth/encryption/keyExchangeMethod are each @ArrayUnique()
+	// @ArrayMinSize(1) @IsEnum(..., {each:true}) @IsOptional(), on every create *and* update path
+	// (PartialType does not recurse into the nested phase DTOs).
+	"resource.checkpointsase_enhanced_dynamic_tunnel.phase1.auth":                 {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_enhanced_dynamic_tunnel.phase1.encryption":           {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_enhanced_dynamic_tunnel.phase1.key_exchange_method":  {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_enhanced_dynamic_tunnel.phase2.auth":                 {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_enhanced_dynamic_tunnel.phase2.encryption":           {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_enhanced_dynamic_tunnel.phase2.key_exchange_method":  {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_enhanced_static_tunnel.phase1.auth":                  {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_enhanced_static_tunnel.phase1.encryption":            {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_enhanced_static_tunnel.phase1.key_exchange_method":   {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_enhanced_static_tunnel.phase2.auth":                  {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_enhanced_static_tunnel.phase2.encryption":            {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_enhanced_static_tunnel.phase2.key_exchange_method":   {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_ipsec_single.phase1.auth":                            {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_ipsec_single.phase1.encryption":                      {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_ipsec_single.phase2.auth":                            {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_ipsec_single.phase2.encryption":                      {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_ipsec_redundant.advanced_settings.phase1.auth":       {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_ipsec_redundant.advanced_settings.phase1.encryption": {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_ipsec_redundant.advanced_settings.phase2.auth":       {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_ipsec_redundant.advanced_settings.phase2.encryption": {mustReject, "ipSecPhase.model.ts @ArrayMinSize(1)"},
+	// baseWireguardTunnel.ts: @ArrayUnique() @IsIPRange({each:true}) @ArrayMinSize(1). The update DTO
+	// is PartialType of it, which adds @IsOptional() and keeps the minimum — the classic pair. The
+	// provider cannot omit it either way: WireGuradDetails.ToMap writes remoteSubnets
+	// unconditionally, so plan time is the only place this can be caught.
+	"resource.checkpointsase_wireguard.remote_subnets": {mustReject, "baseWireguardTunnel.ts @ArrayMinSize(1)"},
+	// enhancedRouteTable.dto.ts: @IsArray() @ArrayMinSize(1), on the update DTO as well as create.
+	"resource.checkpointsase_enhanced_route_table.subnets": {mustReject, "enhancedRouteTable.dto.ts @ArrayMinSize(1)"},
+	// address.model.ts: @IsArray() @IsValidAddressValue(...). The custom validator requires exactly
+	// one element for ip/cidr/fqdn and at least one for list, so [] fails for every valueType.
+	"resource.checkpointsase_object_addresses.value": {mustReject, "address.model.ts @IsValidAddressValue"},
+	// service.model.ts: protocols is @IsNotEmpty() @IsArray() @ArrayMinSize(1); protocols[].value is
+	// @ArrayMinSize(1) for every protocol but icmp, and createServicesTransformer rejects an empty
+	// value outright with 'property Value cant be empty'.
+	"resource.checkpointsase_object_services.protocols":       {mustReject, "service.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_object_services.protocols.value": {mustReject, "service.model.ts @ArrayMinSize(1) + transformer"},
+	// sourcesAndDestinations.model.ts / networkPolicyRule.model.ts: @IsOptional() @ArrayMinSize(1).
+	// Fixed in aefd8dc; listed so the sweep's own result is complete rather than partial.
+	"resource.checkpointsase_firewall_policy.policy_rules.services":               {mustReject, "networkPolicyRule.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_firewall_policy.policy_rules.sources.addresses":      {mustReject, "sourcesAndDestinations.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_firewall_policy.policy_rules.sources.users":          {mustReject, "sourcesAndDestinations.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_firewall_policy.policy_rules.sources.groups":         {mustReject, "sourcesAndDestinations.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_firewall_policy.policy_rules.destinations.addresses": {mustReject, "sourcesAndDestinations.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_firewall_policy.policy_rules.destinations.users":     {mustReject, "sourcesAndDestinations.model.ts @ArrayMinSize(1)"},
+	"resource.checkpointsase_firewall_policy.policy_rules.destinations.groups":    {mustReject, "sourcesAndDestinations.model.ts @ArrayMinSize(1)"},
+
+	// --- mayBeEmpty: [] is legal, and for most of these it is the only way to clear -------------
+	// baseNetwork.dto.ts: tags is @IsString({each:true}) @IsOptional() with no minimum. The enhanced
+	// update handler backfills with `tags ??= network.tags`, which only fires on null/undefined — so
+	// `tags = []` is exactly how a user removes every tag, and omitting the key would silently keep
+	// the old ones. This is the counterexample to "an empty array is always wrong".
+	"resource.checkpointsase_network.network.tags":  {mayBeEmpty, "baseNetwork.dto.ts optional, [] clears"},
+	"resource.checkpointsase_enhanced_network.tags": {mayBeEmpty, "baseNetwork.dto.ts optional, [] clears"},
+	// ipSecShared.model.ts: @ArrayUnique() @IsIPRange({each:true}). Neither is an array-length check
+	// — IsIPRange with each:true has nothing to validate over zero elements, and [] is trivially
+	// unique — so an empty list validates. The key itself is required (both decorators fail on
+	// undefined), which is why the provider always sends it.
+	"resource.checkpointsase_enhanced_dynamic_tunnel.p81_gateway_subnets":            {mayBeEmpty, "ipSecShared.model.ts no length check"},
+	"resource.checkpointsase_enhanced_dynamic_tunnel.remote_gateway_subnets":         {mayBeEmpty, "ipSecShared.model.ts no length check"},
+	"resource.checkpointsase_enhanced_static_tunnel.p81_gateway_subnets":             {mayBeEmpty, "ipSecShared.model.ts no length check"},
+	"resource.checkpointsase_enhanced_static_tunnel.remote_gateway_subnets":          {mayBeEmpty, "ipSecShared.model.ts no length check"},
+	"resource.checkpointsase_ipsec_single.p81_gateway_subnets":                       {mayBeEmpty, "ipSecShared.model.ts no length check"},
+	"resource.checkpointsase_ipsec_single.remote_gateway_subnets":                    {mayBeEmpty, "ipSecShared.model.ts no length check"},
+	"resource.checkpointsase_ipsec_redundant.shared_settings.p81_gateway_subnets":    {mayBeEmpty, "ipSecShared.model.ts no length check"},
+	"resource.checkpointsase_ipsec_redundant.shared_settings.remote_gateway_subnets": {mayBeEmpty, "ipSecShared.model.ts no length check"},
+	// ipSecPhase.model.ts gives dh @ArrayMinSize(0) — a deliberate carve-out, and the one place in
+	// the tunnels tree where an empty array is explicitly blessed. Note keyExchangeMethod, its v2.3
+	// replacement, went back to @ArrayMinSize(1); the two are not interchangeable.
+	"resource.checkpointsase_ipsec_single.phase1.dh":                      {mayBeEmpty, "ipSecPhase.model.ts @ArrayMinSize(0)"},
+	"resource.checkpointsase_ipsec_single.phase2.dh":                      {mayBeEmpty, "ipSecPhase.model.ts @ArrayMinSize(0)"},
+	"resource.checkpointsase_ipsec_redundant.advanced_settings.phase1.dh": {mayBeEmpty, "ipSecPhase.model.ts @ArrayMinSize(0)"},
+	"resource.checkpointsase_ipsec_redundant.advanced_settings.phase2.dh": {mayBeEmpty, "ipSecPhase.model.ts @ArrayMinSize(0)"},
+	// networkPolicyGranularUpdate.model.ts: policyRules is @IsNestedArray with no minimum. [] is not
+	// merely tolerated here, it is load-bearing — resourceFirewallPolicyDelete sends exactly
+	// `policyRules: []` to release the objects the rules pin. MinItems here would break destroy.
+	"resource.checkpointsase_firewall_policy.policy_rules": {mayBeEmpty, "networkPolicyGranularUpdate.model.ts, [] clears rules on destroy"},
+	// applicationCreateBase.dto.ts: neither list has a min-size of its own. UsersMinSize is a
+	// cross-field rule (users >= 1 only while groups is empty), so `users = []` alongside a non-empty
+	// groups is accepted and vice versa. MinItems on either would refuse a legal configuration; the
+	// both-empty case is caught by resourceApplicationCustomizeDiff instead.
+	"resource.checkpointsase_application.users":  {mayBeEmpty, "applicationCreateBase.dto.ts cross-field UsersMinSize"},
+	"resource.checkpointsase_application.groups": {mayBeEmpty, "applicationCreateBase.dto.ts cross-field UsersMinSize"},
+	// enhancedRouteTable.dto.ts has no tunnelIds on the update DTO at all, and the endpoint's pipe
+	// sets forbidNonWhitelisted, so the provider never sends this — it is read-side and used only to
+	// re-identify a route entry locally. Nothing to constrain.
+	"resource.checkpointsase_enhanced_route_table.tunnel_ids": {mayBeEmpty, "never sent; local matching only"},
+
+	// --- mayBeEmpty by construction: object-element lists the provider iterates ------------------
+	// These carry no array of their own to the wire in a way an empty list could break: each is
+	// either a MaxItems-1 wrapper block, or a collection the provider loops over one request at a
+	// time. Recorded rather than skipped so the test's "unclassified" check stays meaningful.
+	"resource.checkpointsase_network.network":                           {mayBeEmpty, "MaxItems 1 wrapper block"},
+	"resource.checkpointsase_network.region":                            {mayBeEmpty, "iterated; one request per region"},
+	"resource.checkpointsase_enhanced_network.region":                   {mayBeEmpty, "iterated; one request per region"},
+	"resource.checkpointsase_gateway.gateways":                          {mayBeEmpty, "iterated; one request per gateway"},
+	"resource.checkpointsase_enhanced_dynamic_tunnel.tunnel":            {mayBeEmpty, "create sends tunnels; update diffs into addTunnels"},
+	"resource.checkpointsase_enhanced_dynamic_tunnel.phase1":            {mayBeEmpty, "MaxItems 1 wrapper block"},
+	"resource.checkpointsase_enhanced_dynamic_tunnel.phase2":            {mayBeEmpty, "MaxItems 1 wrapper block"},
+	"resource.checkpointsase_enhanced_static_tunnel.phase1":             {mayBeEmpty, "MaxItems 1 wrapper block"},
+	"resource.checkpointsase_enhanced_static_tunnel.phase2":             {mayBeEmpty, "MaxItems 1 wrapper block"},
+	"resource.checkpointsase_ipsec_single.phase1":                       {mayBeEmpty, "MaxItems 1 wrapper block"},
+	"resource.checkpointsase_ipsec_single.phase2":                       {mayBeEmpty, "MaxItems 1 wrapper block"},
+	"resource.checkpointsase_ipsec_redundant.shared_settings":           {mayBeEmpty, "MaxItems 1 wrapper block"},
+	"resource.checkpointsase_ipsec_redundant.advanced_settings":         {mayBeEmpty, "MaxItems 1 wrapper block"},
+	"resource.checkpointsase_ipsec_redundant.advanced_settings.phase1":  {mayBeEmpty, "MaxItems 1 wrapper block"},
+	"resource.checkpointsase_ipsec_redundant.advanced_settings.phase2":  {mayBeEmpty, "MaxItems 1 wrapper block"},
+	"resource.checkpointsase_ipsec_redundant.tunnel1":                   {mayBeEmpty, "MaxItems 1 wrapper block"},
+	"resource.checkpointsase_ipsec_redundant.tunnel2":                   {mayBeEmpty, "MaxItems 1 wrapper block"},
+	"resource.checkpointsase_firewall_policy.policy_rules.sources":      {mayBeEmpty, "MaxItems 1 wrapper block; absent means unrestricted"},
+	"resource.checkpointsase_firewall_policy.policy_rules.destinations": {mayBeEmpty, "MaxItems 1 wrapper block; absent means unrestricted"},
+}
+
+/*
+TestSchemaListAttributesMatchTheirEmptyArrayVerdict enforces listAttributeEmptyPolicy in both
+directions, and fails on any list attribute missing from it.
+
+The "unclassified" failure is the point. A new list attribute that reaches a request body is exactly
+the situation that produced three blockers, so the suite refuses to pass until someone has read the
+field's validator and written the answer down.
+*/
+func TestSchemaListAttributesMatchTheirEmptyArrayVerdict(t *testing.T) {
+	for res, m := range allRegistered() {
+		if !strings.HasPrefix(res, "resource.") {
+			continue // data sources have no request body
+		}
+		walkSchema("", m, func(path string, s *schema.Schema) {
+			if s.Type != schema.TypeList || (s.Computed && !s.Optional) {
+				return
+			}
+			full := res + "." + path
+			policy, ok := listAttributeEmptyPolicy[full]
+			if !ok {
+				t.Errorf("%s is a list attribute with no entry in listAttributeEmptyPolicy. Read the "+
+					"field's validator in perimeter81-public-api and record whether the server accepts "+
+					"an empty array for it — guessing is what this map exists to stop", full)
+				return
+			}
+			switch policy.verdict {
+			case mustReject:
+				if s.MinItems != 1 {
+					t.Errorf("%s MinItems = %d, want 1: the server rejects an empty array (%s), so an "+
+						"empty list must fail at plan time rather than 15 minutes into an apply",
+						full, s.MinItems, policy.why)
+				}
+			case mayBeEmpty:
+				if s.MinItems != 0 {
+					t.Errorf("%s has MinItems = %d, but the server accepts an empty array (%s). Refusing "+
+						"[] here removes the only way to clear the list", full, s.MinItems, policy.why)
+				}
+			}
+		})
+	}
+}

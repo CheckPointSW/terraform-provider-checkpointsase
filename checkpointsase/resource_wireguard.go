@@ -96,6 +96,7 @@ func resourceWireguard() *schema.Resource {
 			"remote_subnets": {
 				Type:        schema.TypeList,
 				Required:    true,
+				MinItems:    1,
 				Description: "List of remote-side subnet CIDR blocks reachable through this tunnel. At least one is required; duplicates are rejected server-side.",
 				Elem: &schema.Schema{
 					Type:         schema.TypeString,

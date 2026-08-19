@@ -181,18 +181,21 @@ func resourceEnhancedStaticTunnel() *schema.Resource {
 						"auth": {
 							Type:        schema.TypeList,
 							Required:    true,
+							MinItems:    1,
 							Description: "List of phase 1 authentication algorithms.",
 							Elem:        &schema.Schema{Type: schema.TypeString},
 						},
 						"encryption": {
 							Type:        schema.TypeList,
 							Required:    true,
+							MinItems:    1,
 							Description: "List of phase 1 encryption algorithms.",
 							Elem:        &schema.Schema{Type: schema.TypeString},
 						},
 						"key_exchange_method": {
 							Type:        schema.TypeList,
 							Required:    true,
+							MinItems:    1,
 							Description: "List of phase 1 key exchange methods (Diffie-Hellman groups).",
 							Elem:        &schema.Schema{Type: schema.TypeString},
 						},
@@ -209,18 +212,21 @@ func resourceEnhancedStaticTunnel() *schema.Resource {
 						"auth": {
 							Type:        schema.TypeList,
 							Required:    true,
+							MinItems:    1,
 							Description: "List of phase 2 authentication algorithms.",
 							Elem:        &schema.Schema{Type: schema.TypeString},
 						},
 						"encryption": {
 							Type:        schema.TypeList,
 							Required:    true,
+							MinItems:    1,
 							Description: "List of phase 2 encryption algorithms.",
 							Elem:        &schema.Schema{Type: schema.TypeString},
 						},
 						"key_exchange_method": {
 							Type:        schema.TypeList,
 							Required:    true,
+							MinItems:    1,
 							Description: "List of phase 2 key exchange methods (Diffie-Hellman groups).",
 							Elem:        &schema.Schema{Type: schema.TypeString},
 						},

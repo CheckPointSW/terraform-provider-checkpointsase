@@ -151,6 +151,7 @@ func resourceEnhancedRouteTable() *schema.Resource {
 			"subnets": {
 				Type:        schema.TypeList,
 				Required:    true,
+				MinItems:    1,
 				Description: "List of subnet CIDR blocks for the route table entry.",
 				Elem:        &schema.Schema{Type: schema.TypeString},
 			},

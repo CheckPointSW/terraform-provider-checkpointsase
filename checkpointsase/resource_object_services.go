@@ -50,6 +50,7 @@ func resourceObjectServices() *schema.Resource {
 			"protocols": {
 				Type:        schema.TypeList,
 				Required:    true,
+				MinItems:    1,
 				Description: "List of protocol+port combinations covered by this service object. At least one entry is required.",
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
@@ -68,6 +69,7 @@ func resourceObjectServices() *schema.Resource {
 						"value": {
 							Type:        schema.TypeList,
 							Required:    true,
+							MinItems:    1,
 							Description: "Port numbers. Shape depends on `value_type`: 1 element for `single`, 2 elements (start, end) for `range`, 1+ for `list`. Each value must be a valid port (1–65535).",
 							Elem: &schema.Schema{
 								Type:         schema.TypeInt,

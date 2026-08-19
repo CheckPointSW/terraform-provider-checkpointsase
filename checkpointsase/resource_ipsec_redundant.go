@@ -110,6 +110,7 @@ func resourceIpsecRedundant() *schema.Resource {
 									"auth": {
 										Type:        schema.TypeList,
 										Required:    true,
+										MinItems:    1,
 										Description: "List of phase 1 authentication algorithms (e.g. `[\"sha256\"]`).",
 										Elem: &schema.Schema{
 											Type: schema.TypeString,
@@ -118,6 +119,7 @@ func resourceIpsecRedundant() *schema.Resource {
 									"encryption": {
 										Type:        schema.TypeList,
 										Required:    true,
+										MinItems:    1,
 										Description: "List of phase 1 encryption algorithms (e.g. `[\"aes-cbc-256\"]`).",
 										Elem: &schema.Schema{
 											Type: schema.TypeString,
@@ -142,6 +144,7 @@ func resourceIpsecRedundant() *schema.Resource {
 									"auth": {
 										Type:        schema.TypeList,
 										Required:    true,
+										MinItems:    1,
 										Description: "List of phase 2 authentication algorithms.",
 										Elem: &schema.Schema{
 											Type: schema.TypeString,
@@ -150,6 +153,7 @@ func resourceIpsecRedundant() *schema.Resource {
 									"encryption": {
 										Type:        schema.TypeList,
 										Required:    true,
+										MinItems:    1,
 										Description: "List of phase 2 encryption algorithms.",
 										Elem: &schema.Schema{
 											Type: schema.TypeString,
