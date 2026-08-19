@@ -22,28 +22,32 @@ import (
 // # What is asserted, and why it is not a count
 //
 // The tenant-wide data source test measured its tenant first and asserted
-// non-empty only where the measurement justified it. That was not possible here:
-// the only API key discoverable in this workspace
-// (sase-terraform-api/terraform.tfvars) belongs to the production US host, where
-// every /v3 route including /v3/auth/authorize answers 404, and it is rejected
-// with 401 by the v3 staging host in demo/README.md. So the three catalogs have
-// never been read, and their sizes on the target tenant are unknown.
+// non-empty only where the measurement justified it. When this test was first
+// written that was not possible for any of the three catalogs, so all three got
+// existence-only assertions.
 //
-// A `>= 1` assertion would therefore be a guess in the one direction that
-// matters. Two of these catalogs are SWG (Internet Access) product data, and
-// whether a tenant without the SWG add-on gets a populated catalog, an empty
-// one, or a 403 is exactly the kind of thing the last two phases of this port
-// kept getting wrong by reading the spec instead of the server. So the
-// assertions here are the ones that cannot be wrong in either direction: the
-// list attribute exists in state, and — as soon as the catalog does hold
-// anything — its first element's fields are populated, which is what actually
-// covers the flatten functions.
+// ONE OF THE THREE HAS NOW BEEN MEASURED. The 2026-08-19 live run reached GET
+// /v3/objects/web-category and got a 200 carrying a large, populated catalog
+// (entries such as {"id":"100000001","name":"Computers / Internet"} and
+// {"id":"100000034","name":"Real Estate"}). So web_categories is asserted
+// non-empty below, because it is known non-empty. That run also proved the
+// catalog omits `codes` entirely, which is the defect overlay entry
+// A20-web-category-codes-not-required exists to correct — see
+// TestWebCategoryDecodesWithoutCodes.
 //
-// TIGHTEN THIS ONCE MEASURED: after the first successful live run, replace the
-// testAccCheckDataSourceListPresent calls on web_categories and applications
-// with testAccCheckDataSourceListMinLen(..., 1) and record the counts, the way
-// TestAccDataSourceTenantWide_basic did for the region catalogues. A catalog
-// that is genuinely non-empty should be asserted non-empty.
+// THE OTHER TWO ARE STILL UNMEASURED and keep their existence-only assertions.
+// The web-category read is not evidence about them: two of these catalogs are
+// SWG (Internet Access) product data, and whether a tenant without the SWG
+// add-on gets a populated catalog, an empty one, or a 403 is exactly the kind of
+// thing the last two phases of this port kept getting wrong by reading the spec
+// instead of the server. A `>= 1` assertion on either would be a guess in the
+// one direction that matters.
+//
+// TIGHTEN THIS ONCE MEASURED: on the next live run, record the counts for
+// `applications` and `updatable_objects` and replace their
+// testAccCheckDataSourceListPresent calls with
+// testAccCheckDataSourceListMinLen(..., 1) if the measurement supports it, the
+// way TestAccDataSourceTenantWide_basic did for the region catalogues.
 //
 // # The one strong assertion available
 //
@@ -76,12 +80,15 @@ func TestAccDataSourceObjectsCatalog_basic(t *testing.T) {
 			{
 				Config: testAccDataSourceObjectsCatalogConfig(),
 				Check: resource.ComposeTestCheckFunc(
-					// checkpointsase_web_categories. `codes` is excluded from
-					// the field check on purpose: it is a nested list, so state
-					// holds web_categories.0.codes.# rather than
-					// web_categories.0.codes, and the helper asserts on scalar
-					// keys.
-					testAccCheckDataSourceListPresent(webCategories, "web_categories"),
+					// checkpointsase_web_categories. Asserted non-empty because
+					// it was measured non-empty on 2026-08-19 (see the header).
+					// `codes` is excluded from the field check on purpose, and
+					// for two reasons now: it is a nested list, so state holds
+					// web_categories.0.codes.# rather than
+					// web_categories.0.codes and the helper asserts on scalar
+					// keys; and the server does not send codes at all, so the
+					// list is empty on every row.
+					testAccCheckDataSourceListMinLen(webCategories, "web_categories", 1),
 					testAccCheckDataSourceFirstElemFieldsSetIfAny(webCategories, "web_categories",
 						"id", "name"),
 
@@ -213,22 +220,33 @@ const updatableObjectsBackendFixture = `{
 }`
 
 /*
-TestWebCategoryDecodeRejectsAMissingRequiredField pins the sharpest live-run risk
-in this task, so that whoever meets it recognises it instead of debugging the
-provider.
+TestWebCategoryDecodesWithoutCodes is the regression pin for overlay entry
+A20-web-category-codes-not-required, and it must keep failing loudly if that
+entry is ever removed while the server still behaves as measured.
 
-WebCategory declares id, name and codes as required, and the generated
-UnmarshalJSON enforces that by checking the raw JSON object for each key before
-it unmarshals anything. So a single category in the catalog that omits `codes`
-does not produce a category with no codes — it fails the whole
-GetWebCategories call with "no value given for required property codes", and
-checkpointsase_web_categories reports it as an unreadable catalog.
+The history matters, because the obvious reading of this test is backwards. This
+test used to assert the OPPOSITE — that a category omitting `codes` fails to
+decode — on the strength of the v3 document, which declares id, name AND codes
+required on WebCategory. Then TestAccDataSourceObjectsCatalog_basic was run live
+on 2026-08-19 and GET /v3/objects/web-category answered 200 with a complete,
+valid catalog in which NO entry carries `codes` at all:
 
-An empty array is fine, which the second fixture element covers; it is absence
-that fails. Nothing in either repo settles whether the server can omit the key:
-/v3/objects/web-category has no controller in perimeter81-public-api at all.
+	{"id":"100000001","name":"Computers / Internet"}
+	{"id":"100000034","name":"Real Estate"}
+
+Because `codes` was in the generated requiredProperties list, WebCategory's
+UnmarshalJSON rejected the whole payload — not the one offending entry, the
+entire catalog — and checkpointsase_web_categories failed with "Unable to get
+Web categories" on a response that was entirely well-formed. Overlay A20 drops
+`codes` from WebCategory.required to fix that at the SDK layer, where the defect
+actually is. id and name stay required: they were present on every entry of the
+live response, so the strictness that real data justifies is kept.
+
+So the assertion below is not laxity for its own sake — it is the measured
+behaviour of the server. If it starts failing, the SDK has been regenerated
+without A20 and the live catalog read is broken again.
 */
-func TestWebCategoryDecodeRejectsAMissingRequiredField(t *testing.T) {
+func TestWebCategoryDecodesWithoutCodes(t *testing.T) {
 	t.Parallel()
 
 	var ok perimeter81Sdk.WebCategoryResponse
@@ -242,20 +260,112 @@ func TestWebCategoryDecodeRejectsAMissingRequiredField(t *testing.T) {
 		t.Errorf("fixture element 1 has %d codes, want 0 — an empty codes array is legal", got)
 	}
 
-	const missingCodes = `{"status":200,"data":[{"id":"fakeWebCat1","name":"Fake Gambling"}]}`
+	// The shape the live server actually returns: id and name, no codes key.
+	const asMeasured = `{"status":200,"data":[
+		{"id":"100000001","name":"Computers / Internet"},
+		{"id":"100000034","name":"Real Estate"}]}`
+	var measured perimeter81Sdk.WebCategoryResponse
+	if err := json.Unmarshal([]byte(asMeasured), &measured); err != nil {
+		t.Fatalf("the catalog shape measured live on 2026-08-19 failed to decode: %v.\n"+
+			"This is the exact failure overlay A20-web-category-codes-not-required exists "+
+			"to prevent. Check that the entry is still in perimeter-81-client-sdk/"+
+			"api/overlay.yaml and that the SDK has been regenerated (make verify).", err)
+	}
+	if len(measured.Data) != 2 {
+		t.Fatalf("decoded %d categories from the measured shape, want 2", len(measured.Data))
+	}
+
+	// Absent `codes` must arrive as a nil slice, not as an empty-but-non-nil one:
+	// flattenWebCategories' nil coercion is what turns it into a list for state,
+	// and that coercion is only reachable when this is genuinely nil.
+	if measured.Data[0].Codes != nil {
+		t.Errorf("Codes = %#v for an entry with no codes key, want nil",
+			measured.Data[0].Codes)
+	}
+	if measured.Data[0].HasCodes() {
+		t.Error("HasCodes() is true for an entry with no codes key")
+	}
+
+	// End to end: the measured shape must reach state as rows with an empty
+	// codes list, which is the behaviour the data source promises.
+	rows := flattenWebCategories(measured.Data)
+	if len(rows) != 2 {
+		t.Fatalf("flattened %d rows from the measured shape, want 2", len(rows))
+	}
+	first := rows[0].(map[string]interface{})
+	if got := first["id"]; got != "100000001" {
+		t.Errorf("id = %v, want 100000001", got)
+	}
+	if got := first["name"]; got != "Computers / Internet" {
+		t.Errorf("name = %v, want \"Computers / Internet\"", got)
+	}
+	codes, ok2 := first["codes"].([]string)
+	if !ok2 {
+		t.Fatalf("codes is %T, want []string — the nil coercion in flattenWebCategories "+
+			"is load-bearing now that the server omits the field", first["codes"])
+	}
+	if len(codes) != 0 {
+		t.Errorf("codes = %v for an entry the server sent without codes, want an empty list", codes)
+	}
+
+	// id and name are still required, and that is deliberate: A20 trimmed only
+	// `codes`. An entry missing one of them is a shape nothing has ever
+	// observed, and failing loudly is better than writing an empty string into
+	// a catalog ID that policy rules reference.
+	const missingName = `{"status":200,"data":[{"id":"100000001"}]}`
 	var bad perimeter81Sdk.WebCategoryResponse
-	if err := json.Unmarshal([]byte(missingCodes), &bad); err == nil {
-		t.Errorf("a category omitting `codes` decoded without error. If the SDK has been " +
-			"regenerated to make codes optional, flattenWebCategories and this test can be " +
-			"simplified; until then the whole catalog read fails on such a response and the " +
-			"comment on flattenWebCategories must say so")
+	if err := json.Unmarshal([]byte(missingName), &bad); err == nil {
+		t.Error("a category omitting `name` decoded without error; A20 was meant to trim " +
+			"only `codes` from WebCategory.required, so this suggests the required list " +
+			"was emptied instead")
+	}
+}
+
+/*
+TestApplicationControlDecodeRejectsAMissingRequiredField pins the risk that is
+still open, and is deliberately NOT relaxed the way WebCategory was.
+
+ApplicationControlApplication declares id and name required and non-pointer, so
+the generated UnmarshalJSON refuses any payload with an entry missing either —
+the whole payload, not the entry. That is the identical mechanism that broke
+checkpointsase_web_categories live, and GET
+/v3/objects/application-control/application is the sibling catalog of the one
+that broke: same tag, same response envelope, same lack of any controller in
+perimeter81-public-api to appeal to.
+
+It has NOT been measured. The live check of this endpoint could not be performed
+in the session that added overlay A20 (no usable credential was reachable), so
+whether the server sends both fields on every entry is unknown. Guessing in
+either direction is what the last five spec/server divergences were caused by,
+so nothing here was changed on speculation.
+
+If a live read of this endpoint ever fails with "no value given for required
+property id" or "... name", that is not a provider bug: it is the sixth instance
+of the same defect class, and the fix is an overlay entry modelled on
+A20-web-category-codes-not-required, not a fallback in flattenApplicationControlApplications.
+*/
+func TestApplicationControlDecodeRejectsAMissingRequiredField(t *testing.T) {
+	t.Parallel()
+
+	var ok perimeter81Sdk.ApplicationControlResponse
+	if err := json.Unmarshal([]byte(applicationControlFixture), &ok); err != nil {
+		t.Fatalf("the well-formed fixture must decode, got: %v", err)
 	}
 
 	const missingName = `{"status":200,"data":[{"id":"fakeApp1"}]}`
 	var badApp perimeter81Sdk.ApplicationControlResponse
 	if err := json.Unmarshal([]byte(missingName), &badApp); err == nil {
-		t.Errorf("an Application Control application omitting `name` decoded without error; " +
-			"the same reasoning as for WebCategory applies")
+		t.Error("an Application Control application omitting `name` decoded without error. " +
+			"If the SDK was regenerated to make it optional, that should have been done " +
+			"from a live measurement and recorded as an overlay entry; check for one " +
+			"before deleting this assertion")
+	}
+
+	const missingID = `{"status":200,"data":[{"name":"Fake Dropbox"}]}`
+	var noID perimeter81Sdk.ApplicationControlResponse
+	if err := json.Unmarshal([]byte(missingID), &noID); err == nil {
+		t.Error("an Application Control application omitting `id` decoded without error; " +
+			"the same reasoning applies")
 	}
 }
 

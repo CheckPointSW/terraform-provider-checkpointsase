@@ -95,11 +95,23 @@ func dataSourceWebCategoriesRead(ctx context.Context, d *schema.ResourceData, m 
 /*
 flattenWebCategories flattens the WebCategory SDK models into a Terraform list.
 
-Id, Name and Codes are all non-pointer required fields on the model, and
-WebCategory.UnmarshalJSON enforces their presence — a response omitting any one
-of them fails to decode before this function is reached. So there is no
-"present but absent" case to handle here and every key is written
+Id and Name are non-pointer required fields on the model and
+WebCategory.UnmarshalJSON enforces their presence, so a response omitting either
+fails to decode before this function is reached and both keys are written
 unconditionally.
+
+CODES IS DIFFERENT, AND THE NIL CHECK BELOW IS LOAD-BEARING — DO NOT REMOVE IT.
+The v3 document declares codes required too, but the server does not send it:
+measured live on 2026-08-19, GET /v3/objects/web-category returned a full
+catalog in which every entry carried exactly id and name and the string "codes"
+appeared nowhere (e.g. {"id":"100000034","name":"Real Estate"}). While codes was
+in the generated requiredProperties list that response failed to decode
+ENTIRELY, and this data source reported "Unable to get Web categories" on a
+valid 200. Overlay entry A20-web-category-codes-not-required makes it optional
+in the SDK, which is the layer the defect is in; the consequence here is that
+Codes is nil on every real response today, so coercing it to an empty []string
+is what puts a list rather than a null into state.
+TestWebCategoryDecodesWithoutCodes pins all of this.
 */
 func flattenWebCategories(categories []perimeter81Sdk.WebCategory) []interface{} {
 	result := make([]interface{}, len(categories))
