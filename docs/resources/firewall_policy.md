@@ -25,12 +25,68 @@ resource "checkpointsase_network" "example" {
   }
 }
 
-# Adopt-style: a firewall policy is auto-created with the network.
-# Importing it under terraform lets you manage its enabled / allowed flags.
+# sources.addresses, destinations.addresses and services all take the IDs of
+# shared objects — never CIDRs, IPs or port numbers.
+resource "checkpointsase_object_addresses" "branch" {
+  name       = "tfExampleBranchLan"
+  value_type = "cidr"
+  value      = ["192.0.2.0/24"]
+}
+
+resource "checkpointsase_object_addresses" "database" {
+  name       = "tfExampleDatabase"
+  value_type = "ip"
+  value      = ["10.0.5.10"]
+}
+
+resource "checkpointsase_object_services" "postgres" {
+  name = "tfExamplePostgres"
+
+  protocols {
+    protocol   = "tcp"
+    value_type = "single"
+    value      = [5432]
+  }
+}
+
+# Adopt-style: a firewall policy is auto-created with the network, so this
+# resource applies your configuration to the policy that already exists.
 resource "checkpointsase_firewall_policy" "example" {
   network_id = checkpointsase_network.example.id
   enabled    = true
-  allowed    = true
+  # The default action, applied to traffic no rule below matches.
+  allowed = false
+  trace   = true
+
+  # Rule order is evaluation order: the first matching rule wins.
+  policy_rules {
+    name        = "branch-to-database"
+    enabled     = true
+    allowed     = true
+    log_enabled = true
+
+    sources {
+      addresses = [checkpointsase_object_addresses.branch.id]
+    }
+    destinations {
+      addresses = [checkpointsase_object_addresses.database.id]
+    }
+    services = [checkpointsase_object_services.postgres.id]
+  }
+
+  # users and groups may be combined with each other, but never with
+  # addresses in the same block. Omitting `destinations` entirely means
+  # "any destination".
+  policy_rules {
+    name        = "contractors-blocked"
+    enabled     = true
+    allowed     = false
+    log_enabled = true
+
+    sources {
+      groups = ["gRoUpId1234"]
+    }
+  }
 }
 ```
 
@@ -45,7 +101,7 @@ resource "checkpointsase_firewall_policy" "example" {
 
 ### Optional
 
-- `policy_rules` (Block List) List of firewall policy rules. (see [below for nested schema](#nestedblock--policy_rules))
+- `policy_rules` (Block List) List of firewall policy rules. **The order of these blocks is the order the firewall evaluates them in**: the API assigns each rule a priority from its position in this list, so moving a block changes which rule wins. The list is applied wholesale — a rule that is not in your configuration is removed from the policy. (see [below for nested schema](#nestedblock--policy_rules))
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 - `trace` (Boolean) Whether the policy is traced.
 
@@ -60,13 +116,35 @@ Required:
 
 - `allowed` (Boolean) Whether this rule allows (true) or denies (false) the traffic.
 - `enabled` (Boolean) Whether this rule is enabled.
-- `name` (String) The name of the policy rule.
+- `name` (String) The name of the policy rule. Must be 5–50 characters — the API rejects anything shorter or longer.
 
 Optional:
 
-- `id` (String) The unique ID of the policy rule.
+- `destinations` (Block List, Max: 1) Restricts where the traffic this rule matches is going. Omit the block to leave the rule unrestricted by destination (the API's empty `{}`), which is the only way to express "any destination". Set either `addresses`, or `users` and/or `groups` — not `addresses` together with either of the other two: the API refuses that with `Addresses can not be in the same object with groups or users`, and so does `terraform plan`. (see [below for nested schema](#nestedblock--policy_rules--destinations))
+- `id` (String) The unique ID of the policy rule. Assigned by the server when the rule is created; supply it only to keep an existing rule's identity. Two rules with the same ID are refused with a 409.
 - `log_enabled` (Boolean) Whether logging is enabled for this rule. Required by the v3 /networks/{networkId}/firewall-policy endpoint; defaults to false so configurations written against v2.3 keep working unchanged.
-- `services` (List of String) List of service object IDs to match in this rule.
+- `services` (List of String) IDs of `checkpointsase_object_services` shared objects this rule matches — **not** port numbers or protocol names. Pass `checkpointsase_object_services.example.id`; a literal like `443` or `tcp/443` is rejected by the API. Omit the attribute for a rule that matches every service; an explicitly empty list is refused, because the API requires at least one element whenever the field is present.
+- `sources` (Block List, Max: 1) Restricts where the traffic this rule matches comes from. Omit the block to leave the rule unrestricted by source (the API's empty `{}`), which is the only way to express "any source". Set either `addresses`, or `users` and/or `groups` — not `addresses` together with either of the other two: the API refuses that with `Addresses can not be in the same object with groups or users`, and so does `terraform plan`. (see [below for nested schema](#nestedblock--policy_rules--sources))
+
+<a id="nestedblock--policy_rules--destinations"></a>
+### Nested Schema for `policy_rules.destinations`
+
+Optional:
+
+- `addresses` (List of String) IDs of `checkpointsase_object_addresses` shared objects — **not** CIDRs, IP addresses or hostnames. Pass `checkpointsase_object_addresses.example.id`; a literal like `10.0.0.0/8` is rejected by the API. Cannot be combined with `users` or `groups` in the same block. Omit the attribute rather than setting it to `[]` — the API requires at least one element whenever the field is present.
+- `groups` (List of String) IDs of groups. May be combined with `users`, but not with `addresses`. Omit the attribute rather than setting it to `[]`.
+- `users` (List of String) IDs of users. May be combined with `groups`, but not with `addresses`. At most 10 — the API enforces that limit. Omit the attribute rather than setting it to `[]`.
+
+
+<a id="nestedblock--policy_rules--sources"></a>
+### Nested Schema for `policy_rules.sources`
+
+Optional:
+
+- `addresses` (List of String) IDs of `checkpointsase_object_addresses` shared objects — **not** CIDRs, IP addresses or hostnames. Pass `checkpointsase_object_addresses.example.id`; a literal like `10.0.0.0/8` is rejected by the API. Cannot be combined with `users` or `groups` in the same block. Omit the attribute rather than setting it to `[]` — the API requires at least one element whenever the field is present.
+- `groups` (List of String) IDs of groups. May be combined with `users`, but not with `addresses`. Omit the attribute rather than setting it to `[]`.
+- `users` (List of String) IDs of users. May be combined with `groups`, but not with `addresses`. At most 10 — the API enforces that limit. Omit the attribute rather than setting it to `[]`.
+
 
 
 <a id="nestedblock--timeouts"></a>

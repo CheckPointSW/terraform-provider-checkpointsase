@@ -166,6 +166,155 @@ func TestPayloadMarshalGranularFirewallPolicy(t *testing.T) {
 			}`,
 		},
 		{
+			// An addresses-scoped rule. Note the `users` and `groups` keys in the input:
+			// d.Get hands over every attribute of a block, with empty lists for the ones
+			// the user did not write, so the expand path has to distinguish "empty" from
+			// "set" — and must emit no `users` key at all here, since `"users": []` is a
+			// 400 exactly like `"addresses": []`.
+			name: "addresses on both sides",
+			payload: func() perimeter81Sdk.GranularFirewallPolicy {
+				rule := buildGranularFirewallPolicyRule(map[string]interface{}{
+					"id":          "fakeRuleAB",
+					"name":        "fake-branch-to-db",
+					"enabled":     true,
+					"allowed":     true,
+					"log_enabled": true,
+					"services":    []interface{}{"fake-svc-1"},
+					"sources": []interface{}{map[string]interface{}{
+						"addresses": []interface{}{"fake-addr-1", "fake-addr-2"},
+						"users":     []interface{}{},
+						"groups":    []interface{}{},
+					}},
+					"destinations": []interface{}{map[string]interface{}{
+						"addresses": []interface{}{"fake-addr-3"},
+						"users":     []interface{}{},
+						"groups":    []interface{}{},
+					}},
+				})
+				policy := perimeter81Sdk.GranularFirewallPolicy{
+					Id:          "fake-policy-4",
+					Enabled:     true,
+					Allowed:     false,
+					PolicyRules: []perimeter81Sdk.GranularFirewallPolicyRule{rule},
+				}
+				policy.SetPolicyLoggingEnabled(true)
+				return policy
+			}(),
+			want: `{
+				"enabled": true,
+				"allowed": false,
+				"id": "fake-policy-4",
+				"policyLoggingEnabled": true,
+				"policyRules": [
+					{
+						"id": "fakeRuleAB",
+						"name": "fake-branch-to-db",
+						"enabled": true,
+						"allowed": true,
+						"sources": {"addresses": ["fake-addr-1", "fake-addr-2"]},
+						"destinations": {"addresses": ["fake-addr-3"]},
+						"services": ["fake-svc-1"],
+						"logEnabled": true
+					}
+				]
+			}`,
+		},
+		{
+			// users and groups may coexist — they are the same oneOf variant. The
+			// destinations side pairs a users+groups source with an addresses
+			// destination, which is legal: the exclusion is per object, not per rule.
+			name: "users and groups source, addresses destination",
+			payload: func() perimeter81Sdk.GranularFirewallPolicy {
+				rule := buildGranularFirewallPolicyRule(map[string]interface{}{
+					"id":          "",
+					"name":        "fake-contractors",
+					"enabled":     true,
+					"allowed":     false,
+					"log_enabled": false,
+					"services":    []interface{}{},
+					"sources": []interface{}{map[string]interface{}{
+						"addresses": []interface{}{},
+						"users":     []interface{}{"fake-user-1", "fake-user-2"},
+						"groups":    []interface{}{"fake-group-1"},
+					}},
+					"destinations": []interface{}{map[string]interface{}{
+						"addresses": []interface{}{"fake-addr-9"},
+						"users":     []interface{}{},
+						"groups":    []interface{}{},
+					}},
+				})
+				policy := perimeter81Sdk.GranularFirewallPolicy{
+					Id:          "fake-policy-5",
+					Enabled:     true,
+					Allowed:     true,
+					PolicyRules: []perimeter81Sdk.GranularFirewallPolicyRule{rule},
+				}
+				policy.SetPolicyLoggingEnabled(false)
+				return policy
+			}(),
+			want: `{
+				"enabled": true,
+				"allowed": true,
+				"id": "fake-policy-5",
+				"policyLoggingEnabled": false,
+				"policyRules": [
+					{
+						"name": "fake-contractors",
+						"enabled": true,
+						"allowed": false,
+						"sources": {"users": ["fake-user-1", "fake-user-2"], "groups": ["fake-group-1"]},
+						"destinations": {"addresses": ["fake-addr-9"]},
+						"logEnabled": false
+					}
+				]
+			}`,
+		},
+		{
+			// A block written as `sources {}`, or one whose lists are all empty, is
+			// the same request as no block at all. This is the case that would
+			// silently widen a rule if the expand path guessed differently.
+			name: "empty blocks are the unrestricted case",
+			payload: func() perimeter81Sdk.GranularFirewallPolicy {
+				rule := buildGranularFirewallPolicyRule(map[string]interface{}{
+					"id":          "",
+					"name":        "fake-empty-blocks",
+					"enabled":     true,
+					"allowed":     true,
+					"log_enabled": false,
+					"sources": []interface{}{map[string]interface{}{
+						"addresses": []interface{}{},
+						"users":     []interface{}{},
+						"groups":    []interface{}{},
+					}},
+					"destinations": []interface{}{nil},
+				})
+				policy := perimeter81Sdk.GranularFirewallPolicy{
+					Id:          "fake-policy-6",
+					Enabled:     true,
+					Allowed:     true,
+					PolicyRules: []perimeter81Sdk.GranularFirewallPolicyRule{rule},
+				}
+				policy.SetPolicyLoggingEnabled(false)
+				return policy
+			}(),
+			want: `{
+				"enabled": true,
+				"allowed": true,
+				"id": "fake-policy-6",
+				"policyLoggingEnabled": false,
+				"policyRules": [
+					{
+						"name": "fake-empty-blocks",
+						"enabled": true,
+						"allowed": true,
+						"sources": {},
+						"destinations": {},
+						"logEnabled": false
+					}
+				]
+			}`,
+		},
+		{
 			name: "zero rules",
 			payload: func() perimeter81Sdk.GranularFirewallPolicy {
 				policy := perimeter81Sdk.GranularFirewallPolicy{

@@ -10,7 +10,17 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 )
+
+/*
+firewallPolicyAddressesXOR is the server's own message for the one combination a sources or
+destinations block may not contain (updateFirewallRulesGranular.interceptor.ts). It is quoted
+verbatim, not paraphrased, so that a user who searches for the string they were shown by
+`terraform plan` finds the same string in the API's documentation and support answers — and so
+that the plan-time refusal is recognisably the same rule as the 400 it replaces.
+*/
+const firewallPolicyAddressesXOR = "Addresses can not be in the same object with groups or users"
 
 /*
 resourceFirewallPolicy Setup the Firewall Policy Resource CRUD operations.
@@ -31,6 +41,7 @@ func resourceFirewallPolicy() *schema.Resource {
 		ReadContext:   resourceFirewallPolicyRead,
 		UpdateContext: resourceFirewallPolicyUpdate,
 		DeleteContext: resourceFirewallPolicyDelete,
+		CustomizeDiff: resourceFirewallPolicyCustomizeDiff,
 		Schema: map[string]*schema.Schema{
 			"network_id": {
 				Type:        schema.TypeString,
@@ -54,21 +65,26 @@ func resourceFirewallPolicy() *schema.Resource {
 				Description: "Whether the policy is traced.",
 			},
 			"policy_rules": {
-				Type:        schema.TypeList,
-				Optional:    true,
-				Description: "List of firewall policy rules.",
+				Type:     schema.TypeList,
+				Optional: true,
+				Description: "List of firewall policy rules. **The order of these blocks is the " +
+					"order the firewall evaluates them in**: the API assigns each rule a priority " +
+					"from its position in this list, so moving a block changes which rule wins. " +
+					"The list is applied wholesale — a rule that is not in your configuration is " +
+					"removed from the policy.",
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"id": {
 							Type:        schema.TypeString,
 							Optional:    true,
 							Computed:    true,
-							Description: "The unique ID of the policy rule.",
+							Description: "The unique ID of the policy rule. Assigned by the server when the rule is created; supply it only to keep an existing rule's identity. Two rules with the same ID are refused with a 409.",
 						},
 						"name": {
-							Type:        schema.TypeString,
-							Required:    true,
-							Description: "The name of the policy rule.",
+							Type:         schema.TypeString,
+							Required:     true,
+							Description:  "The name of the policy rule. Must be 5–50 characters — the API rejects anything shorter or longer.",
+							ValidateFunc: validation.StringLenBetween(5, 50),
 						},
 						"enabled": {
 							Type:        schema.TypeBool,
@@ -80,11 +96,42 @@ func resourceFirewallPolicy() *schema.Resource {
 							Required:    true,
 							Description: "Whether this rule allows (true) or denies (false) the traffic.",
 						},
+						"sources": {
+							Type:     schema.TypeList,
+							Optional: true,
+							MaxItems: 1,
+							Description: "Restricts where the traffic this rule matches comes from. " +
+								"Omit the block to leave the rule unrestricted by source (the API's " +
+								"empty `{}`), which is the only way to express \"any source\". " +
+								"Set either `addresses`, or `users` and/or `groups` — not `addresses` " +
+								"together with either of the other two: the API refuses that with " +
+								"`" + firewallPolicyAddressesXOR + "`, and so does `terraform plan`.",
+							Elem: firewallPolicyRuleEndpointResource(),
+						},
+						"destinations": {
+							Type:     schema.TypeList,
+							Optional: true,
+							MaxItems: 1,
+							Description: "Restricts where the traffic this rule matches is going. " +
+								"Omit the block to leave the rule unrestricted by destination (the " +
+								"API's empty `{}`), which is the only way to express \"any " +
+								"destination\". Set either `addresses`, or `users` and/or `groups` — " +
+								"not `addresses` together with either of the other two: the API " +
+								"refuses that with `" + firewallPolicyAddressesXOR + "`, and so does " +
+								"`terraform plan`.",
+							Elem: firewallPolicyRuleEndpointResource(),
+						},
 						"services": {
-							Type:        schema.TypeList,
-							Optional:    true,
-							Description: "List of service object IDs to match in this rule.",
-							Elem:        &schema.Schema{Type: schema.TypeString},
+							Type:     schema.TypeList,
+							Optional: true,
+							MinItems: 1,
+							Description: "IDs of `checkpointsase_object_services` shared objects this rule matches — " +
+								"**not** port numbers or protocol names. Pass " +
+								"`checkpointsase_object_services.example.id`; a literal like `443` or `tcp/443` " +
+								"is rejected by the API. Omit the attribute for a rule that matches every " +
+								"service; an explicitly empty list is refused, because the API requires at " +
+								"least one element whenever the field is present.",
+							Elem: &schema.Schema{Type: schema.TypeString},
 						},
 						"log_enabled": {
 							Type:        schema.TypeBool,
@@ -105,6 +152,187 @@ func resourceFirewallPolicy() *schema.Resource {
 			Delete: schema.DefaultTimeout(asyncResourceTimeout),
 		},
 	}
+}
+
+/*
+firewallPolicyRuleEndpointResource is the element schema shared by a rule's `sources` and
+`destinations` blocks. Both sides are the same type server-side
+(SourcesAndDestinationsResponse), so they get the same three attributes here.
+
+MinItems/MaxItems are the whole of the schema-level validation that is available. The mutual
+exclusion between `addresses` and `users`/`groups` cannot be expressed this way: SDKv2's
+ExactlyOneOf and ConflictsWith take absolute attribute paths, and every path that could reach
+inside `policy_rules` — indexed (`policy_rules.0.sources.0.users`), unindexed, or starred — is
+rejected by schema.InternalValidate with "configuration block reference ... can only be used with
+TypeList and MaxItems: 1 configuration blocks", because `policy_rules` is a list of many. A
+relative sibling name is rejected as an unknown attribute. Measured, not assumed — see
+TestFirewallPolicySchemaCannotExpressTheXOR, which fails if a future SDK upgrade makes any of
+those forms work and this comment becomes wrong. The exclusion is enforced in
+resourceFirewallPolicyCustomizeDiff instead.
+
+MinItems: 1 *is* enforced inside nested blocks (TestFirewallPolicyEmptyListsAreRejectedAtPlanTime
+proves it), which matters for more than tidiness: without it, `addresses = []` would be silently
+dropped and the rule would widen from "these addresses" to "any address" with no warning.
+*/
+func firewallPolicyRuleEndpointResource() *schema.Resource {
+	return &schema.Resource{
+		Schema: map[string]*schema.Schema{
+			"addresses": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MinItems: 1,
+				Description: "IDs of `checkpointsase_object_addresses` shared objects — **not** CIDRs, " +
+					"IP addresses or hostnames. Pass `checkpointsase_object_addresses.example.id`; a " +
+					"literal like `10.0.0.0/8` is rejected by the API. Cannot be combined with `users` " +
+					"or `groups` in the same block. Omit the attribute rather than setting it to `[]` — " +
+					"the API requires at least one element whenever the field is present.",
+				Elem: &schema.Schema{Type: schema.TypeString},
+			},
+			"users": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MinItems: 1,
+				MaxItems: 10,
+				Description: "IDs of users. May be combined with `groups`, but not with `addresses`. " +
+					"At most 10 — the API enforces that limit. Omit the attribute rather than setting " +
+					"it to `[]`.",
+				Elem: &schema.Schema{Type: schema.TypeString},
+			},
+			"groups": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MinItems: 1,
+				Description: "IDs of groups. May be combined with `users`, but not with `addresses`. " +
+					"Omit the attribute rather than setting it to `[]`.",
+				Elem: &schema.Schema{Type: schema.TypeString},
+			},
+		},
+	}
+}
+
+/*
+firewallPolicyRuleEndpointLists pulls the three lists out of one `sources` or `destinations`
+block, returning nil — never an empty slice — for anything absent or empty.
+
+nil rather than empty matters on the write path: UsersAndGroups relies on omitempty to keep an
+unused key out of the body, and omitempty drops a nil slice but keeps an empty one. An empty one
+would reach the wire as `"users": []` and earn a 400.
+
+raw[0] can be nil for a block written as `sources {}`, so the map assertion is checked rather
+than assumed.
+*/
+func firewallPolicyRuleEndpointLists(raw []interface{}) (addresses, users, groups []string) {
+	if len(raw) == 0 {
+		return nil, nil, nil
+	}
+	block, ok := raw[0].(map[string]interface{})
+	if !ok {
+		return nil, nil, nil
+	}
+	list := func(key string) []string {
+		v, ok := block[key].([]interface{})
+		if !ok || len(v) == 0 {
+			return nil
+		}
+		return flattenStringsArrayData(v)
+	}
+	return list("addresses"), list("users"), list("groups")
+}
+
+/*
+expandFirewallPolicyRuleEndpoint turns one `sources` or `destinations` block into the
+SourcesAndDestinations oneOf the API expects.
+
+An absent block, an empty block, and a block whose lists are all empty all mean the same thing —
+unrestricted — and all produce `{}`. See firewallPolicyUnrestricted for why that value is what it
+is.
+*/
+func expandFirewallPolicyRuleEndpoint(raw []interface{}) perimeter81Sdk.SourcesAndDestinations {
+	addresses, users, groups := firewallPolicyRuleEndpointLists(raw)
+	if len(addresses) > 0 {
+		return perimeter81Sdk.AddressesAsSourcesAndDestinations(
+			&perimeter81Sdk.Addresses{Addresses: addresses})
+	}
+	if len(users) > 0 || len(groups) > 0 {
+		return perimeter81Sdk.UsersAndGroupsAsSourcesAndDestinations(
+			&perimeter81Sdk.UsersAndGroups{Users: users, Groups: groups})
+	}
+	return firewallPolicyUnrestricted()
+}
+
+/*
+flattenFirewallPolicyRuleEndpoint is the read-side inverse: it turns the SourcesAndDestinations
+the API returned back into the zero-or-one element list the schema holds.
+
+Returning an empty list for the unrestricted case is what keeps plans clean. A configuration with
+no `sources` block has `sources.# = 0` in state, so emitting a one-element block full of empty
+lists here would show as a diff on every plan, forever — the failure mode that made the enhanced
+tunnel read shape a release blocker.
+*/
+func flattenFirewallPolicyRuleEndpoint(sd perimeter81Sdk.SourcesAndDestinations) []interface{} {
+	block := map[string]interface{}{}
+	if sd.Addresses != nil && len(sd.Addresses.Addresses) > 0 {
+		block["addresses"] = sd.Addresses.Addresses
+	}
+	if sd.UsersAndGroups != nil {
+		if len(sd.UsersAndGroups.Users) > 0 {
+			block["users"] = sd.UsersAndGroups.Users
+		}
+		if len(sd.UsersAndGroups.Groups) > 0 {
+			block["groups"] = sd.UsersAndGroups.Groups
+		}
+	}
+	if len(block) == 0 {
+		return []interface{}{}
+	}
+	return []interface{}{block}
+}
+
+/*
+validateFirewallPolicyRules enforces the one rule the schema cannot: within a single `sources` or
+`destinations` block, `addresses` excludes `users` and `groups`.
+
+It is called from two places on purpose. resourceFirewallPolicyCustomizeDiff runs it at plan
+time, which is where a user should learn about it. resourceFirewallPolicyUpdate runs it again at
+apply time, because a list that was entirely unknown while planning (`addresses = var.something`)
+reads as absent in a diff and would otherwise slip through to a 400 mid-apply.
+
+The message quotes the server's wording and names the rule index and side, because the server's
+own error does not say which rule it means.
+*/
+func validateFirewallPolicyRules(rules []interface{}) error {
+	for i, ruleRaw := range rules {
+		ruleMap, ok := ruleRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, field := range []string{"sources", "destinations"} {
+			raw, ok := ruleMap[field].([]interface{})
+			if !ok {
+				continue
+			}
+			addresses, users, groups := firewallPolicyRuleEndpointLists(raw)
+			if len(addresses) == 0 || (len(users) == 0 && len(groups) == 0) {
+				continue
+			}
+			return fmt.Errorf("policy_rules.%d.%s: %s. Set either addresses, or users and/or groups, in one %s block — for a rule that needs both, split it into two rules",
+				i, field, firewallPolicyAddressesXOR, field)
+		}
+	}
+	return nil
+}
+
+/*
+resourceFirewallPolicyCustomizeDiff refuses at plan time the source/destination combination the
+API refuses at apply time. Destroy plans never reach CustomizeDiff in SDKv2, so an invalid rule
+already in state can still be removed.
+*/
+func resourceFirewallPolicyCustomizeDiff(_ context.Context, d *schema.ResourceDiff, _ interface{}) error {
+	rules, ok := d.Get("policy_rules").([]interface{})
+	if !ok {
+		return nil
+	}
+	return validateFirewallPolicyRules(rules)
 }
 
 /*
@@ -223,6 +451,12 @@ func flattenFirewallPolicyRules(rules []perimeter81Sdk.GranularFirewallPolicyRul
 			"allowed":     rule.Allowed,
 			"services":    rule.Services,
 			"log_enabled": rule.LogEnabled,
+			// sources/destinations were dropped here until 2026-08-19. The read model
+			// carries them — Sources and Destinations are required fields on the same
+			// struct used for writes — so leaving them out meant every plan reported a
+			// diff on a rule that had not changed, even once Create worked.
+			"sources":      flattenFirewallPolicyRuleEndpoint(rule.Sources),
+			"destinations": flattenFirewallPolicyRuleEndpoint(rule.Destinations),
 		}
 		if rule.Id != nil {
 			ruleMap["id"] = *rule.Id
@@ -284,6 +518,14 @@ func buildGranularFirewallPolicyRule(ruleMap map[string]interface{}) perimeter81
 	if v, ok := ruleMap["id"].(string); ok && v != "" {
 		rule.Id = &v
 	}
+	// The two lookups are guarded because payload tests and older callers build a rule map
+	// without these keys; both fields already hold the unrestricted `{}` value in that case.
+	if v, ok := ruleMap["sources"].([]interface{}); ok {
+		rule.Sources = expandFirewallPolicyRuleEndpoint(v)
+	}
+	if v, ok := ruleMap["destinations"].([]interface{}); ok {
+		rule.Destinations = expandFirewallPolicyRuleEndpoint(v)
+	}
 	// The len > 0 guard is load-bearing, not defensive. `services` carries the same
 	// @IsOptional + @ArrayMinSize(1) pair as sources/destinations (networkPolicyRule.model.ts),
 	// and Services has omitempty but is a non-nil empty slice here whenever the user omits the
@@ -322,6 +564,11 @@ func resourceFirewallPolicyUpdate(ctx context.Context, d *schema.ResourceData, m
 
 	// Build policy rules from schema
 	policyRulesRaw := d.Get("policy_rules").([]interface{})
+	// Backstop for values that were unknown at plan time and so invisible to CustomizeDiff.
+	if err := validateFirewallPolicyRules(policyRulesRaw); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Invalid Firewall Policy rule", err)
+	}
 	policyRules := make([]perimeter81Sdk.GranularFirewallPolicyRule, len(policyRulesRaw))
 	for i, ruleRaw := range policyRulesRaw {
 		policyRules[i] = buildGranularFirewallPolicyRule(ruleRaw.(map[string]interface{}))
