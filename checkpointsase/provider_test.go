@@ -62,6 +62,30 @@ func testAccPreCheckSecondaryRegion(t *testing.T) {
 	}
 }
 
+// testAccPreCheckGroup is required by tests that create an application. The
+// API refuses an application granting access to nobody: `users` carries a
+// cross-field @UsersMinSize(1) that fires whenever `groups` is empty, so at
+// least one of the two must be non-empty. Both are tenant-specific directory
+// object IDs that this suite cannot create, so the ID comes from the
+// environment — the same treatment region IDs get, and for the same reason.
+//
+// Kept separate from testAccPreCheck so the other twenty-odd acceptance tests
+// do not require a group ID they never use.
+func testAccPreCheckGroup(t *testing.T) {
+	if v := os.Getenv("CHECKPOINT_SASE_TEST_GROUP_ID"); v == "" {
+		t.Fatal("CHECKPOINT_SASE_TEST_GROUP_ID must be set for acceptance tests that " +
+			"create an application. The API requires an application to grant access to " +
+			"at least one user or group, and group IDs are tenant-specific: list them " +
+			"with GET /v3/groups. Most tenants have an \"All Users\" group that serves.")
+	}
+}
+
+// testAccGroupID returns the group ID used by application acceptance tests.
+// testAccPreCheckGroup enforces that it is set before any such test runs.
+func testAccGroupID() string {
+	return os.Getenv("CHECKPOINT_SASE_TEST_GROUP_ID")
+}
+
 // testAccRegionID returns the Harmony SASE region ID used by acceptance
 // tests that create networks/regions. It is tenant-specific, so it is
 // sourced from the environment rather than hardcoded; testAccPreCheck

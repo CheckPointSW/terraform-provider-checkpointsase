@@ -65,7 +65,7 @@ func TestAccApplication_basic(t *testing.T) {
 	var application perimeter81Sdk.GetApplicationById200Response
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:  func() { testAccPreCheck(t) },
+		PreCheck:  func() { testAccPreCheck(t); testAccPreCheckGroup(t) },
 		Providers: testAccProviders,
 		// No CheckDestroy: no other TestAcc test in this package defines one,
 		// and for this resource none could assert anything true. Destroy
@@ -283,7 +283,19 @@ resource "checkpointsase_application" "app" {
   network = checkpointsase_network.n1.id
   host    = "10.99.0.20"
   port    = 443
+
+  # The API refuses an application that grants access to nobody: users carries a
+  # cross-field @UsersMinSize(1) that fires whenever groups is empty, so one of
+  # the two must be non-empty. Measured 2026-08-19 -- a config with neither is
+  # now refused at plan time by the provider, which is why this is here.
+  #
+  # A group rather than a user, deliberately: it keeps a named person's identity
+  # out of the fixture, and it also exercises the one field L1 records as never
+  # being read back (there is no d.Set("groups", ...) anywhere in Read), which
+  # was previously unmeasurable because ImportStateVerify drops empty
+  # containers from both sides.
+  groups = ["%[4]s"]
 }
   `
-	return fmt.Sprintf(config, randNameApplication, testAccRegionID(), testAccApplicationName())
+	return fmt.Sprintf(config, randNameApplication, testAccRegionID(), testAccApplicationName(), testAccGroupID())
 }
