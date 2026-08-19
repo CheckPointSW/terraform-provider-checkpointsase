@@ -20,6 +20,19 @@ var randNameFirewallPolicy string = randStringBytesRmndr()
 // TestAccFirewallPolicy_basic is the first live exercise of
 // checkpointsase_firewall_policy.
 //
+// It was written on 2026-08-18 against a resource that could not create a rule
+// at all: with no sources/destinations schema, the provider sent
+// `{"addresses": []}` for both sides of every rule, and the API refuses an
+// empty array wherever it accepts the key at all. Step 1 therefore never
+// passed. Both blocks now exist and are exercised here.
+//
+// What is NOT here, deliberately: the addresses/users+groups exclusion. It is
+// refused during plan by resourceFirewallPolicyCustomizeDiff, so a live run
+// would only be measuring an error message that never reaches the API —
+// TestFirewallPolicyXORIsRejectedAtPlanTime covers it offline in milliseconds.
+// Neither are `users`/`groups`: both need directory objects this test suite
+// cannot create, so the fixtures scope rules by address instead.
+//
 // What this resource actually is, verified against resource_firewall_policy.go
 // rather than assumed: it is a *network-scoped singleton adopted* by Terraform,
 // not an independently created object.
@@ -72,11 +85,13 @@ func TestAccFirewallPolicy_basic(t *testing.T) {
 						Trace:   true,
 						Rules: []testAccFirewallPolicyExpectedRule{
 							{
-								Name:        "tfacc-allow-https",
-								Enabled:     true,
-								Allowed:     true,
-								LogEnabled:  true,
-								ServiceRefs: []string{"checkpointsase_object_services.svc1"},
+								Name:                   "tfacc-allow-https",
+								Enabled:                true,
+								Allowed:                true,
+								LogEnabled:             true,
+								ServiceRefs:            []string{"checkpointsase_object_services.svc1"},
+								SourceAddressRefs:      []string{"checkpointsase_object_addresses.branch"},
+								DestinationAddressRefs: []string{"checkpointsase_object_addresses.database"},
 							},
 						},
 					}),
@@ -89,6 +104,19 @@ func TestAccFirewallPolicy_basic(t *testing.T) {
 					resource.TestCheckResourceAttr("checkpointsase_firewall_policy.fw", "trace", "true"),
 					resource.TestCheckResourceAttr("checkpointsase_firewall_policy.fw", "policy_rules.#", "1"),
 					resource.TestCheckResourceAttr("checkpointsase_firewall_policy.fw", "policy_rules.0.name", "tfacc-allow-https"),
+					// Read has to carry both endpoint objects back into state or
+					// every subsequent plan reports a diff on a rule nobody
+					// touched. TestFirewallPolicyReadProducesNoPermanentDiff
+					// covers the same ground offline; this is the live half.
+					resource.TestCheckResourceAttr("checkpointsase_firewall_policy.fw", "policy_rules.0.sources.#", "1"),
+					resource.TestCheckResourceAttr("checkpointsase_firewall_policy.fw", "policy_rules.0.sources.0.addresses.#", "1"),
+					resource.TestCheckResourceAttrPair(
+						"checkpointsase_firewall_policy.fw", "policy_rules.0.sources.0.addresses.0",
+						"checkpointsase_object_addresses.branch", "id"),
+					resource.TestCheckResourceAttr("checkpointsase_firewall_policy.fw", "policy_rules.0.destinations.#", "1"),
+					resource.TestCheckResourceAttrPair(
+						"checkpointsase_firewall_policy.fw", "policy_rules.0.destinations.0.addresses.0",
+						"checkpointsase_object_addresses.database", "id"),
 					// policy_rules.*.id is Optional+Computed: the server
 					// assigns it and flattenFirewallPolicyRules is supposed to
 					// read it back. An empty value here means rule identity is
@@ -111,18 +139,23 @@ func TestAccFirewallPolicy_basic(t *testing.T) {
 						Trace:   false,
 						Rules: []testAccFirewallPolicyExpectedRule{
 							{
-								Name:        "tfacc-deny-https",
-								Enabled:     false,
-								Allowed:     false,
-								LogEnabled:  false,
+								Name:       "tfacc-deny-https",
+								Enabled:    false,
+								Allowed:    false,
+								LogEnabled: false,
+								// The rule keeps its service but loses both endpoint
+								// blocks, so this step also covers narrowing a rule
+								// back to unrestricted — the update direction that
+								// has to send {} rather than an empty list.
 								ServiceRefs: []string{"checkpointsase_object_services.svc1"},
 							},
 							{
-								Name:        "tfacc-allow-dns",
-								Enabled:     true,
-								Allowed:     true,
-								LogEnabled:  true,
-								ServiceRefs: []string{"checkpointsase_object_services.svc2"},
+								Name:                   "tfacc-allow-dns",
+								Enabled:                true,
+								Allowed:                true,
+								LogEnabled:             true,
+								ServiceRefs:            []string{"checkpointsase_object_services.svc2"},
+								DestinationAddressRefs: []string{"checkpointsase_object_addresses.database"},
 							},
 						},
 					}),
@@ -135,6 +168,18 @@ func TestAccFirewallPolicy_basic(t *testing.T) {
 					// pair fails and says so.
 					resource.TestCheckResourceAttr("checkpointsase_firewall_policy.fw", "policy_rules.0.name", "tfacc-deny-https"),
 					resource.TestCheckResourceAttr("checkpointsase_firewall_policy.fw", "policy_rules.1.name", "tfacc-allow-dns"),
+					// Rule 0 dropped both endpoint blocks in this step. State must
+					// show them gone, not merely emptied: a lingering
+					// `sources.# = 1` would mean the update sent an empty list
+					// where it had to send {}.
+					resource.TestCheckResourceAttr("checkpointsase_firewall_policy.fw", "policy_rules.0.sources.#", "0"),
+					resource.TestCheckResourceAttr("checkpointsase_firewall_policy.fw", "policy_rules.0.destinations.#", "0"),
+					// Rule 1 is scoped only on its destination side, so the source
+					// side is the unrestricted case in the same policy.
+					resource.TestCheckResourceAttr("checkpointsase_firewall_policy.fw", "policy_rules.1.sources.#", "0"),
+					resource.TestCheckResourceAttrPair(
+						"checkpointsase_firewall_policy.fw", "policy_rules.1.destinations.0.addresses.0",
+						"checkpointsase_object_addresses.database", "id"),
 					testAccCheckFirewallPolicyRuleIDsPopulated("checkpointsase_firewall_policy.fw", 2),
 				),
 			},
@@ -193,7 +238,11 @@ func testAccCheckFirewallPolicyExists(n string, policy *perimeter81Sdk.GranularF
 
 		conn := testAccProvider.Meta().(*perimeter81Sdk.APIClient)
 		ctx := context.Background()
-		gotPolicy, _, err := conn.FirewallPolicyAPI.GetGranularFirewallPolicy(ctx, networkId).Execute()
+		// getGranularFirewallPolicy, not the SDK method directly: the generated
+		// SourcesAndDestinations oneOf cannot decode an unrestricted `{}` or an
+		// `{"addresses":[...]}` object, so the raw SDK call fails on a 200 for every
+		// policy this test creates. See resource_firewall_policy_read_test.go.
+		gotPolicy, _, err := getGranularFirewallPolicy(ctx, conn, networkId)
 		if err != nil {
 			return err
 		}
@@ -210,11 +259,19 @@ func testAccCheckFirewallPolicyExists(n string, policy *perimeter81Sdk.GranularF
 // rather than service IDs, because the IDs are assigned at apply time; the
 // check resolves each address to its real ID before comparing.
 type testAccFirewallPolicyExpectedRule struct {
-	Name        string
-	Enabled     bool
-	Allowed     bool
-	LogEnabled  bool
-	ServiceRefs []string
+	Name       string
+	Enabled    bool
+	Allowed    bool
+	LogEnabled bool
+	// ServiceRefs, SourceAddressRefs and DestinationAddressRefs all hold state
+	// addresses rather than IDs, for the same reason: the server mints the IDs at
+	// apply time. An empty slice means "unrestricted" — the {} case — and is
+	// asserted as such rather than skipped, because {} is the shape Create sends
+	// for any rule the user did not scope, and a server that stored something else
+	// there would be silently changing what the rule matches.
+	ServiceRefs            []string
+	SourceAddressRefs      []string
+	DestinationAddressRefs []string
 }
 
 type testAccFirewallPolicyExpectedAttributes struct {
@@ -284,10 +341,57 @@ func testAccCheckFirewallPolicyAttributes(policy *perimeter81Sdk.GranularFirewal
 			if !testComparableArraiesEq(gotRule.Services, wantServices) {
 				return fmt.Errorf("rule %d (%s): got services %v; want %v", i, wantRule.Name, gotRule.Services, wantServices)
 			}
+
+			if err := testAccCheckFirewallPolicyEndpoint(s, i, wantRule.Name, "sources", gotRule.Sources, wantRule.SourceAddressRefs); err != nil {
+				return err
+			}
+			if err := testAccCheckFirewallPolicyEndpoint(s, i, wantRule.Name, "destinations", gotRule.Destinations, wantRule.DestinationAddressRefs); err != nil {
+				return err
+			}
 		}
 
 		return nil
 	}
+}
+
+/*
+testAccCheckFirewallPolicyEndpoint compares one side of a rule — its sources or its
+destinations — against the address objects the configuration pointed it at.
+
+Two things make this worth asserting server-side rather than only in state. The write
+shape is invisible in state: `{"addresses":[]}` and `{}` both look like "no sources"
+in Terraform, and one of them is a 400, so only the API's own copy of the rule
+distinguishes a rule that was stored unrestricted from one that was never stored.
+And the read shape for an address-scoped rule is the case the generated SDK decoder
+cannot represent at all, so this is also where a regression in
+getGranularFirewallPolicy's fallback would show up.
+*/
+func testAccCheckFirewallPolicyEndpoint(s *terraform.State, ruleIndex int, ruleName, field string, got perimeter81Sdk.SourcesAndDestinations, wantRefs []string) error {
+	wantIDs, err := testAccResolveStateIDs(s, wantRefs)
+	if err != nil {
+		return fmt.Errorf("rule %d (%s) %s: %s", ruleIndex, ruleName, field, err)
+	}
+
+	var gotAddresses, gotUsers, gotGroups []string
+	if got.Addresses != nil {
+		gotAddresses = got.Addresses.Addresses
+	}
+	if got.UsersAndGroups != nil {
+		gotUsers = got.UsersAndGroups.Users
+		gotGroups = got.UsersAndGroups.Groups
+	}
+
+	if len(wantIDs) == 0 {
+		if len(gotAddresses) > 0 || len(gotUsers) > 0 || len(gotGroups) > 0 {
+			return fmt.Errorf("rule %d (%s): %s should be unrestricted ({}), but the API holds addresses %v users %v groups %v — the rule matches less traffic than the configuration asked for",
+				ruleIndex, ruleName, field, gotAddresses, gotUsers, gotGroups)
+		}
+		return nil
+	}
+	if !testComparableArraiesEq(gotAddresses, wantIDs) {
+		return fmt.Errorf("rule %d (%s): got %s addresses %v; want %v", ruleIndex, ruleName, field, gotAddresses, wantIDs)
+	}
+	return nil
 }
 
 /*
@@ -336,12 +440,21 @@ func testAccResolveStateIDs(s *terraform.State, addresses []string) ([]string, e
 
 /*
 testAccFirewallPolicyConfig is step 1: a network (whose creation implicitly
-creates the policy this resource adopts), one TCP/443 service object, and a
-policy carrying a single rule that references it.
+creates the policy this resource adopts), one TCP/443 service object, two
+address objects, and a policy carrying a single rule scoped by all three.
 
-The rule can only be scoped by `services`: there is no sources/destinations
-schema surface on this resource, and buildGranularFirewallPolicyRule hardwires
-both to an empty address list.
+Both endpoint blocks are populated deliberately. Until 2026-08-19 this step
+could not pass at all — the provider had no sources/destinations schema and sent
+`{"addresses": []}` for both, which the API rejects with
+`policyRules.0.sources.addresses must contain at least 1 elements` — so the
+addresses path is the part of this test with no prior live evidence behind it.
+The rule references shared-object IDs, never literals: a CIDR written straight
+into `addresses` is a 400.
+
+Both address objects use `value_type = "ip"` on purpose. It is one of the two
+types checkpointsase_object_addresses' own acceptance test already exercises
+live, so a failure in this test is about the firewall policy rather than about
+an address type nobody has measured.
 */
 func testAccFirewallPolicyConfig() string {
 	config := `
@@ -367,6 +480,20 @@ resource "checkpointsase_object_services" "svc1" {
   }
 }
 
+resource "checkpointsase_object_addresses" "branch" {
+  name        = "tfacc-branch-%[1]s"
+  description = "Branch host, the source side of the firewall policy acceptance test"
+  value_type  = "ip"
+  value       = ["192.0.2.10"]
+}
+
+resource "checkpointsase_object_addresses" "database" {
+  name        = "tfacc-database-%[1]s"
+  description = "Database host, the destination side of the firewall policy acceptance test"
+  value_type  = "ip"
+  value       = ["198.51.100.10"]
+}
+
 resource "checkpointsase_firewall_policy" "fw" {
   network_id = checkpointsase_network.n1.id
   enabled    = true
@@ -379,6 +506,14 @@ resource "checkpointsase_firewall_policy" "fw" {
     allowed     = true
     services    = [checkpointsase_object_services.svc1.id]
     log_enabled = true
+
+    sources {
+      addresses = [checkpointsase_object_addresses.branch.id]
+    }
+
+    destinations {
+      addresses = [checkpointsase_object_addresses.database.id]
+    }
   }
 }
   `
@@ -386,10 +521,16 @@ resource "checkpointsase_firewall_policy" "fw" {
 }
 
 /*
-testAccFirewallPolicyUpdateConfig is step 2. The network and svc1 blocks are
-identical to step 1 so neither is replaced — only the policy changes. It flips
-every policy-level scalar, flips every field of the existing rule, and appends
-a second rule against a new UDP/53 service object.
+testAccFirewallPolicyUpdateConfig is step 2. The network, svc1 and both address
+blocks are identical to step 1 so none of them is replaced — only the policy
+changes. It flips every policy-level scalar, flips every field of the existing
+rule, and appends a second rule against a new UDP/53 service object.
+
+The endpoint blocks move as well as the scalars, which is the part worth having:
+rule 0 loses both of its blocks (narrow -> unrestricted, the update that has to
+send `{}` and not an empty list), and the appended rule 1 is scoped on its
+destination side only, so one policy carries a restricted and an unrestricted
+side at once.
 */
 func testAccFirewallPolicyUpdateConfig() string {
 	config := `
@@ -426,6 +567,20 @@ resource "checkpointsase_object_services" "svc2" {
   }
 }
 
+resource "checkpointsase_object_addresses" "branch" {
+  name        = "tfacc-branch-%[1]s"
+  description = "Branch host, the source side of the firewall policy acceptance test"
+  value_type  = "ip"
+  value       = ["192.0.2.10"]
+}
+
+resource "checkpointsase_object_addresses" "database" {
+  name        = "tfacc-database-%[1]s"
+  description = "Database host, the destination side of the firewall policy acceptance test"
+  value_type  = "ip"
+  value       = ["198.51.100.10"]
+}
+
 resource "checkpointsase_firewall_policy" "fw" {
   network_id = checkpointsase_network.n1.id
   enabled    = true
@@ -446,6 +601,10 @@ resource "checkpointsase_firewall_policy" "fw" {
     allowed     = true
     services    = [checkpointsase_object_services.svc2.id]
     log_enabled = true
+
+    destinations {
+      addresses = [checkpointsase_object_addresses.database.id]
+    }
   }
 }
   `
