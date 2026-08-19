@@ -1304,3 +1304,168 @@ func TestPayloadMarshalGranularFirewallPolicyClear(t *testing.T) {
 		})
 	}
 }
+
+/*
+TestObjectServicesICMPProtocolOptionsIsAsymmetric pins the shape difference
+between the two directions of protocolOptions, which is the round-trip hazard
+this attribute exists inside. The request takes a bare code — the SDK models it
+as an int32 enum — while the response returns {code, description}, because the
+server expands it through createProtocolOptions. A provider that wrote the
+request value into state and read the response value back out of it would diff
+forever; the same defect class as EnhancedTunnel's read shape in Phase 1.
+
+Sending the object form, or sending valueType/value alongside icmp, is what a
+naive port of the tcp/udp path would do. This test documents the SDK's existing
+behaviour rather than driving a change to it: if it fails, the SDK does not model
+ICMP the way this resource assumes.
+*/
+func TestObjectServicesICMPProtocolOptionsIsAsymmetric(t *testing.T) {
+	t.Run("request carries the bare code", func(t *testing.T) {
+		code := perimeter81Sdk.ObjectServiceProtocolOptionsICMPrequest(8)
+		assertMarshalsTo(t, perimeter81Sdk.ObjectsServicesProtocolRequestObj{
+			Protocol:        "icmp",
+			ProtocolOptions: &code,
+		}, `{"protocol":"icmp","protocolOptions":8}`)
+	})
+
+	t.Run("response carries the expanded object", func(t *testing.T) {
+		codeValue := int32(8)
+		description := "Echo"
+		assertMarshalsTo(t, perimeter81Sdk.ObjectsServicesProtocolResponseObj{
+			Protocol:        "icmp",
+			ProtocolOptions: &perimeter81Sdk.ObjectServiceProtocolOptionsICMPresponse{Code: &codeValue, Description: &description},
+		}, `{"protocol":"icmp","protocolOptions":{"code":8,"description":"Echo"}}`)
+	})
+}
+
+/*
+TestPayloadMarshalObjectServicesCreate is the golden body for both protocol
+shapes, built through flattenProtocolsData — the exact function Create and Update
+use — from the map shape d.Get("protocols") produces.
+
+The cases that matter are the absences, and neither of them is visible in a
+schema test because both shapes marshal without error:
+
+  - an icmp entry must carry no valueType and no value. Sending them is not a
+    400: CreateServicesTransformer rewrites valueType to "single" and drops
+    value, and the read returns neither, so the entry would diff on every plan.
+  - a tcp/udp entry must carry no protocolOptions, for the mirror-image reason —
+    the server neither validates nor stores it for tcp, so it never comes back.
+
+The `protocolOptions: 0` case is the one to watch. 0 is a legal ICMP code (Echo
+Reply) and it is also the zero value of the SDK's int32 enum, so an
+`omitempty`-by-value field would drop it from the body — after which the server
+reads the code as absent and silently substitutes -1 ("Any"). It survives only
+because ProtocolOptions is a pointer and ToMap tests the pointer, not the value.
+*/
+func TestPayloadMarshalObjectServicesCreate(t *testing.T) {
+	description := "fake service"
+
+	tests := []struct {
+		name      string
+		protocols []interface{}
+		want      string
+	}{
+		{
+			name: "tcp single port",
+			protocols: []interface{}{
+				map[string]interface{}{
+					"protocol":         "tcp",
+					"value_type":       "single",
+					"value":            []interface{}{22},
+					"protocol_options": 0,
+				},
+			},
+			want: `{
+				"name": "fake-svc",
+				"description": "fake service",
+				"protocols": [{"protocol": "tcp", "valueType": "single", "value": [22]}]
+			}`,
+		},
+		{
+			name: "icmp echo",
+			protocols: []interface{}{
+				map[string]interface{}{
+					"protocol":         "icmp",
+					"value_type":       "",
+					"value":            []interface{}{},
+					"protocol_options": 8,
+				},
+			},
+			want: `{
+				"name": "fake-svc",
+				"description": "fake service",
+				"protocols": [{"protocol": "icmp", "protocolOptions": 8}]
+			}`,
+		},
+		{
+			name: "icmp echo reply, whose code is the enum's zero value",
+			protocols: []interface{}{
+				map[string]interface{}{
+					"protocol":         "icmp",
+					"value_type":       "",
+					"value":            []interface{}{},
+					"protocol_options": 0,
+				},
+			},
+			want: `{
+				"name": "fake-svc",
+				"description": "fake service",
+				"protocols": [{"protocol": "icmp", "protocolOptions": 0}]
+			}`,
+		},
+		{
+			name: "icmp any",
+			protocols: []interface{}{
+				map[string]interface{}{
+					"protocol":         "icmp",
+					"value_type":       "",
+					"value":            []interface{}{},
+					"protocol_options": -1,
+				},
+			},
+			want: `{
+				"name": "fake-svc",
+				"description": "fake service",
+				"protocols": [{"protocol": "icmp", "protocolOptions": -1}]
+			}`,
+		},
+		{
+			// One object exercising both branches, in the order the user wrote
+			// them: list position is preserved on the wire.
+			name: "icmp alongside udp",
+			protocols: []interface{}{
+				map[string]interface{}{
+					"protocol":         "icmp",
+					"value_type":       "",
+					"value":            []interface{}{},
+					"protocol_options": 8,
+				},
+				map[string]interface{}{
+					"protocol":         "udp",
+					"value_type":       "range",
+					"value":            []interface{}{5000, 5010},
+					"protocol_options": 0,
+				},
+			},
+			want: `{
+				"name": "fake-svc",
+				"description": "fake service",
+				"protocols": [
+					{"protocol": "icmp", "protocolOptions": 8},
+					{"protocol": "udp", "valueType": "range", "value": [5000, 5010]}
+				]
+			}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertMarshalsTo(t, perimeter81Sdk.ObjectsServicesRequestObj{
+				Name:        "fake-svc",
+				Description: &description,
+				Protocols:   flattenProtocolsData(tt.protocols),
+			}, tt.want)
+		})
+	}
+}

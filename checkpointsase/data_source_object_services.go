@@ -62,10 +62,19 @@ func dataSourceObjectServices() *schema.Resource {
 									"value": {
 										Type:        schema.TypeList,
 										Computed:    true,
-										Description: "Port numbers. Shape depends on `value_type`.",
+										Description: "Port numbers. Shape depends on `value_type`. Empty for `icmp` entries, which have no ports.",
 										Elem: &schema.Schema{
 											Type: schema.TypeInt,
 										},
+									},
+									"protocol_options": {
+										Type:     schema.TypeInt,
+										Computed: true,
+										Description: "ICMP message type, as a numeric code (-1 means Any). " +
+											"Only meaningful for `icmp` entries; 0 for `tcp` and `udp`, " +
+											"which do not carry one. The server also returns a " +
+											"human-readable description for the code, which is derived " +
+											"from it and is deliberately not exposed.",
 									},
 								}},
 						},

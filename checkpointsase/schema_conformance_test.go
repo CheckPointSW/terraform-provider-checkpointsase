@@ -344,8 +344,17 @@ var listAttributeEmptyPolicy = map[string]struct {
 	// service.model.ts: protocols is @IsNotEmpty() @IsArray() @ArrayMinSize(1); protocols[].value is
 	// @ArrayMinSize(1) for every protocol but icmp, and createServicesTransformer rejects an empty
 	// value outright with 'property Value cant be empty'.
+	//
+	// protocols[].value became Optional when icmp support landed, and the verdict is deliberately
+	// unchanged. MinItems is only reached for a key the configuration actually set: schemaMap.validate
+	// returns as soon as c.Get reports the key absent, and Terraform's config shim drops nulls, so an
+	// icmp entry that omits value never meets the minimum, while `value = []` on any entry still fails
+	// during plan. Optional changed when the check runs, not whether it runs — dropping MinItems here
+	// would hand `value = []` to the API as a 400 instead.
+	//
+	// The icmp code itself needs no entry: protocol_options is a TypeInt, not a list.
 	"resource.checkpointsase_object_services.protocols":       {mustReject, "service.model.ts @ArrayMinSize(1)"},
-	"resource.checkpointsase_object_services.protocols.value": {mustReject, "service.model.ts @ArrayMinSize(1) + transformer"},
+	"resource.checkpointsase_object_services.protocols.value": {mustReject, "service.model.ts @ArrayMinSize(1) + transformer; Optional for icmp, but never empty when present"},
 	// sourcesAndDestinations.model.ts / networkPolicyRule.model.ts: @IsOptional() @ArrayMinSize(1).
 	// Fixed in aefd8dc; listed so the sweep's own result is complete rather than partial.
 	"resource.checkpointsase_firewall_policy.policy_rules.services":               {mustReject, "networkPolicyRule.model.ts @ArrayMinSize(1)"},

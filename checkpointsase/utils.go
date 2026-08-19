@@ -280,14 +280,36 @@ func flattenProtocolsData(protocolItems []interface{}) []perimeter81Sdk.ObjectsS
 	}
 	protocols := make([]perimeter81Sdk.ObjectsServicesProtocolRequestObj, len(protocolItems))
 	for i, protocolItem := range protocolItems {
-		m := protocolItem.(map[string]interface{})
+		m, _ := protocolItem.(map[string]interface{})
+		protocol, _ := m["protocol"].(string)
+
+		if protocol == "icmp" {
+			// An icmp entry carries the message type and no ports, and the two
+			// halves are exclusive on the wire rather than merely optional: the
+			// server's CreateServicesTransformer overwrites valueType with
+			// "single" and drops value for icmp, so a body carrying both reads
+			// back different from what was sent. protocol_options is required
+			// for icmp by resourceObjectServicesCustomizeDiff, so a zero here
+			// is a configured code 0 (Echo Reply) and not an omission — an
+			// omission would have to be sent as something, and whatever we
+			// chose would be an ICMP type the user never asked for.
+			code, _ := m["protocol_options"].(int)
+			options := perimeter81Sdk.ObjectServiceProtocolOptionsICMPrequest(int32(code))
+			protocols[i] = perimeter81Sdk.ObjectsServicesProtocolRequestObj{
+				Protocol:        protocol,
+				ProtocolOptions: &options,
+			}
+			continue
+		}
+
 		// v3 flipped ValueType to *string; take the address of a local
 		// rather than the (non-addressable) map-index type assertion.
-		valueType := m["value_type"].(string)
+		valueType, _ := m["value_type"].(string)
+		value, _ := m["value"].([]interface{})
 		entry := perimeter81Sdk.ObjectsServicesProtocolRequestObj{
-			Protocol:  m["protocol"].(string),
+			Protocol:  protocol,
 			ValueType: &valueType,
-			Value:     flattenIntsArrayData(m["value"].([]interface{})),
+			Value:     flattenIntsArrayData(value),
 		}
 		protocols[i] = entry
 	}
@@ -446,6 +468,15 @@ func flattenObjectServicesProtocols(protocolItems []perimeter81Sdk.ObjectsServic
 			// store the pointer, not the string, in the flattened map.
 			"value_type": protocolItem.GetValueType(),
 			"value":      protocolItem.Value,
+			// protocolOptions is asymmetric: the request takes the bare ICMP
+			// code, the response wraps it as {code, description} because the
+			// server expands it through createProtocolOptions. Read the code
+			// back, never the description — the description is derived from the
+			// code, so a state attribute holding it would have no behaviour
+			// except to drift. GetCode is nil-safe on a nil receiver, so a
+			// tcp/udp entry reads back 0, which is what an unset TypeInt holds
+			// and therefore does not diff.
+			"protocol_options": int(protocolItem.ProtocolOptions.GetCode()),
 		}
 	}
 	return protocols
@@ -1501,6 +1532,12 @@ func flattenProtocolsDataSourceData(protocolItems []perimeter81Sdk.ObjectsServic
 			// store the pointer, not the string, in the flattened map.
 			"value_type": protocolItem.GetValueType(),
 			"value":      protocolItem.Value,
+			// The code only, matching the resource attribute of the same name:
+			// the response wraps it as {code, description}, and the description
+			// is derived from the code rather than being information of its own.
+			// GetCode is nil-safe on a nil receiver, so a tcp/udp entry — which
+			// the server never gives protocolOptions — reads back 0.
+			"protocol_options": int(protocolItem.ProtocolOptions.GetCode()),
 		}
 	}
 	return protocols
