@@ -1081,3 +1081,149 @@ func TestPayloadMarshalIPSecRedundantCreate(t *testing.T) {
 
 	assertMarshalsTo(t, payload, want)
 }
+
+/*
+TestPayloadMarshalApplicationCreate is the golden body for the application create request, and the
+regression test for the first live application create failure (2026-08-19):
+
+	Error: Unable to create Application
+	{"data":{"errors":["users must contain at least 1 elements"]},
+	 "message":"Bad Request Exception","messageCode":"BAD_REQUEST","status":400}
+
+The interesting assertion in every case below is that `users` and `groups` are always present and
+always arrays. None of the three Create models carries omitempty on either field, and all three
+generated ToMap implementations write both keys unconditionally, so the provider cannot omit them —
+and it must not try to, because the server's `users` is decorated @NotEquals(null) and would reject
+a nil slice's `"users": null` outright. "Both keys, both arrays" is the only shape available, which
+is why the both-empty case is refused before a request is built rather than reshaped here.
+
+The `[]` in the "groups only" case is therefore deliberate and correct: the server's UsersMinSize
+rule requires len(users) >= 1 only while `groups` is empty, so `"users": []` alongside a non-empty
+`groups` is accepted. A test that asserted the key was absent would be pinning a shape the SDK
+cannot produce and the API does not want.
+*/
+func TestPayloadMarshalApplicationCreate(t *testing.T) {
+	tests := []struct {
+		name    string
+		appType string
+		users   []string
+		groups  []string
+		want    string
+	}{
+		{
+			name:    "http, users only",
+			appType: "http",
+			users:   []string{"fakeUser01", "fakeUser02"},
+			groups:  []string{},
+			want: `{
+				"name": "fake-app",
+				"type": "http",
+				"network": "fakeNetwork01",
+				"host": {"source": "fixed", "value": "app.fake.invalid"},
+				"port": {"source": "fixed", "value": 8080},
+				"users": ["fakeUser01", "fakeUser02"],
+				"groups": [],
+				"headers": {},
+				"attributes": {}
+			}`,
+		},
+		{
+			// The shape that makes an application reachable by a group and no named user.
+			// "users": [] is accepted here and only here — see the function comment.
+			name:    "https, groups only",
+			appType: "https",
+			users:   []string{},
+			groups:  []string{"fakeGroup01"},
+			want: `{
+				"name": "fake-app",
+				"type": "https",
+				"network": "fakeNetwork01",
+				"host": {"source": "fixed", "value": "app.fake.invalid"},
+				"port": {"source": "fixed", "value": 8080},
+				"users": [],
+				"groups": ["fakeGroup01"],
+				"headers": {},
+				"attributes": {}
+			}`,
+		},
+		{
+			// rdp has no headers and does carry auth, so it is the one variant whose key set
+			// differs. Both access lists are populated to pin that they are independent.
+			name:    "rdp, users and groups",
+			appType: "rdp",
+			users:   []string{"fakeUser01"},
+			groups:  []string{"fakeGroup01"},
+			want: `{
+				"name": "fake-app",
+				"type": "rdp",
+				"network": "fakeNetwork01",
+				"host": {"source": "fixed", "value": "app.fake.invalid"},
+				"port": {"source": "fixed", "value": 8080},
+				"users": ["fakeUser01"],
+				"groups": ["fakeGroup01"],
+				"attributes": {},
+				"auth": {"authEnabled": false}
+			}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload, err := buildCreateApplicationRequest(
+				tt.appType, "fake-app", "fakeNetwork01", "app.fake.invalid", 8080, tt.users, tt.groups)
+			if err != nil {
+				t.Fatalf("buildCreateApplicationRequest returned an error: %v", err)
+			}
+			assertMarshalsTo(t, payload, tt.want)
+		})
+	}
+}
+
+/*
+TestBuildCreateApplicationRequestRejectsUnknownType pins that the type switch has no silent fallback.
+A oneOf CreateApplicationRequest with no variant set marshals to (nil, nil), which encoding/json
+turns into "unexpected end of JSON input" — the same class of failure that made every firewall policy
+rule unsendable. Returning an error keeps that out of the request path entirely.
+*/
+func TestBuildCreateApplicationRequestRejectsUnknownType(t *testing.T) {
+	for _, appType := range []string{"", "ssh", "vnc", "HTTP"} {
+		if _, err := buildCreateApplicationRequest(
+			appType, "fake-app", "fakeNetwork01", "app.fake.invalid", 8080, []string{"fakeUser01"}, nil); err == nil {
+			t.Errorf("buildCreateApplicationRequest(%q) returned no error; want one", appType)
+		}
+	}
+}
+
+/*
+TestValidateApplicationAccessGrant covers the cross-field rule the schema cannot express. The cases
+are chosen to match the server's UsersMinSize decorator rather than a plain min-size on `users`:
+either list on its own is enough, and only the both-empty case is refused.
+*/
+func TestValidateApplicationAccessGrant(t *testing.T) {
+	tests := []struct {
+		name    string
+		users   []interface{}
+		groups  []interface{}
+		wantErr bool
+	}{
+		{name: "users only", users: []interface{}{"fakeUser01"}, groups: []interface{}{}},
+		{name: "groups only", users: []interface{}{}, groups: []interface{}{"fakeGroup01"}},
+		{name: "both", users: []interface{}{"fakeUser01"}, groups: []interface{}{"fakeGroup01"}},
+		// The two shapes an unset Optional TypeList takes: d.Get returns an empty non-nil
+		// slice, and a type assertion that misses returns nil. Both mean "no members".
+		{name: "both empty", users: []interface{}{}, groups: []interface{}{}, wantErr: true},
+		{name: "both nil", users: nil, groups: nil, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateApplicationAccessGrant(tt.users, tt.groups)
+			if tt.wantErr && err == nil {
+				t.Fatalf("validateApplicationAccessGrant returned no error; want one")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("validateApplicationAccessGrant returned an error: %v", err)
+			}
+		})
+	}
+}

@@ -12,6 +12,73 @@ import (
 )
 
 /*
+applicationAccessGrantRule is the sentence both `users` and `groups` carry in their descriptions,
+and the reason validateApplicationAccessGrant exists. It is stated once so the schema, the plan-time
+error and the apply-time error cannot drift apart.
+*/
+const applicationAccessGrantRule = "At least one of `users` or `groups` must be non-empty: " +
+	"the API refuses an application that grants access to nobody."
+
+/*
+validateApplicationAccessGrant enforces the one rule the schema cannot express: `users` and
+`groups` are each individually optional, but they cannot both be empty.
+
+This is NOT the "omit the key rather than sending an empty array" pattern that
+resource_firewall_policy.go deals with, and treating it as one is why the first live application
+create failed twice over. On the server (applicationCreateBase.dto.ts) the two fields are:
+
+	users?:  @ValidateIf((_, value) => value !== undefined) @NotEquals(null) @IsArray()
+	         @ArrayUnique() @IsString({each: true}) @UsersMinSize(1)   = []
+	groups?: @IsOptional() @IsArray() @ArrayUnique() @IsString({each: true})  = []
+
+Three consequences, each of which rules out an alternative fix:
+
+  - Omitting the key does not help. Both properties carry a `= []` class initialiser, so
+    plainToInstance fills them in before validation runs; a body with neither key validates
+    exactly as one with `"users": [], "groups": []` and fails identically with
+    `users must contain at least 1 elements`.
+  - Sending null does not help either, and is worse. `users` is guarded by @NotEquals(null), and
+    its @ValidateIf only skips on `undefined`, so an explicit null is a validation error rather
+    than an absent value.
+  - UsersMinSize is a cross-field rule, not a min-size on `users`: it enforces
+    len(users) >= 1 only while `groups` is absent or empty, and passes unconditionally once
+    `groups` has a member. So `"users": []` alongside a non-empty `groups` is accepted — which is
+    why the provider keeps sending both keys as arrays and only refuses the both-empty case.
+
+Because the API cannot express "an application nobody may reach", the only place to catch this is
+before the request: at plan time in resourceApplicationCustomizeDiff, and again in Create as a
+backstop for lists whose values were unknown while planning. Create is the only path — this
+resource has no Update.
+*/
+func validateApplicationAccessGrant(users, groups []interface{}) error {
+	if len(users) > 0 || len(groups) > 0 {
+		return nil
+	}
+	return fmt.Errorf("%s Set `users`, or `groups`, or both — an empty list counts as unset, "+
+		"and the server reports the both-empty case as \"users must contain at least 1 elements\" "+
+		"regardless of which of the two you left out", applicationAccessGrantRule)
+}
+
+/*
+resourceApplicationCustomizeDiff refuses at plan time the one configuration the API refuses at
+apply time: an application granted to neither a user nor a group.
+
+The NewValueKnown guards are the load-bearing part. A configuration like
+`users = [checkpointsase_something.x.id]` has an unknown list at plan time, which d.Get reports as
+empty — checking it anyway would reject a configuration that is going to be perfectly valid. When
+either list is still unknown the check is skipped here and left to the Create backstop, which runs
+once both values are resolved.
+*/
+func resourceApplicationCustomizeDiff(_ context.Context, d *schema.ResourceDiff, _ interface{}) error {
+	if !d.NewValueKnown("users") || !d.NewValueKnown("groups") {
+		return nil
+	}
+	users, _ := d.Get("users").([]interface{})
+	groups, _ := d.Get("groups").([]interface{})
+	return validateApplicationAccessGrant(users, groups)
+}
+
+/*
 resourceApplication Setup the Application Resource CRUD operations.
 Note: there is no update or delete endpoint — all fields are ForceNew.
 
@@ -66,20 +133,23 @@ func resourceApplication() *schema.Resource {
 				ValidateFunc: validation.IsPortNumber,
 			},
 			"users": {
-				Type:        schema.TypeList,
-				Optional:    true,
-				ForceNew:    true,
-				Description: "List of user IDs allowed to access this application.",
-				Elem:        &schema.Schema{Type: schema.TypeString},
+				Type:     schema.TypeList,
+				Optional: true,
+				ForceNew: true,
+				Description: "List of user IDs allowed to access this application. " +
+					applicationAccessGrantRule,
+				Elem: &schema.Schema{Type: schema.TypeString},
 			},
 			"groups": {
-				Type:        schema.TypeList,
-				Optional:    true,
-				ForceNew:    true,
-				Description: "List of group IDs allowed to access this application.",
-				Elem:        &schema.Schema{Type: schema.TypeString},
+				Type:     schema.TypeList,
+				Optional: true,
+				ForceNew: true,
+				Description: "List of group IDs allowed to access this application. " +
+					applicationAccessGrantRule,
+				Elem: &schema.Schema{Type: schema.TypeString},
 			},
 		},
+		CustomizeDiff: resourceApplicationCustomizeDiff,
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceApplicationImportState,
 		},
@@ -137,6 +207,80 @@ func buildApplicationPort(port int32) perimeter81Sdk.CommonCreateApplicationPort
 }
 
 /*
+buildCreateApplicationRequest assembles the CreateApplicationRequest oneOf for one application type.
+
+Factored out of resourceApplicationCreate so payload_marshal_test.go can marshal the exact body the
+provider sends. That matters specifically for `users` and `groups`: all three variants declare them
+without omitempty and their generated ToMap writes both keys unconditionally, so the difference
+between `[]`, `null` and an absent key is decided here and is invisible to any schema-shape test.
+A golden body is the only offline check that the provider still sends two arrays.
+
+The three cases differ only in the variant type, its attributes object, and whether the model has
+Headers or Auth — `users` and `groups` are assigned identically in every branch, which is why they
+are parameters rather than being read from d in three places.
+
+@return perimeter81Sdk.CreateApplicationRequest - the request body
+@return error - set only for an application type the v3 API cannot create
+*/
+func buildCreateApplicationRequest(appType, appName, networkId, host string, port int32, users, groups []string) (perimeter81Sdk.CreateApplicationRequest, error) {
+	hostPayload := buildApplicationHost(host)
+	portPayload := buildApplicationPort(port)
+
+	switch appType {
+	case "http":
+		return perimeter81Sdk.CreateApplicationRequest{
+			HttpCreateApplication: &perimeter81Sdk.HttpCreateApplication{
+				Name:       appName,
+				Type:       appType,
+				Network:    networkId,
+				Host:       hostPayload,
+				Port:       portPayload,
+				Users:      users,
+				Groups:     groups,
+				Headers:    map[string]interface{}{},
+				Attributes: perimeter81Sdk.HttpAttributes{},
+			},
+		}, nil
+	case "https":
+		return perimeter81Sdk.CreateApplicationRequest{
+			HttpsCreateApplication: &perimeter81Sdk.HttpsCreateApplication{
+				Name:       appName,
+				Type:       appType,
+				Network:    networkId,
+				Host:       hostPayload,
+				Port:       portPayload,
+				Users:      users,
+				Groups:     groups,
+				Headers:    map[string]interface{}{},
+				Attributes: perimeter81Sdk.HttpsAttributes{},
+			},
+		}, nil
+	case "rdp":
+		// The provider always creates RDP applications with auth disabled.
+		// AuthEnabled is *bool in v3 (the server omits it on read responses
+		// even though the spec marks it required), so take the address of a
+		// named local rather than a literal.
+		authDisabled := false
+		return perimeter81Sdk.CreateApplicationRequest{
+			RdpCreateApplication: &perimeter81Sdk.RdpCreateApplication{
+				Name:       appName,
+				Type:       appType,
+				Network:    networkId,
+				Host:       hostPayload,
+				Port:       portPayload,
+				Users:      users,
+				Groups:     groups,
+				Attributes: perimeter81Sdk.RdpAttributes{},
+				Auth:       perimeter81Sdk.ApplicationAuth{AuthEnabled: &authDisabled},
+			},
+		}, nil
+	default:
+		return perimeter81Sdk.CreateApplicationRequest{},
+			fmt.Errorf("type must be 'http', 'https', or 'rdp', got: %s", appType)
+	}
+}
+
+/*
 resourceApplicationCreate Create an Application.
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
@@ -153,67 +297,25 @@ func resourceApplicationCreate(ctx context.Context, d *schema.ResourceData, m in
 	networkId := d.Get("network").(string)
 	host := d.Get("host").(string)
 	port := int32(d.Get("port").(int))
-	users := flattenStringsArrayData(d.Get("users").([]interface{}))
-	groups := flattenStringsArrayData(d.Get("groups").([]interface{}))
+	// Backstop for lists that were unknown at plan time and so invisible to CustomizeDiff.
+	usersRaw := d.Get("users").([]interface{})
+	groupsRaw := d.Get("groups").([]interface{})
+	if err := validateApplicationAccessGrant(usersRaw, groupsRaw); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Invalid Application access grant", err)
+	}
 
-	hostPayload := buildApplicationHost(host)
-	portPayload := buildApplicationPort(port)
+	// Both keys are sent as arrays, always, and never as null — see
+	// validateApplicationAccessGrant. flattenStringsArrayData returns a non-nil empty slice for an
+	// unset attribute, and the generated ToMap for all three Create models writes users and groups
+	// unconditionally, so `[]` (not an absent key, and not null) is the wire shape for "no members".
+	// That is the shape the server accepts once the other list has a member.
+	users := flattenStringsArrayData(usersRaw)
+	groups := flattenStringsArrayData(groupsRaw)
 
-	var payload perimeter81Sdk.CreateApplicationRequest
-
-	switch appType {
-	case "http":
-		httpApp := perimeter81Sdk.HttpCreateApplication{
-			Name:       appName,
-			Type:       appType,
-			Network:    networkId,
-			Host:       hostPayload,
-			Port:       portPayload,
-			Users:      users,
-			Groups:     groups,
-			Headers:    map[string]interface{}{},
-			Attributes: perimeter81Sdk.HttpAttributes{},
-		}
-		payload = perimeter81Sdk.CreateApplicationRequest{
-			HttpCreateApplication: &httpApp,
-		}
-	case "https":
-		httpsApp := perimeter81Sdk.HttpsCreateApplication{
-			Name:       appName,
-			Type:       appType,
-			Network:    networkId,
-			Host:       hostPayload,
-			Port:       portPayload,
-			Users:      users,
-			Groups:     groups,
-			Headers:    map[string]interface{}{},
-			Attributes: perimeter81Sdk.HttpsAttributes{},
-		}
-		payload = perimeter81Sdk.CreateApplicationRequest{
-			HttpsCreateApplication: &httpsApp,
-		}
-	case "rdp":
-		// The provider always creates RDP applications with auth disabled.
-		// AuthEnabled is *bool in v3 (the server omits it on read responses
-		// even though the spec marks it required), so take the address of a
-		// named local rather than a literal.
-		authDisabled := false
-		rdpApp := perimeter81Sdk.RdpCreateApplication{
-			Name:       appName,
-			Type:       appType,
-			Network:    networkId,
-			Host:       hostPayload,
-			Port:       portPayload,
-			Users:      users,
-			Groups:     groups,
-			Attributes: perimeter81Sdk.RdpAttributes{},
-			Auth:       perimeter81Sdk.ApplicationAuth{AuthEnabled: &authDisabled},
-		}
-		payload = perimeter81Sdk.CreateApplicationRequest{
-			RdpCreateApplication: &rdpApp,
-		}
-	default:
-		return appendErrorDiags(diags, "Unsupported application type", fmt.Errorf("type must be 'http', 'https', or 'rdp', got: %s", appType))
+	payload, err := buildCreateApplicationRequest(appType, appName, networkId, host, port, users, groups)
+	if err != nil {
+		return appendErrorDiags(diags, "Unsupported application type", err)
 	}
 
 	status, _, err := client.ApplicationsAPI.CreateApplication(ctx).CreateApplicationRequest(payload).Execute()
