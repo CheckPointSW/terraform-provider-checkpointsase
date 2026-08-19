@@ -13,7 +13,7 @@ import (
 )
 
 /*
-resourceNetwork Setup the IpSec-Signle Resource CRUD operations
+resourceNetwork Setup the standard Network Resource CRUD operations
 
 @return &schema.Resource
 */

@@ -236,7 +236,7 @@ func resourceIpsecSingle() *schema.Resource {
 }
 
 /*
-resourceOpenvpnImportState Import gateways
+resourceIpsecSingleImportState Import an ipsec-single tunnel by its ID
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
   - @param m interface{} - the terraform meta data that contains the client

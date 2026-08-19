@@ -84,7 +84,7 @@ func resourceObjectServices() *schema.Resource {
 }
 
 /*
-resourceOpenvpnImportState Import gateways
+resourceObjectServicesImportState Import an object services entry by its ID
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
   - @param m interface{} - the terraform meta data that contains the client
@@ -185,7 +185,7 @@ func resourceObjectServicesRead(ctx context.Context, d *schema.ResourceData, m i
 }
 
 /*
-resourceObjectServicesUpdate Update a Ipsec single Tunnel
+resourceObjectServicesUpdate Update an Object Services entry
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
   - @param m interface{} - the terraform meta data that contains the client
@@ -217,7 +217,7 @@ func resourceObjectServicesUpdate(ctx context.Context, d *schema.ResourceData, m
 }
 
 /*
-resourceObjectServicesDelete Delete a Ipsec single Tunnel
+resourceObjectServicesDelete Delete an Object Services entry
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
   - @param m interface{} - the terraform meta data that contains the client
@@ -234,7 +234,7 @@ func resourceObjectServicesDelete(ctx context.Context, d *schema.ResourceData, m
 
 	if err != nil {
 		d.Partial(true)
-		return appendErrorDiags(diags, "Unable to delete ipsec-single tunnel", err)
+		return appendErrorDiags(diags, "Unable to delete object services", err)
 	}
 
 	d.SetId("")

@@ -72,7 +72,7 @@ func resourceObjectAddresses() *schema.Resource {
 }
 
 /*
-resourceOpenvpnImportState Import gateways
+resourceObjectAddressesImportState Import an object addresses entry by its ID
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
   - @param m interface{} - the terraform meta data that contains the client
@@ -183,7 +183,7 @@ func resourceObjectAddressesRead(ctx context.Context, d *schema.ResourceData, m 
 }
 
 /*
-resourceObjectAddressesUpdate Update a Ipsec single Tunnel
+resourceObjectAddressesUpdate Update an Object Addresses entry
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
   - @param m interface{} - the terraform meta data that contains the client
@@ -224,7 +224,7 @@ func resourceObjectAddressesUpdate(ctx context.Context, d *schema.ResourceData, 
 }
 
 /*
-resourceObjectAddressesDelete Delete a Ipsec single Tunnel
+resourceObjectAddressesDelete Delete an Object Addresses entry
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
   - @param m interface{} - the terraform meta data that contains the client
