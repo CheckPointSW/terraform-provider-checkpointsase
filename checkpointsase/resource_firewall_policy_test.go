@@ -45,7 +45,12 @@ var randNameFirewallPolicy string = randStringBytesRmndr()
 //   - The resource ID *is* the network ID. Step 1 asserts that identity
 //     explicitly (testAccCheckFirewallPolicyExists), because every other claim
 //     here depends on it.
-//   - resourceFirewallPolicyDelete is a no-op that only clears state.
+//   - resourceFirewallPolicyDelete cannot delete the policy — there is no delete
+//     endpoint — but it is not a no-op either. It PUTs the policy back with
+//     policyRules: [] before clearing state, because a rule holds references to
+//     object addresses and services and those objects cannot be deleted while a
+//     rule names them. Leaving the rules behind is what made this test's own
+//     post-test destroy fail with three 409s on 2026-08-19.
 //
 // Consequences for this test's shape:
 //
@@ -58,10 +63,11 @@ var randNameFirewallPolicy string = randStringBytesRmndr()
 //     checked rather than assumed: (a) no other TestAcc test in this package
 //     defines one — grep CheckDestroy across *_test.go returns nothing; and
 //     (b) for this resource a CheckDestroy could not assert anything true.
-//     Asserting the policy is gone would be wrong (Delete never deletes it —
-//     FW-03), and asserting it still exists would be equally wrong, because
-//     CheckDestroy runs after the whole config is destroyed, including the
-//     parent network, which does take the policy with it. A CheckDestroy here
+//     Asserting the policy is gone would be wrong (Delete clears its rules but
+//     never deletes it — FW-03), and asserting it still exists would be equally
+//     wrong, because CheckDestroy runs after the whole config is destroyed,
+//     including the parent network, which does take the policy with it. A
+//     CheckDestroy here
 //     would be a check written to pass rather than to mean something.
 //
 // Only one network is created, and it is byte-identical in both config steps.

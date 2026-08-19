@@ -26,7 +26,9 @@ const firewallPolicyAddressesXOR = "Addresses can not be in the same object with
 /*
 resourceFirewallPolicy Setup the Firewall Policy Resource CRUD operations.
 Firewall policies are auto-created with each network, so this resource "adopts"
-the existing policy. There is no Create or Delete operation — only Read and Update.
+the existing policy. There is no Create endpoint; Delete cannot remove the policy
+either, and instead clears the rules Terraform created — see
+resourceFirewallPolicyDelete for why that is necessary and what it leaves behind.
 
 @return &schema.Resource
 */
@@ -34,8 +36,16 @@ func resourceFirewallPolicy() *schema.Resource {
 	return &schema.Resource{
 		Description: "Manages the firewall policy of a Check Point SASE standard network. " +
 			"Adopt-style: the policy is created automatically with its parent network, " +
-			"so this resource reads the existing policy and applies your configuration to " +
-			"it; destroying it releases it from Terraform state without deleting it. " +
+			"so this resource reads the existing policy and applies your configuration to it. " +
+			"**`terraform destroy` clears the policy's rules and then releases the policy from " +
+			"state without deleting it.** Clearing the rules is required, not cosmetic: a rule " +
+			"holds references to `checkpointsase_object_addresses` and " +
+			"`checkpointsase_object_services` objects, and those objects cannot be deleted while " +
+			"a rule still names them, so leaving the rules behind makes every dependent object in " +
+			"the same destroy fail with `409 CONFLICT: This object cannot be edited or deleted " +
+			"because it is currently in use.` Destroy does **not** restore `enabled`, `allowed` " +
+			"or `trace` to the values the policy had before Terraform adopted it — the API never " +
+			"reported them, so they cannot be restored; they keep whatever was last applied. " +
 			"On the v3 API the update is asynchronous, so applies take longer than a " +
 			"single request.",
 		CreateContext: resourceFirewallPolicyCreate,
@@ -728,15 +738,49 @@ func resourceFirewallPolicyUpdate(ctx context.Context, d *schema.ResourceData, m
 	// it is always sent. The SDK maps our `trace` attribute onto that field.
 	updatePayload.SetPolicyLoggingEnabled(d.Get("trace").(bool))
 
-	asyncResp, httpResp, err := client.FirewallPolicyAPI.UpdateGranularFirewallPolicy(ctx, networkId).
-		GranularFirewallPolicy(updatePayload).Execute()
-	if err != nil {
+	// The two summaries are kept apart deliberately: "the API refused the request" and "the API
+	// accepted the request and the operation then failed or never finished" send a reader to
+	// different places, and this resource's diagnostics are the only trace of either.
+	if accepted, err := putGranularFirewallPolicy(ctx, client, networkId, updatePayload); err != nil {
 		d.Partial(true)
+		if accepted {
+			return appendErrorDiags(diags, "Firewall Policy update did not complete", err)
+		}
 		return appendErrorDiags(diags, "Unable to update Firewall Policy", err)
 	}
-	_ = httpResp
 
+	return resourceFirewallPolicyRead(ctx, d, m)
+}
+
+/*
+putGranularFirewallPolicy sends one PUT /v3/networks/{networkId}/firewall-policy and waits for the
+async operation it starts to finish.
+
+Factored out of resourceFirewallPolicyUpdate so Delete can reuse it. The waiting is the reason it
+exists as a function rather than being duplicated: UpdateGranularFirewallPolicy returns an
+AsyncOperationResponse, so the policy has *not* changed when the call returns. Three shipped bugs
+on this branch came from treating an AsyncOperationResponse as a completed write — the caller reads
+back pre-write values and stores them as if the write had never happened. Delete has the same
+exposure with a worse symptom: it would return before the rules were actually gone, and the object
+deletes Terraform runs immediately afterwards would still hit 409 "currently in use".
+
+@return bool - whether the API accepted the request (true once the PUT itself succeeded, so a
+non-nil error alongside true means the accepted operation failed or never completed)
+@return error - the first failure, if any
+*/
+func putGranularFirewallPolicy(ctx context.Context, client *perimeter81Sdk.APIClient, networkId string, payload perimeter81Sdk.GranularFirewallPolicy) (bool, error) {
+	asyncResp, _, err := client.FirewallPolicyAPI.UpdateGranularFirewallPolicy(ctx, networkId).
+		GranularFirewallPolicy(payload).Execute()
+	if err != nil {
+		return false, err
+	}
+
+	// statusUrl is optional on AsyncOperationResponse. A missing one must not turn a successful
+	// write into a 404 against the status endpoint, so poll only when there is something to poll.
 	statusId := getIdFromUrl(asyncResp.GetStatusUrl())
+	if statusId == "" {
+		return false, nil
+	}
 	pollErr := pollAsync(ctx, func(ctx context.Context) (asyncResult, *http.Response, error) {
 		status, resp, err := client.NetworksAPI.NetworksControllerV2Status(ctx, statusId).Execute()
 		if err != nil {
@@ -750,16 +794,80 @@ func resourceFirewallPolicyUpdate(ctx context.Context, d *schema.ResourceData, m
 		return out, resp, nil
 	}, 10*time.Second, 2)
 	if pollErr != nil {
-		d.Partial(true)
-		return appendErrorDiags(diags, "Firewall Policy update did not complete", pollErr)
+		return true, pollErr
 	}
-
-	return resourceFirewallPolicyRead(ctx, d, m)
+	return true, nil
 }
 
 /*
-resourceFirewallPolicyDelete is a no-op since firewall policies cannot be deleted —
-they are created automatically with each network. The resource is simply removed from state.
+buildGranularFirewallPolicyClear turns a policy just read from the API into the PUT body that
+removes all of its rules and changes nothing else.
+
+Factored out of resourceFirewallPolicyDelete so payload_marshal_test.go can pin the resulting JSON.
+Two things about this body are invisible to any test that does not marshal it:
+
+  - policyRules must be a non-nil empty slice. GranularFirewallPolicy.ToMap writes the key
+    unconditionally, so a nil slice reaches the wire as `"policyRules": null`, which is not an array
+    and fails the endpoint's @IsArray. `[]` is what clears the rules.
+  - the three scalars are copies of what the read returned, so the write is a no-op on everything
+    except the rules. A regression to hardcoded defaults would still marshal cleanly and would still
+    clear the rules — it would just silently rewrite the policy's switches on every destroy.
+*/
+func buildGranularFirewallPolicyClear(policy *perimeter81Sdk.GranularFirewallPolicy) perimeter81Sdk.GranularFirewallPolicy {
+	return perimeter81Sdk.GranularFirewallPolicy{
+		Id:                   policy.Id,
+		Enabled:              policy.Enabled,
+		Allowed:              policy.Allowed,
+		PolicyLoggingEnabled: policy.PolicyLoggingEnabled,
+		PolicyRules:          []perimeter81Sdk.GranularFirewallPolicyRule{},
+	}
+}
+
+/*
+resourceFirewallPolicyDelete clears the policy's rules, then removes the resource from state.
+
+The policy object itself genuinely cannot be deleted — it is created implicitly with the network
+and there is no DELETE endpoint. But the *rules* are what Terraform created, and they are what
+makes destroy fail: a rule holds references to `checkpointsase_object_addresses` and
+`checkpointsase_object_services` objects, and while a rule references an object the object cannot
+be removed. Removing this resource from state without clearing the rules leaves them behind, and
+every dependent object destroyed afterwards in the same run answers
+
+	409 CONFLICT: This object cannot be edited or deleted because it is currently in use.
+
+Measured 2026-08-19: TestAccFirewallPolicy_basic applied every step, then its post-test destroy
+failed with three such 409s. Note this only became reachable with commit 1cfe921, which added the
+sources/destinations schema — before it, no rule could name an object, so nothing was ever pinned.
+
+`policyRules: []` is the sanctioned way to clear them, not an approximation:
+networkPolicyGranularUpdate.model.ts declares policyRules with @IsNestedArray and no minimum, so an
+empty array validates; and the update path is a full replace (the interceptor rebuilds the rule set
+from the request body alone and POSTs it to firewall/apply-policy, reading nothing back), so rules
+absent from the array are dropped rather than merged. A probe on 2026-08-19 confirmed a
+freshly-created network's policy is exactly
+{"enabled":false,"allowed":true,"policyLoggingEnabled":false,"policyRules":[]}, so clearing rules
+returns the policy to the shape a network is born with.
+
+The three scalars are echoed back from the read, not reset and not taken from state. The PUT
+requires all of enabled / allowed / policyLoggingEnabled (each @IsBoolean with no @IsOptional), so
+something must be sent; the question is only what. This resource *adopts* a policy it did not
+create and never records the values it had before adoption, so it cannot restore them. Of the three
+candidates:
+
+  - Echo the server's current values (chosen). The write is then a no-op on everything except the
+    rules, which is the narrowest change that fixes the 409s. It also cannot clobber a value that
+    someone changed outside Terraform between the last apply and the destroy.
+  - Reset to the observed new-network defaults (false / true / false). This looks like "restore",
+    but it is a guess that the defaults of a *fresh* network were this policy's prior values — false
+    for any network whose policy was configured before Terraform adopted it, and silently
+    destructive on destroy, which is the last place a user is watching.
+  - Send the values in Terraform state. Strictly worse than echoing: state is what Terraform last
+    wrote, so it reproduces the adopted-and-modified values while adding a staleness window.
+
+The consequence to be honest about: after destroy the policy keeps whatever enabled / allowed /
+policyLoggingEnabled Terraform last applied. Destroy releases the objects and removes the rules; it
+does not undo the policy-level switches. That is a limitation of adopting an undeletable object, and
+it is documented on the resource rather than papered over.
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
   - @param m interface{} - the terraform meta data that contains the client
@@ -767,8 +875,44 @@ they are created automatically with each network. The resource is simply removed
 @return diag.Diagnostics
 */
 func resourceFirewallPolicyDelete(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
-	// Firewall policies cannot be deleted — they are auto-created with the network.
-	// Remove from state only.
+	var diags diag.Diagnostics
+	client := m.(*perimeter81Sdk.APIClient)
+
+	networkId := d.Get("network_id").(string)
+
+	policyData, httpResp, err := getGranularFirewallPolicy(ctx, client, networkId)
+	if err != nil {
+		// A policy exists only as part of its network, so a 404 here means the network is already
+		// gone and the rules with it. Nothing to release; treat it as done rather than stranding
+		// the resource in state forever.
+		if isNotFound(httpResp, err) {
+			d.SetId("")
+			return diags
+		}
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to read Firewall Policy for delete", err)
+	}
+
+	// No rules means nothing pins a dependent object, so there is nothing to clear and no reason to
+	// spend a write and an async poll on every destroy.
+	if len(policyData.PolicyRules) == 0 {
+		d.SetId("")
+		return diags
+	}
+
+	clearPayload := buildGranularFirewallPolicyClear(policyData)
+
+	// The failure must surface. Swallowing it would put the resource's own destroy back to "success"
+	// while leaving the rules in place, and the 409s would then land on the object resources
+	// destroyed after this one — which is exactly the confusing failure this change exists to fix.
+	if accepted, err := putGranularFirewallPolicy(ctx, client, networkId, clearPayload); err != nil {
+		d.Partial(true)
+		if accepted {
+			return appendErrorDiags(diags, "Firewall Policy rule clearing did not complete", err)
+		}
+		return appendErrorDiags(diags, "Unable to clear Firewall Policy rules for delete", err)
+	}
+
 	d.SetId("")
-	return nil
+	return diags
 }

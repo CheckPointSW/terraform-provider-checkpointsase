@@ -1227,3 +1227,80 @@ func TestValidateApplicationAccessGrant(t *testing.T) {
 		})
 	}
 }
+
+/*
+TestPayloadMarshalGranularFirewallPolicyClear is the golden body for the PUT that
+resourceFirewallPolicyDelete sends, and the regression test for the destroy failure measured on
+2026-08-19: the rules survived the destroy, and every object they referenced answered
+`409 CONFLICT: This object cannot be edited or deleted because it is currently in use.`
+
+Two properties are pinned that nothing else can see:
+
+  - `"policyRules": []` — an array, not null. GranularFirewallPolicy.ToMap writes the key
+    unconditionally, so building the payload with a nil slice would send `"policyRules": null` and
+    fail the endpoint's @IsArray. Both variants compile and both marshal without error.
+  - the three scalars carry the values the read returned, not defaults. The "not the new-network
+    defaults" case exists so that a regression to hardcoded false/true/false fails here: it would
+    still clear the rules, and the only visible symptom on a live tenant would be a policy whose
+    switches were quietly rewritten during destroy.
+*/
+func TestPayloadMarshalGranularFirewallPolicyClear(t *testing.T) {
+	tests := []struct {
+		name string
+		read perimeter81Sdk.GranularFirewallPolicy
+		want string
+	}{
+		{
+			name: "rules cleared, scalars echoed",
+			read: perimeter81Sdk.GranularFirewallPolicy{
+				Id:                   "fake-policy-1",
+				Enabled:              true,
+				Allowed:              false,
+				PolicyLoggingEnabled: true,
+				PolicyRules: []perimeter81Sdk.GranularFirewallPolicyRule{
+					buildGranularFirewallPolicyRule(map[string]interface{}{
+						"id":          "fakeRuleAB",
+						"name":        "fake-allow-web",
+						"enabled":     true,
+						"allowed":     true,
+						"log_enabled": false,
+						"services":    []interface{}{"fake-svc-1"},
+					}),
+				},
+			},
+			want: `{
+				"enabled": true,
+				"allowed": false,
+				"id": "fake-policy-1",
+				"policyLoggingEnabled": true,
+				"policyRules": []
+			}`,
+		},
+		{
+			// The pre-Terraform shape a freshly-created network's policy has, probed live on
+			// 2026-08-19. Echoing it back is a true no-op.
+			name: "already at new-network defaults",
+			read: perimeter81Sdk.GranularFirewallPolicy{
+				Id:                   "fake-policy-2",
+				Enabled:              false,
+				Allowed:              true,
+				PolicyLoggingEnabled: false,
+				PolicyRules:          []perimeter81Sdk.GranularFirewallPolicyRule{},
+			},
+			want: `{
+				"enabled": false,
+				"allowed": true,
+				"id": "fake-policy-2",
+				"policyLoggingEnabled": false,
+				"policyRules": []
+			}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			read := tt.read
+			assertMarshalsTo(t, buildGranularFirewallPolicyClear(&read), tt.want)
+		})
+	}
+}
