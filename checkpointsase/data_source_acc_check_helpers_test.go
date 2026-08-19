@@ -369,6 +369,39 @@ func testAccCheckAllNetworksIsSumOfParts(allName, standardName, enhancedName str
 	}
 }
 
+// testAccCheckDataSourceIDsDiffer asserts two data source instances did not end
+// up with the same Terraform ID.
+//
+// The companion to L16c. That item is about an ID that changes when it should
+// not — a timestamp, which defeats downstream references. The mirror-image
+// defect is an ID that stays the same when the configuration differs: a data
+// source that takes filter arguments and hardcodes a constant ID gives two
+// instances holding different results one identity. Both are wrong, and a
+// constant ID only fixes the first.
+func testAccCheckDataSourceIDsDiffer(nameA, nameB string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		ids := map[string]string{}
+		for _, name := range []string{nameA, nameB} {
+			rs, ok := s.RootModule().Resources[name]
+			if !ok {
+				return fmt.Errorf("not found in state: %s", name)
+			}
+			if rs.Primary == nil || rs.Primary.ID == "" {
+				return fmt.Errorf("%s has no ID in state", name)
+			}
+			ids[name] = rs.Primary.ID
+		}
+		if ids[nameA] == ids[nameB] {
+			return fmt.Errorf(
+				"%s and %s both have the ID %q, but their configurations differ — a data source "+
+					"with arguments must derive its ID from them, or two instances holding "+
+					"different results share one identity",
+				nameA, nameB, ids[nameA])
+		}
+		return nil
+	}
+}
+
 // checkElemFieldsSet asserts each named field of one list element is present
 // and non-empty.
 func checkElemFieldsSet(name string, attrs map[string]string, attr string, index int, fields []string) error {
