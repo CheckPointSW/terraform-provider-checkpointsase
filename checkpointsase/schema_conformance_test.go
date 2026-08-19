@@ -364,6 +364,26 @@ var listAttributeEmptyPolicy = map[string]struct {
 	"resource.checkpointsase_firewall_policy.policy_rules.destinations.addresses": {mustReject, "sourcesAndDestinations.model.ts @ArrayMinSize(1)"},
 	"resource.checkpointsase_firewall_policy.policy_rules.destinations.users":     {mustReject, "sourcesAndDestinations.model.ts @ArrayMinSize(1)"},
 	"resource.checkpointsase_firewall_policy.policy_rules.destinations.groups":    {mustReject, "sourcesAndDestinations.model.ts @ArrayMinSize(1)"},
+	// support_phone_numbers is the first entry in this map whose validator is NOT in
+	// perimeter81-public-api. /v3/account/customize/support-options is proxied straight
+	// through to the account-domain service, so the authority is account-domain's
+	// src/account-lambda-company-branding/src/schemas/putCompanyBranding.schema.ts, an
+	// AJV schema rather than a class-validator model: supportPhoneNumbers is
+	// `type: ["array","null"], minItems: 1, maxItems: 3`. Read 2026-08-19.
+	//
+	// So [] fails minItems and null/omitted is the way to say "none" — and it fails
+	// twice, because the AccountCustomization collection's own $jsonSchema
+	// (p81-mongo-validation-schemas/schemas/AccountCustomization.json) repeats the
+	// anyOf[null, array minItems 1 maxItems 3] bound on the stored document.
+	// SupportOptionsRequest.ToMap writes the key whenever the slice is non-nil, so
+	// expandSupportPhoneNumbers returns nil rather than an empty slice — that, not MinItems,
+	// is what keeps `[]` off the wire. Measured 2026-08-19: terraform.NewResourceConfigShimmed
+	// drops an empty list from the ResourceConfig entirely, so schemaMap.validate sees the key
+	// as absent and MinItems is never reached for this attribute at all. It is still the right
+	// verdict and still recorded as mustReject: the server refuses `[]`, and a later refactor
+	// that made the expand path return an empty slice would need MinItems to be the backstop
+	// it is here.
+	"resource.checkpointsase_support_options.support_phone_numbers": {mustReject, "putCompanyBranding.schema.ts minItems 1 (account-domain, not public-api)"},
 
 	// --- mayBeEmpty: [] is legal, and for most of these it is the only way to clear -------------
 	// baseNetwork.dto.ts: tags is @IsString({each:true}) @IsOptional() with no minimum. The enhanced

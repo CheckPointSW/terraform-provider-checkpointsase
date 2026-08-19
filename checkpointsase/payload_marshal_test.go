@@ -1469,3 +1469,158 @@ func TestPayloadMarshalObjectServicesCreate(t *testing.T) {
 		})
 	}
 }
+
+/*
+TestPayloadMarshalSupportOptions is the golden body for the account support
+options PUT, built through buildSupportOptionsRequest — the exact function
+resourceSupportOptionsUpdate uses — over the real resource schema.
+
+The cases that matter are the absences, and neither is visible in a schema test
+because both shapes marshal without error. Both were read against account-domain's
+putCompanyBranding.schema.ts on 2026-08-19:
+
+  - supportPhoneNumbers must be ABSENT, not [], when there are no custom numbers.
+    The field is `type: ["array","null"]` with `minItems: 1`, so `[]` is a 400, and
+    SupportOptionsRequest.ToMap writes the key on `o.SupportPhoneNumbers != nil` —
+    a non-nil empty slice is present on the wire no matter what the struct tag
+    says. This is the present-but-empty-array class that shipped three times in
+    Phase 1.
+  - liveChatCustomUrl must be ABSENT, not "", when there is no custom chat URL.
+    The field carries minLength 8 and an `^https?://` pattern, so "" is a 400 as
+    well. It survives only because the SDK models it as a *string and ToMap tests
+    the pointer.
+
+The `"userGuidesEnabled": false` case is the one to watch in the other direction.
+It is a plain bool that ToMap writes unconditionally, which is what makes "disable
+the user guides" expressible at all — an omitempty-by-value field would drop it
+and the server would then reject the body for a missing required property.
+*/
+func TestPayloadMarshalSupportOptions(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  map[string]interface{}
+		want string
+	}{
+		{
+			// The shape an account gets by adopting the settings and changing
+			// nothing but the user guides switch: three keys, and only three.
+			name: "harmony sase defaults, both optional fields unset",
+			raw: map[string]interface{}{
+				"phone_support_type":  "harmonySaseDefault",
+				"user_guides_enabled": true,
+				"live_chat_type":      "harmonySaseDefault",
+			},
+			want: `{
+				"phoneSupportType": "harmonySaseDefault",
+				"userGuidesEnabled": true,
+				"liveChatType": "harmonySaseDefault"
+			}`,
+		},
+		{
+			name: "hidden support, user guides off",
+			raw: map[string]interface{}{
+				"phone_support_type":  "hidden",
+				"user_guides_enabled": false,
+				"live_chat_type":      "hidden",
+			},
+			want: `{
+				"phoneSupportType": "hidden",
+				"userGuidesEnabled": false,
+				"liveChatType": "hidden"
+			}`,
+		},
+		{
+			name: "custom, one phone number and a chat url",
+			raw: map[string]interface{}{
+				"phone_support_type":  "custom",
+				"user_guides_enabled": true,
+				"live_chat_type":      "custom",
+				"support_phone_numbers": []interface{}{
+					map[string]interface{}{"description": "US Support", "phone_number": "+1 555 0100"},
+				},
+				"live_chat_custom_url": "https://support.example.com/chat",
+			},
+			want: `{
+				"phoneSupportType": "custom",
+				"userGuidesEnabled": true,
+				"liveChatType": "custom",
+				"supportPhoneNumbers": [
+					{"description": "US Support", "phoneNumber": "+1 555 0100"}
+				],
+				"liveChatCustomUrl": "https://support.example.com/chat"
+			}`,
+		},
+		{
+			// maxItems is 3, so this is the widest legal list, and list position
+			// is preserved on the wire.
+			name: "custom, the maximum three phone numbers",
+			raw: map[string]interface{}{
+				"phone_support_type":  "custom",
+				"user_guides_enabled": true,
+				"live_chat_type":      "hidden",
+				"support_phone_numbers": []interface{}{
+					map[string]interface{}{"description": "US Support", "phone_number": "+1 555 0100"},
+					map[string]interface{}{"description": "EU Support", "phone_number": "+44 20 7000 0000"},
+					map[string]interface{}{"description": "APAC Support", "phone_number": "+61 2 5550 0000"},
+				},
+			},
+			want: `{
+				"phoneSupportType": "custom",
+				"userGuidesEnabled": true,
+				"liveChatType": "hidden",
+				"supportPhoneNumbers": [
+					{"description": "US Support", "phoneNumber": "+1 555 0100"},
+					{"description": "EU Support", "phoneNumber": "+44 20 7000 0000"},
+					{"description": "APAC Support", "phoneNumber": "+61 2 5550 0000"}
+				]
+			}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := schema.TestResourceDataRaw(t, resourceSupportOptions().Schema, tt.raw)
+			assertMarshalsTo(t, buildSupportOptionsRequest(d), tt.want)
+		})
+	}
+}
+
+/*
+TestSupportPhoneNumbersExpandOmitsRatherThanEmpties pins the nil that keeps
+supportPhoneNumbers off the wire, at the one place a refactor would break it
+without changing any golden body.
+
+TestPayloadMarshalSupportOptions already fails if the key appears when it should
+not, but only for a payload built from schema data. This asserts the contract
+directly — expandSupportPhoneNumbers returns a nil slice, not an empty one, for
+every input that carries no numbers — because "return an empty slice for an empty
+input" is the obvious, idiomatic, and here wrong thing for someone to tidy this
+function into. `[]` is a 400 (minItems 1, twice over: the request schema and the
+stored document's own $jsonSchema).
+*/
+func TestSupportPhoneNumbersExpandOmitsRatherThanEmpties(t *testing.T) {
+	for _, raw := range []struct {
+		name  string
+		input []interface{}
+	}{
+		{"nil", nil},
+		{"empty", []interface{}{}},
+		{"only unusable elements", []interface{}{"not a map", 7}},
+	} {
+		t.Run(raw.name, func(t *testing.T) {
+			if got := expandSupportPhoneNumbers(raw.input); got != nil {
+				t.Errorf("expandSupportPhoneNumbers(%#v) = %#v, want nil: a non-nil empty slice "+
+					"reaches the wire as \"supportPhoneNumbers\": [], which the server refuses "+
+					"(minItems 1)", raw.input, got)
+			}
+		})
+	}
+
+	// And the mirror-image contract on the read side: nil flattens to an empty
+	// list, which is what an unset Optional list holds in state, so an account
+	// with no custom numbers produces no diff.
+	got := flattenSupportPhoneNumbers(nil)
+	if got == nil || len(got) != 0 {
+		t.Errorf("flattenSupportPhoneNumbers(nil) = %#v, want an empty non-nil list", got)
+	}
+}
