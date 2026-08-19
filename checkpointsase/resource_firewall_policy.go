@@ -2,6 +2,7 @@ package checkpointsase
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -336,6 +337,148 @@ func resourceFirewallPolicyCustomizeDiff(_ context.Context, d *schema.ResourceDi
 }
 
 /*
+firewallPolicyEndpointWire is the read-side counterpart of one `sources` or `destinations`
+object, and exists because the generated SourcesAndDestinations cannot decode two of the three
+shapes the server actually returns.
+
+SourcesAndDestinations is a oneOf, and its generated UnmarshalJSON asks each variant in turn
+whether the object is "its" shape by unmarshalling and re-marshalling it:
+
+  - `{}` matches nothing. Addresses refuses it (its `addresses` field is required), and an empty
+    UsersAndGroups re-marshals to `{}`, which the generated code reads as "empty struct, no
+    match". Result: `data failed to match schemas in oneOf(SourcesAndDestinations)`.
+  - `{"addresses":[...]}` matches twice. Addresses matches legitimately; UsersAndGroups also
+    "matches", because it has no required fields and captures `addresses` into
+    AdditionalProperties, so it re-marshals to something non-empty. Result:
+    `data matches more than one schema in oneOf(SourcesAndDestinations)`.
+  - `{"users":[...]}`, `{"groups":[...]}` and the two together are the only shapes that decode.
+
+That error surfaces from GetGranularFirewallPolicy as a decode failure on a 200, which fails
+Read for every policy containing a rule that is either unrestricted or scoped by address — in
+other words, for almost every policy this resource can now create. The defect is in the generated
+SDK (a spec-level fix would be to stop modelling this object as a oneOf: server-side it is one
+class with three optional arrays, sourcesAndDestinations.model.ts), so it cannot be fixed from
+here. getGranularFirewallPolicy falls back to this type instead, which is a faithful decode of
+the documented response and needs no oneOf discrimination at all.
+*/
+type firewallPolicyEndpointWire struct {
+	Users     []string `json:"users,omitempty"`
+	Groups    []string `json:"groups,omitempty"`
+	Addresses []string `json:"addresses,omitempty"`
+}
+
+/*
+toSDK converts a decoded endpoint object into the SDK's oneOf, so that everything downstream of
+the read — flattenFirewallPolicyRuleEndpoint, and the acceptance tests' assertions — works
+against one type regardless of which decoder produced it.
+
+The server enforces the addresses/users+groups exclusion on write, so no response can legally
+contain both; addresses is checked first and wins if one ever does.
+*/
+func (w firewallPolicyEndpointWire) toSDK() perimeter81Sdk.SourcesAndDestinations {
+	if len(w.Addresses) > 0 {
+		return perimeter81Sdk.AddressesAsSourcesAndDestinations(
+			&perimeter81Sdk.Addresses{Addresses: w.Addresses})
+	}
+	if len(w.Users) > 0 || len(w.Groups) > 0 {
+		return perimeter81Sdk.UsersAndGroupsAsSourcesAndDestinations(
+			&perimeter81Sdk.UsersAndGroups{Users: w.Users, Groups: w.Groups})
+	}
+	return firewallPolicyUnrestricted()
+}
+
+// firewallPolicyRuleWire is one element of the response's policyRules array.
+type firewallPolicyRuleWire struct {
+	Id           *string                    `json:"id,omitempty"`
+	Name         string                     `json:"name"`
+	Enabled      bool                       `json:"enabled"`
+	Allowed      bool                       `json:"allowed"`
+	Sources      firewallPolicyEndpointWire `json:"sources"`
+	Destinations firewallPolicyEndpointWire `json:"destinations"`
+	Services     []string                   `json:"services,omitempty"`
+	LogEnabled   bool                       `json:"logEnabled"`
+}
+
+// firewallPolicyWire is the whole GET /v3/networks/{networkId}/firewall-policy response body.
+type firewallPolicyWire struct {
+	Id                   string                   `json:"id"`
+	Enabled              bool                     `json:"enabled"`
+	Allowed              bool                     `json:"allowed"`
+	PolicyLoggingEnabled bool                     `json:"policyLoggingEnabled"`
+	PolicyRules          []firewallPolicyRuleWire `json:"policyRules"`
+}
+
+/*
+decodeGranularFirewallPolicy decodes a firewall-policy response body into the SDK model without
+going through the oneOf decoder that cannot represent it.
+
+An empty `id` is treated as a failed decode rather than as a policy with no ID: the field is
+required in the response, so its absence means this body is not a firewall policy — an error
+envelope returned with a 200, say — and silently adopting a zero-valued policy would be worse
+than reporting the original decode error.
+*/
+func decodeGranularFirewallPolicy(body []byte) (*perimeter81Sdk.GranularFirewallPolicy, error) {
+	var wire firewallPolicyWire
+	if err := json.Unmarshal(body, &wire); err != nil {
+		return nil, err
+	}
+	if wire.Id == "" {
+		return nil, fmt.Errorf("response carries no policy id, so it is not a firewall policy body")
+	}
+
+	policy := &perimeter81Sdk.GranularFirewallPolicy{
+		Id:                   wire.Id,
+		Enabled:              wire.Enabled,
+		Allowed:              wire.Allowed,
+		PolicyLoggingEnabled: wire.PolicyLoggingEnabled,
+		PolicyRules:          make([]perimeter81Sdk.GranularFirewallPolicyRule, len(wire.PolicyRules)),
+	}
+	for i, rule := range wire.PolicyRules {
+		policy.PolicyRules[i] = perimeter81Sdk.GranularFirewallPolicyRule{
+			Id:           rule.Id,
+			Name:         rule.Name,
+			Enabled:      rule.Enabled,
+			Allowed:      rule.Allowed,
+			Sources:      rule.Sources.toSDK(),
+			Destinations: rule.Destinations.toSDK(),
+			Services:     rule.Services,
+			LogEnabled:   rule.LogEnabled,
+		}
+	}
+	return policy, nil
+}
+
+/*
+getGranularFirewallPolicy is the single read entry point for this resource: the SDK call, plus a
+fallback for the one failure mode the SDK's generated oneOf decoder cannot avoid (see
+firewallPolicyEndpointWire).
+
+The fallback is deliberately narrow. It engages only when the request itself succeeded — a
+non-nil response with a status below 300 — and only when the SDK handed back the body it failed
+to decode. Anything else, including a genuinely malformed body, returns the original error
+unchanged, so a real API failure is never reported as a decode quirk. When the SDK is fixed the
+primary path simply starts succeeding and this code stops running, with no behaviour change.
+*/
+func getGranularFirewallPolicy(ctx context.Context, client *perimeter81Sdk.APIClient, networkId string) (*perimeter81Sdk.GranularFirewallPolicy, *http.Response, error) {
+	policy, httpResp, err := client.FirewallPolicyAPI.GetGranularFirewallPolicy(ctx, networkId).Execute()
+	if err == nil {
+		return policy, httpResp, nil
+	}
+	if httpResp == nil || httpResp.StatusCode >= http.StatusMultipleChoices {
+		return policy, httpResp, err
+	}
+	apiErr, ok := err.(*perimeter81Sdk.GenericOpenAPIError)
+	if !ok || len(apiErr.Body()) == 0 {
+		return policy, httpResp, err
+	}
+	decoded, decodeErr := decodeGranularFirewallPolicy(apiErr.Body())
+	if decodeErr != nil {
+		return policy, httpResp, err
+	}
+	return decoded, httpResp, nil
+}
+
+/*
 resourceFirewallPolicyImportState Import a firewall policy by its network ID.
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
@@ -381,7 +524,7 @@ func resourceFirewallPolicyCreate(ctx context.Context, d *schema.ResourceData, m
 	// terraform-plugin-sdk's d.Get prefers a recent d.Set over the diff/config,
 	// so any pre-Update Set would clobber the HCL values and Update would push
 	// the server's existing values back instead of the user's configuration.
-	if _, _, err := client.FirewallPolicyAPI.GetGranularFirewallPolicy(ctx, networkId).Execute(); err != nil {
+	if _, _, err := getGranularFirewallPolicy(ctx, client, networkId); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to read Firewall Policy for adoption", err)
 	}
@@ -404,7 +547,7 @@ func resourceFirewallPolicyRead(ctx context.Context, d *schema.ResourceData, m i
 
 	networkId := d.Get("network_id").(string)
 
-	policyData, _, err := client.FirewallPolicyAPI.GetGranularFirewallPolicy(ctx, networkId).Execute()
+	policyData, _, err := getGranularFirewallPolicy(ctx, client, networkId)
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to find Firewall Policy", err)
@@ -553,7 +696,7 @@ func resourceFirewallPolicyUpdate(ctx context.Context, d *schema.ResourceData, m
 	networkId := d.Get("network_id").(string)
 
 	// Read current policy to get the policy ID
-	policyData, _, err := client.FirewallPolicyAPI.GetGranularFirewallPolicy(ctx, networkId).Execute()
+	policyData, _, err := getGranularFirewallPolicy(ctx, client, networkId)
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to read Firewall Policy for update", err)
