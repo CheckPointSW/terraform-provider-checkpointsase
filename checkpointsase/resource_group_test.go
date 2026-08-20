@@ -141,6 +141,16 @@ that to [a-zA-Z0-9] would reject "Ingénierie" and "研究開発" at plan time f
 configurations the server accepts, which is worse than no validation: the
 operator cannot work around it.
 
+AND THE UNICODE CASES HAVE TO REACH THE BOUNDARIES, which is what an earlier
+version of this table got wrong. Its length rows were both ASCII, so it passed
+while two independent over-strictness defects shipped: a
+validation.StringLenBetween(1, 64) counting BYTES next to a pattern counting
+runes, which refused a 22-character CJK name and a 40-character name of "é"; and
+Go's ASCII-only `\s`, which refused U+3000 and a non-breaking space. Both
+refused server-legal names at plan time with no workaround. So the length rows
+below are run in CJK and in "é" as well as in ASCII, on both sides of 64, and the
+whitespace rows name the code points rather than trusting a shorthand.
+
 The last sub-test goes through Resource.Validate rather than the ValidateFunc,
 because GRP-N01 says "rejected at plan time" and that is the code path
 `terraform plan` actually takes.
@@ -167,8 +177,24 @@ func TestGroupNameValidationAcceptsUnicodeAndRejectsEmpty(t *testing.T) {
 		{"decomposed accent, a real combining mark", "Ingene\u0301rie", false},
 		{"digits, spaces and the allowed punctuation", "R&D 2 (EMEA) - a_b.c'd/e\\f,g|h{i}j~k!l@m#n$o%p^q*r[s]t:u", false},
 		{"exactly 64 characters", sixtyFour, false},
+		// The rows a byte-counting length check fails. "研" is 3 bytes and "é" is
+		// 2, so each of these is comfortably inside the server's 64-CHARACTER
+		// limit and comfortably outside a 64-BYTE one.
+		{"22 CJK characters, 66 bytes", strings.Repeat("研", 22), false},
+		{"40 e-acute, 80 bytes", strings.Repeat("é", 40), false},
+		{"64 CJK characters, 192 bytes -- the boundary, in the wide case", strings.Repeat("研", 64), false},
+		// The rows an ASCII-only whitespace class fails. U+3000 is the idiomatic
+		// separator in Japanese; U+00A0 is what a paste from a console or a
+		// spreadsheet produces.
+		{"ideographic space U+3000", "研究\u3000開発", false},
+		{"non-breaking space U+00A0", "Ingénierie\u00a0Group", false},
+		{"vertical tab U+000B, in ECMAScript whitespace but not in Go's", "vert\u000btab", false},
 		{"empty", "", true},
 		{"65 characters", sixtyFour + "a", true},
+		// The length boundary has to stay honest in the other direction too: a
+		// fix that simply deleted the length rule would pass every row above.
+		{"65 CJK characters", strings.Repeat("研", 65), true},
+		{"65 e-acute", strings.Repeat("é", 65), true},
 		{"semicolon is outside the class", "R&D;DevOps", true},
 		{"double quote is outside the class", `Say "hello"`, true},
 		{"angle brackets are outside the class", "<script>", true},
@@ -209,6 +235,69 @@ func TestGroupNameValidationAcceptsUnicodeAndRejectsEmpty(t *testing.T) {
 			t.Errorf("a group with no description failed validation: %v", diags)
 		}
 	})
+}
+
+/*
+TestGroupWhitespaceClassCoversEveryECMAScriptSpace enumerates the whitespace rule
+instead of trusting a shorthand, because the shorthand is what was wrong.
+
+Go's `\s` is `[\t\n\f\r ]`. ECMAScript's is Unicode regardless of flags:
+WhiteSpace (TAB, VT, FF, ZWNBSP and every Space_Separator) plus LineTerminator
+(LF, CR, LS, PS) -- the 25 code points below. Writing `\s` in the Go port
+therefore narrowed the server's rule by 20 code points, and each one of those is
+a name an operator can legitimately write and the provider would refuse at plan
+time with nothing to do about it.
+
+`\p{Zs}` alone is not the fix either: it misses U+0009-U+000D, U+2028, U+2029 and
+U+FEFF. The list is spelled out so that a future edit to
+groupWhitespaceCharacters has to keep all of it.
+
+The second half asserts the class did not become a free-for-all in the process:
+the characters createGroup.dto.ts excludes must still be excluded, or the
+"validation" is decorative.
+*/
+func TestGroupWhitespaceClassCoversEveryECMAScriptSpace(t *testing.T) {
+	// WhiteSpace + LineTerminator, per the ECMAScript grammar. Space_Separator
+	// is enumerated rather than referred to, so \p{Zs} being swapped for
+	// something narrower cannot pass.
+	ecmaScriptSpace := []rune{
+		0x0009, 0x000A, 0x000B, 0x000C, 0x000D, // TAB LF VT FF CR
+		0x0020, 0x00A0, 0x1680, // SPACE NBSP OGHAM SPACE MARK
+		0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, // EN QUAD .. FOUR-PER-EM
+		0x2006, 0x2007, 0x2008, 0x2009, 0x200A, // SIX-PER-EM .. HAIR SPACE
+		0x2028, 0x2029, // LINE SEPARATOR, PARAGRAPH SEPARATOR
+		0x202F, 0x205F, 0x3000, // NARROW NBSP, MEDIUM MATHEMATICAL, IDEOGRAPHIC
+		0xFEFF, // ZERO WIDTH NO-BREAK SPACE
+	}
+	if len(ecmaScriptSpace) != 25 {
+		t.Fatalf("the ECMAScript whitespace list has %d entries, want 25; the comment on "+
+			"groupWhitespaceCharacters cites that number", len(ecmaScriptSpace))
+	}
+
+	validateName := resourceGroup().Schema["name"].ValidateFunc
+	validateDescription := resourceGroup().Schema["description"].ValidateFunc
+	for _, r := range ecmaScriptSpace {
+		value := "a" + string(r) + "b"
+		if _, errs := validateName(value, "name"); len(errs) > 0 {
+			t.Errorf("name rejected U+%04X, which the server accepts: %v. Go's \\s does not "+
+				"cover it -- see groupWhitespaceCharacters", r, errs)
+		}
+		if _, errs := validateDescription(value, "description"); len(errs) > 0 {
+			t.Errorf("description rejected U+%04X, which the server accepts: %v", r, errs)
+		}
+	}
+
+	// Widening whitespace must not have widened anything else. These are all
+	// outside xssSafeCharacters in createGroup.dto.ts.
+	for _, value := range []string{
+		"semi;colon", `double"quote`, "<script>", "back`tick", "a=b", "a+b", "a?b",
+		"zero\u200bwidth", // U+200B is NOT whitespace in ECMAScript, despite the name
+	} {
+		if _, errs := validateName(value, "name"); len(errs) == 0 {
+			t.Errorf("name accepted %q, which is outside the server's character class; the "+
+				"whitespace widening was supposed to be the only divergence", value)
+		}
+	}
 }
 
 /*

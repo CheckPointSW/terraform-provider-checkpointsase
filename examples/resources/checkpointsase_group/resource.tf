@@ -4,9 +4,16 @@
 # checkpointsase_group_membership resource per member so that Terraform recreates
 # the memberships after a replacement.
 resource "checkpointsase_group" "engineering" {
-  # 1-64 characters. Letters in ANY script are accepted, because the server's own
-  # pattern is Unicode-aware: "Engineering", "Ingénierie" and "研究開発" are all
-  # valid names.
+  # 1-64 CHARACTERS, not bytes: the server counts characters, so a 64-character
+  # name in any script fits. Letters in any script are accepted, because the
+  # server's own pattern is Unicode-aware -- "Engineering", "Ingénierie" and
+  # "研究開発" are all valid -- and so is Unicode whitespace, including the
+  # ideographic space U+3000 and a non-breaking space.
+  #
+  # The provider's plan-time check is a faithful port of the server's rule with
+  # one deliberate difference: its whitespace class is the wider one, so nothing
+  # the server accepts is refused at plan time. What the server rejects it still
+  # rejects -- notably ; " < > ` = + and ?.
   name = "Engineering"
 
   # Optional, and write-only: the Group read model carries no description field,

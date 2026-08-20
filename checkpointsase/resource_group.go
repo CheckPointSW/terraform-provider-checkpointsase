@@ -13,19 +13,47 @@ import (
 )
 
 /*
-groupXSSSafeCharacters is `xssSafeCharacters` from createGroup.dto.ts, ported
-verbatim. Both `name` and `description` are matched against it there.
+groupWhitespaceCharacters is the whitespace piece of the class below, spelled out
+because GO'S `\s` IS NOT JAVASCRIPT'S.
+
+Go's `\s` is `[\t\n\f\r ]` -- ASCII only, and not even all of ASCII: it omits the
+vertical tab. ECMAScript's `\s` is Unicode whatever the flags, being WhiteSpace
+(TAB, VT, FF, ZWNBSP and every Space_Separator) plus LineTerminator (LF, CR, LS,
+PS). Writing `\s` in Go therefore silently NARROWS the server's rule and refuses
+legal names at plan time, with no workaround available to the operator. Measured
+before this fix: "研究　開発" (U+3000, the idiomatic separator in Japanese) and any
+name carrying a non-breaking space -- what a paste from a console or a
+spreadsheet produces -- were rejected here and accepted by the server.
+
+\x{09}-\x{0D} is TAB, LF, VT, FF and CR; \p{Zs} is every Space_Separator,
+U+0020, U+00A0 and U+3000 included; U+2028, U+2029 and U+FEFF are the three
+ECMAScript adds outside those ranges. That is the whole of ECMAScript `\s`, and
+TestGroupWhitespaceClassCoversEveryECMAScriptSpace enumerates all 25 code points
+to keep it that way. Should Go's and the engine's Unicode tables ever disagree
+about Space_Separator, being the WIDER of the two is the safe direction: the
+server still rejects whatever it rejects, while the failure mode being removed
+here is a plan-time refusal of a name the server would have taken.
+*/
+const groupWhitespaceCharacters = `\x{09}-\x{0D}\p{Zs}\x{2028}\x{2029}\x{FEFF}`
+
+/*
+groupXSSSafeCharacters is `xssSafeCharacters` from createGroup.dto.ts. Both
+`name` and `description` are matched against it there.
 
 The class is UNICODE, not ASCII: \p{L} covers letters in every script, \p{M}
 combining marks and \p{Nd} decimal digits, which Go's regexp supports natively
 with no flag. A `[a-zA-Z]`-style transliteration would reject "Ingénierie" and
 "研究開発" at plan time for configurations the server accepts.
 
-The escaping differs from the TypeScript source only where Go's syntax requires
-it: \\ is one literal backslash, and \[ \] \- are the bracket and hyphen that
-would otherwise be class syntax. The set of accepted characters is identical.
+It is a FAITHFUL PORT RATHER THAN A CHARACTER-FOR-CHARACTER COPY, and the two
+places it differs are both deliberate. Escaping: \\ is one literal backslash, and
+\[ \] \- are the bracket and hyphen that would otherwise be class syntax --
+same accepted characters, different spelling. Whitespace: `\s` is expanded to
+groupWhitespaceCharacters, because Go's `\s` would be a narrower class than the
+server's and would reject names the server accepts. Everything else is identical.
 */
-const groupXSSSafeCharacters = `[\p{L}\p{M}\p{Nd}\s._()'/\\,|&{}~!@#$%^*\[\]\-:]`
+const groupXSSSafeCharacters = `[\p{L}\p{M}\p{Nd}` + groupWhitespaceCharacters +
+	`._()'/\\,|&{}~!@#$%^*\[\]\-:]`
 
 /*
 groupCharacterRuleMessage is the operator-facing half of the two patterns below.
@@ -36,8 +64,19 @@ format string, so a literal per-cent sign is written once, not doubled.
 const groupCharacterRuleMessage = "may contain letters (in any script), combining marks, digits, " +
 	"whitespace and the punctuation . _ ( ) ' / \\ , | & { } ~ ! @ # $ % ^ * [ ] - :"
 
+/*
+groupNameRuleMessage carries the LENGTH rule as well, because groupNamePattern is
+the only thing enforcing it -- see the note on name's ValidateFunc. Saying
+"characters" and meaning it is the point: the message this replaced quoted a
+byte limit.
+*/
+const groupNameRuleMessage = "must be 1-64 characters long, counted in characters rather than " +
+	"bytes, and " + groupCharacterRuleMessage
+
 var (
-	// ^...{1,64}$ -- Matches(`^${xssSafeCharacters}{1,64}$`, 'u') on name.
+	// ^...{1,64}$ -- Matches(`^${xssSafeCharacters}{1,64}$`, 'u') on name. The
+	// quantifier applies to a character class, so it counts RUNES, which is what
+	// makes it the right and only length check.
 	groupNamePattern = regexp.MustCompile(`^` + groupXSSSafeCharacters + `{1,64}$`)
 	// ^...+$ -- the same class on description, with no length bound.
 	groupDescriptionPattern = regexp.MustCompile(`^` + groupXSSSafeCharacters + `+$`)
@@ -73,13 +112,21 @@ func resourceGroup() *schema.Resource {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
-				Description: "Name of the group, 1–64 characters. Changing it replaces the group, " +
+				Description: "Name of the group, 1–64 characters — characters, not bytes, so a " +
+					"64-character name in any script is accepted. Changing it replaces the group, " +
 					"which drops every membership in it — use a `checkpointsase_group_membership` " +
 					"for each member so Terraform recreates them.",
-				ValidateFunc: validation.All(
-					validation.StringLenBetween(1, 64),
-					validation.StringMatch(groupNamePattern, groupCharacterRuleMessage),
-				),
+				// NO validation.StringLenBetween HERE, DELIBERATELY. It compares
+				// len(v) -- BYTES -- while the server's rule and this pattern's
+				// {1,64} both count characters. Measured with it in place: a
+				// 22-character CJK name (66 bytes) and a 40-character name of "é"
+				// (80 bytes) were both refused at plan time, for values the server
+				// accepts, with a message naming a limit the server does not
+				// enforce and no workaround but to shorten the name. The pattern
+				// already enforces 1-64 runes AND rules out the empty string, which
+				// is everything GRP-N01 needs; two length checks that disagree about
+				// what a character is are worse than the one that is right.
+				ValidateFunc: validation.StringMatch(groupNamePattern, groupNameRuleMessage),
 			},
 			"description": {
 				Type:     schema.TypeString,
