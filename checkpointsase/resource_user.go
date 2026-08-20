@@ -214,12 +214,20 @@ func resourceUserImportState(ctx context.Context, d *schema.ResourceData, m inte
 	if d.Id() == "" {
 		return nil, fmt.Errorf("no user with that id exists in this tenant")
 	}
-	// invite_message is write-only: CreateUserDto carries it, and the User read
-	// model has an inviteMessage field that the server does not populate for
-	// users created through the API. It is Required, so an import that left it
-	// unset would show a permanent diff. Set it from the imported object if the
-	// server did send one; otherwise leave it empty and let the operator supply
-	// the value that matches their config.
+	// invite_message IS DELIBERATELY NEVER READ BACK, here or in Read.
+	//
+	// The read model does carry an inviteMessage field, so setting it would be
+	// possible -- and wrong. The attribute is Required AND ForceNew, so if the
+	// server ever returned a value differing by even one character from the
+	// operator's config, the resulting drift would not be a cosmetic diff: it
+	// would force the user to be DELETED AND RE-INVITED on the next apply. An
+	// attribute that can trigger a replacement is only safe to populate from
+	// the server when the round-trip is known to be exact, and this one is not.
+	//
+	// The cost is that an imported user has no invite_message in state, so
+	// USR-I01 carries it in ImportStateVerifyIgnore and the operator supplies
+	// the value in their config. That is a one-time annoyance rather than a
+	// standing hazard.
 	return []*schema.ResourceData{d}, nil
 }
 
