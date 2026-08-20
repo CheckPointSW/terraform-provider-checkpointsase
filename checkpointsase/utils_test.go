@@ -160,3 +160,71 @@ func TestFlattenTunnelDataPreservesPassphraseWhenAPIOmitsIt(t *testing.T) {
 		t.Errorf("passphrase = %v, want %q (a value the API does report must still be written)", got, newPass)
 	}
 }
+
+// TestReadByIDFromListMatchesExactly pins the whole contract of the helper the
+// three Phase 3 resources read through. The prefix case is the one that matters:
+// a prefix match would hand one resource another resource's attributes, and
+// Terraform would then persist that as if the Read had succeeded. Test row
+// OS-N06 exists for exactly this failure.
+func TestReadByIDFromListMatchesExactly(t *testing.T) {
+	type item struct {
+		id   string
+		name string
+	}
+	idOf := func(i item) string { return i.id }
+	items := []item{{"abc", "first"}, {"abcdef", "second"}, {"", "no id at all"}}
+
+	got, found := readByIDFromList(items, "abc", idOf)
+	if !found || got.name != "first" {
+		t.Errorf("exact match: got (%+v, %v), want ({abc first}, true)", got, found)
+	}
+
+	got, found = readByIDFromList(items, "abcdef", idOf)
+	if !found || got.name != "second" {
+		t.Errorf("the longer id must match its own element, not the shorter one: got (%+v, %v)", got, found)
+	}
+
+	if _, found = readByIDFromList(items, "abcd", idOf); found {
+		t.Error("a prefix of a real id matched; matching must be exact equality")
+	}
+
+	if _, found = readByIDFromList(items, "first", idOf); found {
+		t.Error("a name matched; matching must be on the id only")
+	}
+
+	if _, found = readByIDFromList(items, "zzz", idOf); found {
+		t.Error("an absent id was reported as found; callers rely on false to apply the drift convention")
+	}
+}
+
+// TestReadByIDFromListRejectsAnEmptyID is separate because it guards a specific
+// hazard introduced by A21a/A22a: id is optional on User and Group, so idOf can
+// legitimately return "". Without the guard, a resource whose stored id was
+// somehow empty would silently adopt the first id-less record in the list.
+func TestReadByIDFromListRejectsAnEmptyID(t *testing.T) {
+	type item struct{ id string }
+	idOf := func(i item) string { return i.id }
+
+	if _, found := readByIDFromList([]item{{""}, {"real"}}, "", idOf); found {
+		t.Error("an empty id matched an id-less element; an empty id must never match anything")
+	}
+	if _, found := readByIDFromList([]item{}, "anything", idOf); found {
+		t.Error("an empty collection reported a match")
+	}
+	if _, found := readByIDFromList(nil, "anything", idOf); found {
+		t.Error("a nil collection reported a match")
+	}
+}
+
+// TestReadByIDFromListReturnsTheZeroValueWhenAbsent pins that callers can use
+// the returned value unconditionally after checking found, without a nil deref.
+func TestReadByIDFromListReturnsTheZeroValueWhenAbsent(t *testing.T) {
+	type item struct{ id, name string }
+	got, found := readByIDFromList([]item{{"a", "x"}}, "b", func(i item) string { return i.id })
+	if found {
+		t.Fatal("unexpected match")
+	}
+	if got.id != "" || got.name != "" {
+		t.Errorf("want the zero value on miss, got %+v", got)
+	}
+}

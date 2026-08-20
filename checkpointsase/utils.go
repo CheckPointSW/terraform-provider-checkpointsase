@@ -1588,3 +1588,39 @@ func flattenObjectAddressesData(objectAddressesItems []perimeter81Sdk.Address) [
 	}
 	return make([]interface{}, 0)
 }
+
+/*
+readByIDFromList finds one element of a collection by exact ID match, for the v3
+surfaces that expose no GET-by-id. /v3/users and /v3/groups are the first two;
+Phase 4's SWG rule lists are the next.
+
+MATCHING IS EXACT EQUALITY AND MUST STAY THAT WAY. A prefix or name match here
+would hand one resource another resource's attributes, and Terraform would then
+write that to state as a successful Read -- silent, and indistinguishable from
+correct behaviour until two resources' ids happen to share a prefix.
+
+An empty id never matches, even against an element whose own id is empty. That
+case is reachable rather than theoretical: overlay entries A21a/A22a declare
+`id` OPTIONAL on User and Group, so idOf can legitimately return "".
+
+Returns found=false when the object is absent, so callers apply the provider's
+drift convention (d.SetId("")) rather than reporting an error.
+
+  - @param items []T - the collection as the list endpoint returned it
+  - @param id string - the id held in Terraform state
+  - @param idOf func(T) string - extracts one element's id
+
+@return (T, bool) - the matching element (or T's zero value) and whether it was found
+*/
+func readByIDFromList[T any](items []T, id string, idOf func(T) string) (T, bool) {
+	var zero T
+	if id == "" {
+		return zero, false
+	}
+	for i := range items {
+		if idOf(items[i]) == id {
+			return items[i], true
+		}
+	}
+	return zero, false
+}
