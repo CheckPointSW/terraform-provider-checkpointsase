@@ -26,42 +26,64 @@ reusing them keeps one fixture rather than three.
 */
 
 /*
-TestParseGroupMembershipID pins the composite-id contract, including the
-malformed cases an operator can reach through `terraform import`.
+TestParseGroupMembershipID pins the composite-id contract, including the malformed
+cases an operator can reach through `terraform import`.
 
-The hyphen and underscore row is the one that documents the separator choice:
-both halves are EnglishNumericId (^[a-zA-Z0-9_\-]*$), so "-" and "_" both occur
-INSIDE real ids and neither could have served as the separator. ":" cannot.
+The hyphen and underscore row documents the separator choice: both halves are
+EnglishNumericId (^[a-zA-Z0-9_\-]*$), so "-" and "_" both occur INSIDE real ids
+and neither could have served as the separator. ":" cannot.
+
+The whitespace rows are the reachable defect, not a hypothetical. An id is
+something an operator pastes, and a paste carries a trailing space or a newline;
+without the charset check " grp1" is sent as %20grp1, which is a 404 nobody can
+explain from the message. Each rejection has to name WHICH half is wrong, or the
+operator reads the wrong end of a 50-character id.
 */
 func TestParseGroupMembershipID(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		id          string
 		group, user string
-		wantErr     bool
+		wantMsg     string // "" means the id must parse
 	}{
-		{"well formed", "grp1:usr1", "grp1", "usr1", false},
-		{"ids may contain hyphens and underscores", "g-1_a:u-2_b", "g-1_a", "u-2_b", false},
+		{"well formed", "grp1:usr1", "grp1", "usr1", ""},
+		{"ids may contain hyphens and underscores", "g-1_a:u-2_b", "g-1_a", "u-2_b", ""},
 		{"realistic object ids", "5f8d0d55b54764421b7156c3:5f8d0d55b54764421b7156c9",
-			"5f8d0d55b54764421b7156c3", "5f8d0d55b54764421b7156c9", false},
-		{"no separator", "grp1usr1", "", "", true},
-		{"empty group", ":usr1", "", "", true},
-		{"empty user", "grp1:", "", "", true},
-		{"empty id", "", "", "", true},
-		{"separator only", ":", "", "", true},
+			"5f8d0d55b54764421b7156c3", "5f8d0d55b54764421b7156c9", ""},
+
+		// Shape: the separator is missing or a half is empty.
+		{"no separator", "grp1usr1", "", "", "<group_id>:<user_id>"},
+		{"empty group", ":usr1", "", "", "<group_id>:<user_id>"},
+		{"empty user", "grp1:", "", "", "<group_id>:<user_id>"},
+		{"empty id", "", "", "", "<group_id>:<user_id>"},
+		{"separator only", ":", "", "", "<group_id>:<user_id>"},
+
+		// Charset: the shape is right and the contents cannot be an id. The
+		// message names the offending half.
+		{"leading space on the group", " grp1:usr1", "", "", "unusable group_id"},
+		{"trailing space on the user", "grp1:usr1 ", "", "", "unusable user_id"},
+		{"trailing newline from a paste", "grp1:usr1\n", "", "", "unusable user_id"},
+		{"a space inside the group", "grp 1:usr1", "", "", "unusable group_id"},
+		{"path traversal in the group", "../grp1:usr1", "", "", "unusable group_id"},
+		// Both halves are unusable here; the group is reported because it is
+		// checked first, and the name says so rather than implying the user half
+		// was the one that failed.
+		{"slashes in both halves, the group reported first", "usr1/../..:usr1/..",
+			"", "", "unusable group_id"},
+		{"a percent escape spelled out", "%20grp1:usr1", "", "", "unusable group_id"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g, u, err := parseGroupMembershipID(tc.id)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("err = %v, wantErr = %v", err, tc.wantErr)
+			if (err != nil) != (tc.wantMsg != "") {
+				t.Fatalf("err = %v, want an error = %v", err, tc.wantMsg != "")
 			}
 			if g != tc.group || u != tc.user {
 				t.Errorf("got (%q, %q), want (%q, %q)", g, u, tc.group, tc.user)
 			}
-			// An error message that does not say what the right shape is leaves
-			// the operator guessing at a `terraform import` argument.
-			if tc.wantErr && !strings.Contains(err.Error(), "<group_id>:<user_id>") {
-				t.Errorf("error %q does not state the expected form", err)
+			// An error that does not say what is wrong leaves the operator
+			// guessing at a `terraform import` argument.
+			if tc.wantMsg != "" && !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Errorf("error %q does not contain %q", err, tc.wantMsg)
 			}
 		})
 	}
@@ -104,24 +126,36 @@ func TestGroupMembershipResourceIsAJoin(t *testing.T) {
 }
 
 /*
-TestGroupMembershipNeverDeletesItsParents reads the resource's own source and
-fails if it references either parent's delete operation.
+TestGroupMembershipNeverDeletesItsParents is a TRIPWIRE, NOT THE GUARD. The guard
+is the request-count assertion in TestGroupMembershipDeleteSwallowsA404ButNothingElse:
+exactly one request leaves Delete, and its method and path are pinned.
 
-This is the failure mode with the worst blast radius and the least visibility. A
-join resource that deleted a parent would satisfy every read-back assertion in
-this file -- Read would correctly report the membership gone, because the group
-IS gone -- and would show up only as a destroyed user or group in someone's
-tenant. GRP-04 catches it on a live run; this catches it on every PR.
+This test greps the source, and a grep cannot see what a resource actually does.
+Review demonstrated the defeat: `nuke := client.TeamAPI.DeleteGroup` followed by
+`nuke(ctx, groupID).Execute()` deletes the parent group on every membership
+destroy and the whole package still reports ok. A wrapper function, an aliased
+import, or the call made from another file in the package all evade it equally.
+
+It is kept because it is free and it names the mistake at the point where someone
+would make it -- a reviewer reading a diff that adds "DeleteGroup(" to this file
+gets a failing test rather than a passing one. Comments are stripped before the
+search so the test cannot be tripped by prose describing the rule it enforces,
+which is how review's first attempt at a mutation was "caught".
 */
 func TestGroupMembershipNeverDeletesItsParents(t *testing.T) {
 	src, err := os.ReadFile("resource_group_membership.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"DeleteGroup(", "DeleteUser("} {
-		if strings.Contains(string(src), forbidden) {
-			t.Errorf("resource_group_membership.go calls %s: a membership must delete only "+
-				"the pairing, never a parent", forbidden)
+	// Comments out, code only. Block comments first: this file's doc comments
+	// name both operations in prose, and a grep that reads them is measuring the
+	// documentation.
+	code := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(string(src), "")
+	code = regexp.MustCompile(`(?m)//[^\n]*$`).ReplaceAllString(code, "")
+	for _, forbidden := range []string{"DeleteGroup", "DeleteUser"} {
+		if strings.Contains(code, forbidden) {
+			t.Errorf("resource_group_membership.go names %s in code: a membership must delete "+
+				"only the pairing, never a parent", forbidden)
 		}
 	}
 }
@@ -141,6 +175,15 @@ Hence an httptest server, which also gates the guard on every PR rather than onl
 on a live run. The 500 case is half the test: the swallow must be narrow, or a
 server that is merely broken would look like a successful destroy and the
 membership would leave state while surviving in the tenant.
+
+THE REQUEST COUNT IS THE PARENT-DELETE GUARD, and it is the reason this test
+records every request rather than the last one. Exactly one request may leave
+Delete. A resource that also deleted the parent group would issue two, and it
+would do so however the call was spelled -- through a method value, a wrapper, an
+aliased import, or another file in the package -- none of which
+TestGroupMembershipNeverDeletesItsParents can see, as review demonstrated by
+defeating it. Asserting only the LAST request's path hides the case where the
+parent is deleted FIRST, which is exactly the order a destroy would use.
 */
 func TestGroupMembershipDeleteSwallowsA404ButNothingElse(t *testing.T) {
 	for _, tc := range []struct {
@@ -158,9 +201,9 @@ func TestGroupMembershipDeleteSwallowsA404ButNothingElse(t *testing.T) {
 			`{"message":"boom"}`, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var gotMethod, gotPath string
+			var requests []string
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				gotMethod, gotPath = r.Method, r.URL.Path
+				requests = append(requests, r.Method+" "+r.URL.Path)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(tc.body))
@@ -172,12 +215,15 @@ func TestGroupMembershipDeleteSwallowsA404ButNothingElse(t *testing.T) {
 
 			diags := resourceGroupMembershipDelete(context.Background(), d, newTestUserAPIClient(srv.URL))
 
-			// The path is asserted, not assumed: the whole point of this
-			// resource is that its Delete addresses the MEMBER endpoint and not
-			// /v3/groups/grp-1 or /v3/users/usr-1.
-			if gotMethod != http.MethodDelete || gotPath != "/v3/groups/grp-1/member/usr-1" {
-				t.Errorf("request was %s %s, want DELETE /v3/groups/grp-1/member/usr-1",
-					gotMethod, gotPath)
+			// ONE request, and this one. Two would mean a parent was deleted as
+			// well -- see the note above on why the count, and not a grep, is
+			// the guard. The path is asserted rather than assumed because the
+			// whole point of this resource is that its Delete addresses the
+			// MEMBER endpoint and never /v3/groups/grp-1 or /v3/users/usr-1.
+			want := []string{"DELETE /v3/groups/grp-1/member/usr-1"}
+			if !testComparableArraiesEq(requests, want) {
+				t.Errorf("requests were %v, want exactly %v: a membership destroy touches the "+
+					"pairing and nothing else", requests, want)
 			}
 			if diags.HasError() != tc.wantErr {
 				t.Errorf("HasError = %v, want %v: %v", diags.HasError(), tc.wantErr, diags)
@@ -205,7 +251,14 @@ loudly is right: clearing it would drop a resource whose real membership may wel
 exist, silently.
 */
 func TestGroupMembershipRejectsAMalformedIDBeforeIssuingARequest(t *testing.T) {
-	for _, id := range []string{"grp1usr1", ":usr-1", "grp-1:", "", ":"} {
+	for _, id := range []string{
+		// Wrong shape.
+		"grp1usr1", ":usr-1", "grp-1:", "", ":",
+		// Right shape, impossible contents. These are the ones that would
+		// otherwise reach the wire: " grp-1" goes out as %20grp-1, and
+		// "../grp-1" as ..%2Fgrp-1, both against a path this provider composed.
+		" grp-1:usr-1", "grp-1:usr-1 ", "grp-1:usr-1\n", "../grp-1:usr-1",
+	} {
 		t.Run(fmt.Sprintf("id %q", id), func(t *testing.T) {
 			requests := 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -326,6 +379,65 @@ func TestGroupMembershipReadInspectsTheGroupsMemberList(t *testing.T) {
 						"which is what makes an import work", d.Get("group_id"), d.Get("user_id"),
 						wantGroup, wantUser)
 				}
+			}
+		})
+	}
+}
+
+/*
+TestGroupMembershipReadDoesNotMistakeAServerErrorForDrift is Read's half of the
+narrowness TestGroupMembershipDeleteSwallowsA404ButNothingElse asserts for Delete.
+Review found this branch untested, asymmetrically, and it deserves the same care:
+making Read treat EVERY error as drift left the whole package reporting ok.
+
+The consequence of getting it wrong is not a failed plan, it is a destroyed
+membership. Read reports absence by clearing the id, so a 500 read as absence
+removes a live pairing from state; Terraform then plans a create, and if the
+member is in fact still there the re-POST papers over it -- while any operator
+running `terraform plan` during a server incident sees phantom changes across
+every membership they own.
+
+A 404 on the COLLECTION is different and must still clear the id: /v3/groups
+answering "not found" means the tenant has no such collection to search, so the
+membership cannot be established either way. That is the drift path GRP-D02's
+precondition uses.
+*/
+func TestGroupMembershipReadDoesNotMistakeAServerErrorForDrift(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		body       string
+		wantErr    bool
+		wantIDGone bool
+	}{
+		{"500 is a broken server, not an absent membership", http.StatusInternalServerError,
+			`{"message":"boom"}`, true, false},
+		{"503 likewise", http.StatusServiceUnavailable,
+			`{"message":"upstream unavailable"}`, true, false},
+		{"404 on the collection is drift", http.StatusNotFound,
+			`{"message":"not found"}`, false, true},
+		{"200 with the pairing present is no drift at all", http.StatusOK,
+			groupListPage(1, 1, 1, `{"id":"grp-1","name":"Engineering","users":["usr-1"]}`),
+			false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			d := schema.TestResourceDataRaw(t, resourceGroupMembership().Schema, map[string]interface{}{})
+			d.SetId("grp-1:usr-1")
+
+			diags := resourceGroupMembershipRead(context.Background(), d, newTestUserAPIClient(srv.URL))
+			if diags.HasError() != tc.wantErr {
+				t.Errorf("HasError = %v, want %v: %v", diags.HasError(), tc.wantErr, diags)
+			}
+			if gone := d.Id() == ""; gone != tc.wantIDGone {
+				t.Errorf("id cleared = %v, want %v: clearing it on a server error deletes a live "+
+					"membership from state", gone, tc.wantIDGone)
 			}
 		})
 	}
@@ -478,51 +590,34 @@ func TestGroupMembershipImportResolvesOrFails(t *testing.T) {
 }
 
 /*
-TestGroupMembershipAccConfigReferencesItsParents is GRP-05's real gate, and it is
-offline because the live row cannot carry the assertion by itself.
-
-GRP-05 destroys a user, a group and a membership in one step and passes only if
-Terraform orders the membership's DELETE first. But nothing in the diagnostics
-distinguishes the right order from the wrong one: if a parent went first, the
-membership's DELETE would 404 -- and GRP-D02 requires that 404 to be SWALLOWED.
-A mis-ordered destroy therefore succeeds silently, and CheckDestroy still finds
-everything gone.
-
-What actually produces the ordering is the config's REFERENCES: `group_id =
-checkpointsase_group.test.id` is what puts an edge in the dependency graph.
-Literal ids -- the natural thing to write once the ids are known -- give
-Terraform three unrelated resources and no edge at all. So the property is
-asserted where it lives, in the config the acceptance tests use, and it is
-checked on every PR rather than only when a credential is available.
-*/
-func TestGroupMembershipAccConfigReferencesItsParents(t *testing.T) {
-	config := testAccGroupMembershipConfig("tf-acc-group", "tf-acc@example.invalid")
-	for attr, want := range map[string]*regexp.Regexp{
-		"group_id": regexp.MustCompile(`group_id\s*=\s*checkpointsase_group\.test\.id`),
-		"user_id":  regexp.MustCompile(`user_id\s*=\s*checkpointsase_user\.test\.id`),
-	} {
-		if !want.MatchString(config) {
-			t.Errorf("the membership's %s is not a reference to its parent (want %s). A literal "+
-				"id leaves no edge in the dependency graph, and a mis-ordered destroy is "+
-				"invisible: the membership's DELETE 404s and GRP-D02 requires that to be "+
-				"swallowed", attr, want)
-		}
-	}
-}
-
-/*
 TestAccCheckpointsaseGroupMembership_basic covers GRP-04: apply a user, a group
 and a membership joining them, then remove ONLY the membership block and apply
 again. Both parents must survive.
 
-The surviving-parents assertion goes through the API rather than through state,
-and deliberately. Step 2's state is not evidence: Terraform refreshes the group
-BEFORE destroying the membership and does not re-read it afterwards, since the
-group itself has no changes -- so `users.#` in the post-apply state still shows
-the member that was just removed. A check written on that attribute passes when
-the membership was not removed at all, and fails when it was. Reading the group
-fresh through findGroupByID is the only version of this row that measures the
-right thing.
+THE STEP BOUNDARIES ARE THE WHOLE DESIGN HERE, because state is not evidence at
+the moment most assertions want to read it. step.Check runs against the state
+returned by the apply it belongs to, with NO refresh first --
+testing_new_config.go takes the state at line 79 and calls Check at line 99,
+while the post-apply refresh is at line 146, after both. So:
+
+  - Step 1 must NOT assert the group's `users` list. The group is created before
+    the membership, and resourceGroupCreate ends in a Read that ran while the
+    group still had no members, so state holds an empty list. Review caught an
+    earlier version asserting users.# == 1 here: that assertion could never pass,
+    whatever the provider did.
+  - Step 2 re-applies the same configuration, which begins by refreshing. Only
+    then does the group's state carry the member, so that is where the `users`
+    assertion lives.
+  - Step 3 removes the membership block, and asserts the parents SURVIVE, which is
+    what the row actually specifies: both still in state, with the same ids they
+    had in step 1.
+
+Step 3's live half reads the API rather than state, and for the mirror-image
+reason: Terraform refreshes the group before destroying the membership and does
+not re-read it afterwards, since the group has no changes of its own -- so
+`users.#` in step 3's state still shows the member that was just removed. A check
+written on that attribute passes when the membership was NOT removed and fails
+when it was.
 */
 func TestAccCheckpointsaseGroupMembership_basic(t *testing.T) {
 	suffix := randStringBytesRmndr()
@@ -555,8 +650,18 @@ func TestAccCheckpointsaseGroupMembership_basic(t *testing.T) {
 						}
 						return nil
 					},
-					// The group's own read model is where a membership becomes
-					// visible: one member, and it is this user.
+					// NO assertion on checkpointsase_group.test.users here. See
+					// the note above: the group's Read ran before the member
+					// existed, and this step does not refresh.
+				),
+			},
+			// The same configuration again. The step refreshes before it plans,
+			// so this is the first point at which the group's state can carry
+			// the member -- and the plan must still be empty, which is what
+			// makes the membership's own read-back consistent.
+			{
+				Config: testAccGroupMembershipConfig(groupName, email),
+				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr("checkpointsase_group.test", "users.#", "1"),
 					resource.TestCheckResourceAttrPair(
 						"checkpointsase_group.test", "users.0",
@@ -574,6 +679,11 @@ func TestAccCheckpointsaseGroupMembership_basic(t *testing.T) {
 						}
 						return nil
 					},
+					// The row's actual requirement: the parents are still there,
+					// and are the SAME objects -- not replacements.
+					testAccCheckResourceIDUnchanged("checkpointsase_group.test", &groupID),
+					testAccCheckResourceIDUnchanged("checkpointsase_user.test", &userID),
+					// And they are still there in the tenant, not just in state.
 					testAccCheckGroupMembershipRemovedAndParentsAlive(&groupID, &userID),
 				),
 			},
@@ -582,17 +692,59 @@ func TestAccCheckpointsaseGroupMembership_basic(t *testing.T) {
 }
 
 /*
+testAccCheckResourceIDUnchanged asserts a resource is still in state under the
+same id it had earlier in the test.
+
+Both halves matter for GRP-04. Absent from state means the parent was destroyed
+along with the membership -- the failure this whole resource is written to avoid.
+A DIFFERENT id means it was replaced: every attribute of both parents is ForceNew
+(neither /v3/groups nor /v3/users has an update endpoint), so a replacement is a
+delete and a recreate, which for a group would silently drop every other
+membership in it.
+
+The id is taken by pointer because the closure is built before the step that
+captures it has run.
+*/
+func testAccCheckResourceIDUnchanged(name string, want *string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		if *want == "" {
+			return fmt.Errorf("no id was captured for %s; an earlier step's Check did not run", name)
+		}
+		rs, ok := s.RootModule().Resources[name]
+		if !ok {
+			return fmt.Errorf("%s is no longer in state: removing a membership must not remove "+
+				"either parent", name)
+		}
+		if rs.Primary.ID != *want {
+			return fmt.Errorf("%s id changed from %s to %s: removing a membership must not "+
+				"replace either parent", name, *want, rs.Primary.ID)
+		}
+		return nil
+	}
+}
+
+/*
 TestAccCheckpointsaseGroupMembership_destroyOrder covers GRP-05: one apply of all
 three resources, then the driver's own full destroy at the end of the test.
 
-Read TestGroupMembershipAccConfigReferencesItsParents before relying on this row.
-The destroy completing without error is NECESSARY but not sufficient: a
-mis-ordered destroy would delete a parent first, the membership's DELETE would
-404, and GRP-D02 requires that 404 to be swallowed -- so the wrong order also
-"passes". The ordering itself is gated offline, on the references in the config
-this test shares. What this row adds that the offline test cannot is that a real
-tenant is left with nothing behind: CheckDestroy proves the pairing, the user and
-the group are all gone.
+WHAT THIS ROW CANNOT PROVE, said plainly so that a green run is not mistaken for
+evidence of ordering: it cannot tell a correct destroy order from a wrong one. If
+a parent were destroyed first the membership's DELETE would 404 -- and GRP-D02
+requires that 404 to be SWALLOWED -- so the destroy succeeds either way and
+CheckDestroy still finds everything gone.
+
+The ordering is produced by Terraform core from the config's references to the
+parents' ids. It is not provider behaviour, and nothing available here observes
+it. An earlier version of this file substituted a regex over the config string for
+that assertion; review defeated it by replacing both references with literal ids
+while the test still passed, so it was deleted rather than left as decoration. A
+documented limitation beats a test that cannot fail. If this ever needs a real
+gate, it is an hclparse of the config asserting the reference edges -- not a
+substring search.
+
+What the row does prove is worth the live minutes: three resources that reference
+one another apply cleanly, and a real tenant is left with nothing behind, since
+CheckDestroy verifies the pairing, the user and the group are all gone.
 */
 func TestAccCheckpointsaseGroupMembership_destroyOrder(t *testing.T) {
 	suffix := randStringBytesRmndr()
@@ -621,11 +773,19 @@ offline half -- that Create surfaces the failure and writes no id rather than
 swallowing it the way Delete swallows a 404 -- is
 TestGroupMembershipCreateSurfacesANotFound.
 
-The pattern is deliberately broad. appendErrorDiags prefers the response body
-over the status line, and an id of the right SHAPE that names nothing may come
-back as a 404 or, if the server validates it as an object id first, as a 400. The
-row's requirement is that the apply fails and no state is written; which of the
-two the tenant says is not the provider's behaviour.
+The pattern is ANCHORED ON THE PROVIDER'S OWN SUMMARY, and it has to be. The
+previous version was a bare alternation that included the word "invalid", which
+an authentication failure satisfies -- so the row would have passed on an expired
+credential without ever reaching the endpoint it names. "Unable to add member to
+group" is the summary resourceGroupMembershipCreate attaches and nothing else
+does, so it proves the failure came from this call.
+
+The status term stays as a secondary requirement rather than the primary one
+because appendErrorDiags prefers the response BODY over the status line: an id of
+the right shape that names nothing may come back as a 404, or as a 400 if the
+server validates the id format first, and the body may spell either as words. If
+a live run fails on the second term alone, read the body it reports and widen that
+term -- do not remove the summary anchor.
 */
 func TestAccCheckpointsaseGroupMembership_nonexistentGroup(t *testing.T) {
 	config := `
@@ -641,8 +801,9 @@ resource "checkpointsase_group_membership" "test" {
 		ProviderFactories: testAccProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config:      config,
-				ExpectError: regexp.MustCompile(`(?i)404|400|not.?found|does not exist|invalid`),
+				Config: config,
+				ExpectError: regexp.MustCompile(
+					`(?s)Unable to add member to group.*(?i:404|400|not.?found|does not exist|no such)`),
 			},
 		},
 	})
@@ -746,9 +907,12 @@ func testAccCheckGroupMembershipRemovedAndParentsAlive(groupID, userID *string) 
 /*
 testAccGroupMembershipConfig is the configuration GRP-04 and GRP-05 share.
 
-The two ids are REFERENCES, not literals, and that is the load-bearing detail of
-GRP-05 -- see TestGroupMembershipAccConfigReferencesItsParents, which asserts it
-offline because a mis-ordered destroy produces no diagnostic.
+The two ids are REFERENCES, not literals, and that is load-bearing: the references
+are what put edges in Terraform's dependency graph, and the edges are what order
+the membership's DELETE before either parent's. Nothing in this suite can observe
+that ordering -- see the note on
+TestAccCheckpointsaseGroupMembership_destroyOrder -- so if you replace either
+reference with a literal id, no test will tell you.
 */
 func testAccGroupMembershipConfig(groupName, email string) string {
 	return testAccGroupMembershipConfigParentsOnly(groupName, email) + `

@@ -3,6 +3,7 @@ package checkpointsase
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
@@ -20,6 +21,19 @@ would have been ambiguous, because "-" IS in that character class -- and so is
 "_", which rules that out too.
 */
 const groupMembershipIDSeparator = ":"
+
+/*
+groupMembershipIDHalf is the charset each half of the id must match.
+
+It is EnglishNumericId from the API document less the empty case: the document's
+own pattern is ^[a-zA-Z0-9_\-]*$, which permits "". Anything outside this class
+cannot be an id the server assigned, and accepting it means issuing a request
+against a path segment that never existed. The reachable case is WHITESPACE: a
+copy-paste into `terraform import` carries a trailing space or a newline, and
+" grp1" would otherwise be sent as %20grp1 -- a 404 the operator cannot explain,
+or worse, a match against nothing while Terraform reports drift forever.
+*/
+var groupMembershipIDHalf = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 /*
 resourceGroupMembership Setup the Group Membership join resource.
@@ -260,6 +274,19 @@ func parseGroupMembershipID(id string) (string, string, error) {
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", fmt.Errorf("group membership id %q is not in the form "+
 			"<group_id>%s<user_id>", id, groupMembershipIDSeparator)
+	}
+	// Which half is wrong, and what it was. " grp1:usr1" and "grp1:usr1\n" are
+	// both one paste away, and "invalid id" would send the operator looking at
+	// the wrong end of it.
+	for _, half := range []struct{ name, value string }{
+		{"group_id", parts[0]},
+		{"user_id", parts[1]},
+	} {
+		if !groupMembershipIDHalf.MatchString(half.value) {
+			return "", "", fmt.Errorf("group membership id %q has an unusable %s (%q): ids are "+
+				"letters, digits, underscores and hyphens only, with no surrounding whitespace",
+				id, half.name, half.value)
+		}
 	}
 	return parts[0], parts[1], nil
 }
