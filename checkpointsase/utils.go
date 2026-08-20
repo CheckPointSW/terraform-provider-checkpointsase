@@ -2,17 +2,21 @@ package checkpointsase
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math/rand"
 	"net"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
@@ -1708,4 +1712,136 @@ is no update endpoint, so "changing" one means deleting the account either way.
 */
 func suppressDiffOnEmptyOldValue(_, old, _ string, d *schema.ResourceData) bool {
 	return old == "" && d != nil && d.Id() != ""
+}
+
+/*
+validateSortDirections rejects a sort map whose values are not asc/desc.
+
+The API's `sort` parameter on GET /v3/users is an object of enum strings, and the
+enum is the whole of its validation -- a typo like {email = "ascending"} is
+otherwise a request the server rejects after Terraform has already reported a
+valid plan.
+
+Only checkpointsase_users can be validated this way. GET /v3/groups declares its
+`sort` as a bare string with no documented grammar, so its schema entry carries
+no ValidateFunc at all; see the comment there.
+
+  - @param v interface{} - the configured map, which schemaMap.validateMap passes as map[string]interface{}
+  - @param p cty.Path - the attribute path, so a diagnostic points at the right argument
+
+@return diag.Diagnostics
+*/
+func validateSortDirections(v interface{}, p cty.Path) diag.Diagnostics {
+	var diags diag.Diagnostics
+	raw, ok := v.(map[string]interface{})
+	if !ok {
+		// schemaMap.validateMap only reaches validateFunc with a
+		// map[string]interface{}, so this is unreachable through Terraform. It
+		// is here so a direct caller (a test, or a later refactor that moves the
+		// attribute) gets a diagnostic instead of a panic.
+		return append(diags, diag.Diagnostic{
+			Severity:      diag.Error,
+			Summary:       "Invalid sort",
+			Detail:        fmt.Sprintf("sort must be a map of field to direction, got %T.", v),
+			AttributePath: p,
+		})
+	}
+	// Sorted so a map with two bad entries always reports them in the same
+	// order; a diagnostic whose wording depends on Go's map iteration is a
+	// flaky test waiting to happen.
+	for _, field := range sortedMapKeys(raw) {
+		s, _ := raw[field].(string)
+		if s != "asc" && s != "desc" {
+			diags = append(diags, diag.Diagnostic{
+				Severity:      diag.Error,
+				Summary:       "Invalid sort direction",
+				Detail:        fmt.Sprintf("sort[%s] is %q; it must be \"asc\" or \"desc\".", field, s),
+				AttributePath: p,
+			})
+		}
+	}
+	return diags
+}
+
+/*
+expandSortDirections converts a configured TypeMap into the map[string]string the
+generated Sort builder takes.
+
+  - @param raw interface{} - the value d.Get returned for a TypeMap attribute
+
+@return map[string]string - empty (not nil) when nothing was configured
+*/
+func expandSortDirections(raw interface{}) map[string]string {
+	configured, ok := raw.(map[string]interface{})
+	if !ok {
+		return map[string]string{}
+	}
+	sortOrder := make(map[string]string, len(configured))
+	for field, direction := range configured {
+		s, _ := direction.(string)
+		sortOrder[field] = s
+	}
+	return sortOrder
+}
+
+/*
+canonicalSortDirections renders a sort map as one deterministic string, for use in
+a data source's derived ID. Map iteration order is random in Go, so joining the
+pairs unsorted would give the same configuration a different ID on every process.
+*/
+func canonicalSortDirections(sortOrder map[string]string) string {
+	pairs := make([]string, 0, len(sortOrder))
+	for _, field := range sortedMapKeys(sortOrder) {
+		pairs = append(pairs, field+":"+sortOrder[field])
+	}
+	return strings.Join(pairs, ",")
+}
+
+/*
+sortedMapKeys returns a map's keys in sorted order. Generic over the value type so
+it serves both map[string]string and map[string]interface{}.
+*/
+func sortedMapKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+/*
+dataSourceArgumentDigest builds the short, stable suffix a parameterised data
+source appends to its base ID.
+
+The parts are joined with a newline, which cannot appear in any of them, so two
+different argument sets cannot collide by concatenation (the mistake a separator
+like "-" would allow). Six bytes of SHA-256 keeps the ID readable while leaving
+collisions far out of reach for the handful of instances one configuration holds.
+
+Same construction as updatableObjectsDataSourceID, which predates it; that
+function is left as it is rather than rewritten in terms of this one, because it
+carries its own base-name special case and is covered by its own tests.
+*/
+func dataSourceArgumentDigest(parts ...string) string {
+	digest := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return hex.EncodeToString(digest[:6])
+}
+
+/*
+coerceNilStringsToEmpty returns an empty slice in place of a nil one.
+
+BELT-AND-BRACES, NOT LOAD-BEARING. Measured 2026-08-20:
+schema.ResourceData.Set already normalises a nil slice to an empty list, including
+for a list nested inside a list element, so state holds [] either way. This exists
+so that a flatten function handling four optional lists says once, legibly, that
+nil is the routine case rather than repeating a four-line if. Do not write a
+comment claiming state would hold a null without it, and do not write a test
+asserting that -- such a test cannot fail.
+*/
+func coerceNilStringsToEmpty(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }

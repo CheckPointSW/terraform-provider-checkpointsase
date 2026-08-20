@@ -73,6 +73,8 @@ func Provider() *schema.Provider {
 			"checkpointsase_web_categories":                   dataSourceWebCategories(),
 			"checkpointsase_application_control_applications": dataSourceApplicationControlApplications(),
 			"checkpointsase_updatable_objects":                dataSourceUpdatableObjects(),
+			"checkpointsase_users":                            dataSourceUsers(),
+			"checkpointsase_groups":                           dataSourceGroups(),
 		},
 		ConfigureContextFunc: providerConfigure,
 	}
