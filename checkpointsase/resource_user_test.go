@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -158,6 +160,19 @@ func TestUserRejectsMalformedEmailAtPlanTime(t *testing.T) {
 		{"embedded space", "some one@example.com", true},
 		{"ordinary address", "someone@example.com", false},
 		{"plus addressing and a sub-domain", "some.one+tag@mail.example.co.uk", false},
+		// USR-N01's PREMISE, and the row confirms the division of labour rather
+		// than a bug. The server refuses a reserved special-use TLD at APPLY
+		// time -- measured, 400 `"data.email" must be a valid email`, see
+		// testAccUserEmailDomain -- and this validator deliberately does not try
+		// to reproduce that: it checks SHAPE, the server checks the IANA
+		// registry. Tightening it here to reject .invalid would put a moving
+		// external list into a plan-time regex, and every address the registry
+		// later admits would be refused with no workaround available to the
+		// operator. The address is split so the fixture tripwire
+		// (TestNoFixtureInvitesAnUnroutableDomain) does not read this row as an
+		// acceptance fixture; nothing here ever reaches a server.
+		{"a reserved TLD is the server's call, not the schema's",
+			"someone@example." + "invalid", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			diags := resourceUser().Validate(terraform.NewResourceConfigRaw(
@@ -267,8 +282,8 @@ func TestUserReadPagesPastTheFirstPage(t *testing.T) {
 		wantPages  int
 		wantIDGone bool
 	}{
-		{"the user is on page 2", "usr-2", true, "second@example.invalid", 2, false},
-		{"the user is on page 1", "usr-1", true, "first@example.invalid", 1, false},
+		{"the user is on page 2", "usr-2", true, "second@example.com", 2, false},
+		{"the user is on page 1", "usr-1", true, "first@example.com", 1, false},
 		{"the user is in neither page", "usr-404", false, "", 2, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -280,10 +295,10 @@ func TestUserReadPagesPastTheFirstPage(t *testing.T) {
 				switch page {
 				case "1":
 					_, _ = w.Write([]byte(userListPage(1, 2, 2,
-						`{"id":"usr-1","email":"first@example.invalid"}`)))
+						`{"id":"usr-1","email":"first@example.com"}`)))
 				case "2":
 					_, _ = w.Write([]byte(userListPage(2, 2, 2,
-						`{"id":"usr-2","email":"second@example.invalid","emailVerified":true,"username":"second","roles":["Member"]}`)))
+						`{"id":"usr-2","email":"second@example.com","emailVerified":true,"username":"second","roles":["Member"]}`)))
 				default:
 					t.Errorf("unexpected page %q requested", page)
 					_, _ = w.Write([]byte(userListPage(1, 2, 2, "")))
@@ -315,6 +330,133 @@ func TestUserReadPagesPastTheFirstPage(t *testing.T) {
 }
 
 /*
+TestUserReadTreatsATerminatedUserAsAbsent is the gate on the SOFT DELETE, and it
+covers a defect the whole offline suite was green over.
+
+MEASURED against the tenant: DELETE /v3/users/{id} answers 200 and the account
+STAYS in GET /v3/users with `terminated: true` -- itemsTotal still counts it.
+Three probe users deleted that way were all still listed afterwards. The spec
+says nothing about it, in either direction.
+
+Groups behave the OTHER WAY ROUND: a deleted group is gone from GET /v3/groups
+outright. That asymmetry is why findGroupByID has no equivalent check, and
+TestGroupReadHasNoTerminatedCheck pins it so nobody "completes" the fix by
+copying this one across.
+
+What missing this cost is not cosmetic. findUserByID matched the terminated
+record and Read reported it found, so the id stayed in state FOREVER: a user
+deleted from the console never showed up as drift -- USR-D01 cannot pass without
+this -- and an account the tenant had already destroyed kept planning empty.
+
+The terminated: false and terminated: absent rows are the other half of the
+guard. Overlay entry A21b makes every User field optional, so Terminated is a
+pointer and an absent key reads as nil; a filter that treated "not false" or
+"key present" as terminated would clear the id for every live user on every
+refresh and plan a replacement for the whole tenant.
+*/
+func TestUserReadTreatsATerminatedUserAsAbsent(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		record     string
+		wantIDGone bool
+	}{
+		{"terminated is true: the account was soft-deleted",
+			`{"id":"usr-1","email":"ada@example.com","username":"ada","terminated":true}`, true},
+		{"terminated is false: an ordinary live account",
+			`{"id":"usr-1","email":"ada@example.com","username":"ada","terminated":false}`, false},
+		{"terminated is absent: A21b makes every field optional",
+			`{"id":"usr-1","email":"ada@example.com","username":"ada"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				// itemsTotal counts the terminated record too, exactly as the
+				// tenant reports it. A fix that leaned on the count rather than
+				// on the flag would pass here for the wrong reason.
+				_, _ = w.Write([]byte(userListPage(1, 1, 1, tc.record)))
+			}))
+			defer srv.Close()
+
+			d := schema.TestResourceDataRaw(t, resourceUser().Schema, map[string]interface{}{
+				"email":          "ada@example.com",
+				"invite_message": "Welcome aboard",
+			})
+			d.SetId("usr-1")
+
+			diags := resourceUserRead(context.Background(), d, newTestUserAPIClient(srv.URL))
+			if diags.HasError() {
+				t.Fatalf("Read failed: %v. A soft-deleted user is DRIFT, not an error: "+
+					"failing here would leave the operator removing the resource from "+
+					"state by hand: %v", diags, diags)
+			}
+			if gone := d.Id() == ""; gone != tc.wantIDGone {
+				t.Fatalf("id cleared = %v, want %v (id is %q). DELETE /v3/users/{id} is a "+
+					"SOFT delete: a terminated record must read back as absent, or the "+
+					"resource never leaves state", gone, tc.wantIDGone, d.Id())
+			}
+			if tc.wantIDGone {
+				return
+			}
+			// A live user must still be fully populated; a filter that cleared
+			// state instead of the id would pass the assertion above.
+			if got := d.Get("username").(string); got != "ada" {
+				t.Errorf("username = %q, want \"ada\": Read stopped populating a live user", got)
+			}
+		})
+	}
+}
+
+/*
+TestFindUserRecordByIDStillSeesATerminatedUser is why there are TWO finders and
+not one.
+
+findUserByID applies the resource's rule -- a soft-deleted account is absent --
+and every caller that answers "is this user still there" wants it.
+findUserRecordByID reports what the collection actually contains, and exactly one
+caller needs that: testAccCheckUserDestroy, which must accept ABSENT OR
+TERMINATED and therefore has to be able to see the terminated record in order to
+accept it. Routing that check through the filtered finder would make "the account
+was destroyed" and "the filter is broken and hides live accounts" report
+identically, so the row would pass either way.
+
+The `users` DATA SOURCE is deliberately not in either list: it calls ListUsers
+directly and exposes `terminated` as an attribute of every row, so it is
+unaffected by this change and keeps listing soft-deleted accounts. Hiding rows
+from a read-only listing that has a column for exactly that state would be the
+surprising behaviour, so it is left alone on purpose.
+*/
+func TestFindUserRecordByIDStillSeesATerminatedUser(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(userListPage(1, 1, 1,
+			`{"id":"usr-1","email":"ada@example.com","terminated":true}`)))
+	}))
+	defer srv.Close()
+	client := newTestUserAPIClient(srv.URL)
+
+	user, found, _, err := findUserRecordByID(context.Background(), client, "usr-1")
+	if err != nil {
+		t.Fatalf("findUserRecordByID failed: %v", err)
+	}
+	if !found {
+		t.Fatal("findUserRecordByID did not find a terminated user. It reports what the " +
+			"collection contains; the soft-delete rule belongs to findUserByID, and " +
+			"testAccCheckUserDestroy cannot accept a terminated record it cannot see")
+	}
+	if !user.GetTerminated() {
+		t.Error("the record came back with terminated = false; the flag is what " +
+			"testAccCheckUserDestroy accepts a destroy on")
+	}
+
+	if _, found, _, err := findUserByID(context.Background(), client, "usr-1"); err != nil {
+		t.Fatalf("findUserByID failed: %v", err)
+	} else if found {
+		t.Error("findUserByID reported a terminated user as found; it is the finder that " +
+			"applies the soft-delete rule")
+	}
+}
+
+/*
 TestUserReadNeverWritesEmailVerifiedIntoState is the regression gate on the
 worst defect this resource has had.
 
@@ -341,12 +483,12 @@ func TestUserReadNeverWritesEmailVerifiedIntoState(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		// The tenant's truth: she verified her address after being invited.
 		_, _ = w.Write([]byte(userListPage(1, 1, 1,
-			`{"id":"usr-1","email":"ada@example.invalid","emailVerified":true}`)))
+			`{"id":"usr-1","email":"ada@example.com","emailVerified":true}`)))
 	}))
 	defer srv.Close()
 
 	d := schema.TestResourceDataRaw(t, resourceUser().Schema, map[string]interface{}{
-		"email":          "ada@example.invalid",
+		"email":          "ada@example.com",
 		"invite_message": "Welcome aboard",
 		"email_verified": false,
 	})
@@ -362,8 +504,8 @@ func TestUserReadNeverWritesEmailVerifiedIntoState(t *testing.T) {
 	}
 	// The rest of Read must still work; a fix that stopped setting everything
 	// would pass the assertion above for the wrong reason.
-	if got := d.Get("email").(string); got != "ada@example.invalid" {
-		t.Errorf("email = %q, want ada@example.invalid: Read stopped populating state", got)
+	if got := d.Get("email").(string); got != "ada@example.com" {
+		t.Errorf("email = %q, want ada@example.com: Read stopped populating state", got)
 	}
 }
 
@@ -384,7 +526,7 @@ still force replacement.
 */
 func TestUserPostImportPlanDoesNotReplaceTheUser(t *testing.T) {
 	config := map[string]interface{}{
-		"email":          "ada@example.invalid",
+		"email":          "ada@example.com",
 		"invite_message": "Welcome aboard",
 		"idp_type":       "database",
 	}
@@ -400,7 +542,7 @@ func TestUserPostImportPlanDoesNotReplaceTheUser(t *testing.T) {
 			name: "state as an import leaves it",
 			state: map[string]string{
 				"id":       "usr-1",
-				"email":    "ada@example.invalid",
+				"email":    "ada@example.com",
 				"username": "ada",
 			},
 			wantRequiresNew: false,
@@ -409,7 +551,7 @@ func TestUserPostImportPlanDoesNotReplaceTheUser(t *testing.T) {
 			name: "a real change to a resource this provider created",
 			state: map[string]string{
 				"id":             "usr-1",
-				"email":          "ada@example.invalid",
+				"email":          "ada@example.com",
 				"invite_message": "Some older message",
 				"idp_type":       "database",
 			},
@@ -477,7 +619,7 @@ func TestExpandUserProfileOmitsAnEmptyBlock(t *testing.T) {
 				return
 			}
 			payload := perimeter81Sdk.CreateUserDto{
-				Email: "ada@example.invalid", InviteMessage: "hi", ProfileData: got,
+				Email: "ada@example.com", InviteMessage: "hi", ProfileData: got,
 			}
 			body, err := json.Marshal(payload)
 			if err != nil {
@@ -532,17 +674,17 @@ func TestUserCreateSendsTheWriteOnlyAttributes(t *testing.T) {
 		if r.Method == http.MethodPost {
 			gotMethod, gotPath = r.Method, r.URL.Path
 			gotBody, _ = io.ReadAll(r.Body)
-			_, _ = w.Write([]byte(`{"id":"usr-1","email":"ada@example.invalid"}`))
+			_, _ = w.Write([]byte(`{"id":"usr-1","email":"ada@example.com"}`))
 			return
 		}
 		// Create ends by calling Read.
 		_, _ = w.Write([]byte(userListPage(1, 1, 1,
-			`{"id":"usr-1","email":"ada@example.invalid","username":"ada"}`)))
+			`{"id":"usr-1","email":"ada@example.com","username":"ada"}`)))
 	}))
 	defer srv.Close()
 
 	d := schema.TestResourceDataRaw(t, resourceUser().Schema, map[string]interface{}{
-		"email":          "ada@example.invalid",
+		"email":          "ada@example.com",
 		"invite_message": "Welcome aboard",
 		"idp_type":       "database",
 		"email_verified": true,
@@ -563,7 +705,7 @@ func TestUserCreateSendsTheWriteOnlyAttributes(t *testing.T) {
 		t.Fatalf("create body was not JSON (%v): %s", err, gotBody)
 	}
 	for key, want := range map[string]interface{}{
-		"email":         "ada@example.invalid",
+		"email":         "ada@example.com",
 		"inviteMessage": "Welcome aboard",
 		"idpType":       "database",
 		"emailVerified": true,
@@ -596,7 +738,7 @@ concession: `.#` and `.%` keys whose value is "0" are ignored, which is why a
 configuration setting access_groups or profile_data would need those ignored too.
 */
 func TestUserImportStateVerifyIgnoreMatchesWhatImportOmits(t *testing.T) {
-	const record = `{"id":"usr-1","email":"ada@example.invalid","username":"ada",` +
+	const record = `{"id":"usr-1","email":"ada@example.com","username":"ada",` +
 		`"emailVerified":true,"roles":["Member"],"invitationAttempts":1}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -612,7 +754,7 @@ func TestUserImportStateVerifyIgnoreMatchesWhatImportOmits(t *testing.T) {
 
 	// The state an apply leaves, from the same configuration USR-I01 applies.
 	applied := schema.TestResourceDataRaw(t, r.Schema, map[string]interface{}{
-		"email":          "ada@example.invalid",
+		"email":          "ada@example.com",
 		"invite_message": "Terraform acceptance test, safe to ignore.",
 		"email_verified": true,
 	})
@@ -694,7 +836,7 @@ func TestUserImportStateVerifyIgnoreMatchesWhatImportOmits(t *testing.T) {
 // GET-by-id).
 func TestAccCheckpointsaseUser_basic(t *testing.T) {
 	suffix := randStringBytesRmndr()
-	email := "tf-acc-" + suffix + "@example.invalid"
+	email := testAccUserEmail(suffix)
 	resource.Test(t, resource.TestCase{
 		PreCheck:          func() { testAccPreCheck(t) },
 		ProviderFactories: testAccProviderFactories,
@@ -743,8 +885,8 @@ func TestAccCheckpointsaseUser_basic(t *testing.T) {
 // express "differs from the previous step".
 func TestAccCheckpointsaseUser_replaceOnEmailChange(t *testing.T) {
 	suffix := randStringBytesRmndr()
-	first := "tf-acc-" + suffix + "-a@example.invalid"
-	second := "tf-acc-" + suffix + "-b@example.invalid"
+	first := testAccUserEmail(suffix + "-a")
+	second := testAccUserEmail(suffix + "-b")
 	var firstID string
 
 	resource.Test(t, resource.TestCase{
@@ -782,7 +924,7 @@ func TestAccCheckpointsaseUser_replaceOnEmailChange(t *testing.T) {
 // value in state would only restate the configuration.
 func TestAccCheckpointsaseUser_profileAndAccessGroups(t *testing.T) {
 	suffix := randStringBytesRmndr()
-	email := "tf-acc-" + suffix + "@example.invalid"
+	email := testAccUserEmail(suffix)
 	config := fmt.Sprintf(`
 resource "checkpointsase_user" "test" {
   email          = %[1]q
@@ -835,7 +977,7 @@ own destroy removes it.
 */
 func TestAccCheckpointsaseUser_rejectsDuplicateEmail(t *testing.T) {
 	suffix := randStringBytesRmndr()
-	email := "tf-acc-" + suffix + "@example.invalid"
+	email := testAccUserEmail(suffix)
 	config := fmt.Sprintf(`
 resource "checkpointsase_user" "first" {
   email          = %[1]q
@@ -891,7 +1033,7 @@ directly, and on every PR rather than only on a live run.
 */
 func TestAccCheckpointsaseUser_driftWhenDeletedOutOfBand(t *testing.T) {
 	suffix := randStringBytesRmndr()
-	email := "tf-acc-" + suffix + "@example.invalid"
+	email := testAccUserEmail(suffix)
 	var userID string
 
 	resource.Test(t, resource.TestCase{
@@ -950,25 +1092,134 @@ func testAccDeleteUserOutOfBand(t *testing.T, id *string) func() {
 	}
 }
 
-// testAccCheckUserDestroy verifies USR-03's second half. /v3/users has no
-// GET-by-id, so absence is proved through the list endpoint -- and through
-// findUserByID rather than a single page, so a tenant larger than one page
-// cannot report a surviving account as destroyed.
+/*
+testAccCheckUserDestroy verifies USR-03's second half: ABSENT OR TERMINATED.
+
+/v3/users has no GET-by-id, so absence is proved through the list endpoint -- and
+through a paginated walk rather than a single page, so a tenant larger than one
+page cannot report a surviving account as destroyed.
+
+THE ACCEPTED OUTCOME IS NOT "ABSENT". DELETE /v3/users/{id} is a SOFT delete,
+measured: it answers 200 and the account stays in GET /v3/users with
+`terminated: true`, still counted by itemsTotal. The previous version of this
+function asserted the id was gone from the collection and therefore COULD NOT
+PASS against the real tenant, however correct the provider was.
+
+findUserRecordByID, not findUserByID, and that is the point of there being two:
+this check has to SEE the terminated record in order to accept it. Routing it
+through the filtered finder would make "the account was destroyed" and "the
+filter is broken and hides live accounts" report identically, and the row would
+pass either way. Asserting the flag instead proves the server actually marked it.
+*/
 func testAccCheckUserDestroy(s *terraform.State) error {
 	client := testAccProvider.Meta().(*perimeter81Sdk.APIClient)
 	for _, rs := range s.RootModule().Resources {
 		if rs.Type != "checkpointsase_user" {
 			continue
 		}
-		_, found, _, err := findUserByID(context.Background(), client, rs.Primary.ID)
+		user, found, _, err := findUserRecordByID(context.Background(), client, rs.Primary.ID)
 		if err != nil {
 			return fmt.Errorf("listing users to verify destroy: %w", err)
 		}
-		if found {
-			return fmt.Errorf("user %s still exists after destroy", rs.Primary.ID)
+		if found && !user.GetTerminated() {
+			return fmt.Errorf("user %s is still in /v3/users with terminated = false after "+
+				"destroy: the DELETE left a live account. A soft-deleted account is "+
+				"expected to remain listed, but only with terminated = true",
+				rs.Primary.ID)
 		}
 	}
 	return nil
+}
+
+/*
+testAccUserEmailDomain is the domain EVERY acceptance fixture in this package
+invites users at, and it is defined once here so that a change is one edit.
+
+IT IS example.com, NOT example.invalid, AND THAT IS NOT AN OVERSIGHT. Do not
+"correct" it back.
+
+RFC 2606 reserves .invalid for exactly this purpose -- a TLD guaranteed never to
+resolve, so a test address can never reach a real mailbox -- and every fixture in
+this file used it until the first live probe. Measured against the tenant:
+
+	tfprobe@example.invalid -> 400  "data.email" must be a valid email
+	tfprobe@example.com     -> 201  ok
+	tfprobe@example.org     -> 201  ok
+
+That wording is Joi's, and Joi's string().email() validates the TLD against the
+IANA registry by default. .invalid is a SPECIAL-USE TLD, reserved rather than
+delegated, so it is not in that registry and the address is refused. The server
+is wrong -- the RFC exists precisely so that this address is safe -- and it is
+recorded as an API finding. It is not something this provider can work around,
+because the rejection happens on the server at apply time.
+
+So every user acceptance test would have failed at apply, and nothing offline
+could have told us: the httptest fixtures never reach the real validator.
+
+example.com is the fallback, also reserved (RFC 2606 s3) and equally unroutable
+to a real mailbox, and it is in the IANA registry so Joi takes it. The offline
+fixtures in this package were moved with it, even though they answer to an
+httptest server that would accept anything: one domain, so nobody copies a
+.invalid address out of an offline fixture into a live one.
+*/
+const testAccUserEmailDomain = "example.com"
+
+/*
+testAccUserEmail builds one acceptance fixture address from a random suffix.
+
+Every user address in this package goes through here so the domain above is the
+only place it is written. The suffix comes from randStringBytesRmndr, which is
+what keeps concurrent runs and re-runs after a failed destroy from colliding on
+an address the tenant already has.
+
+  - @param suffix string - the per-test random suffix, plus any per-resource discriminator
+
+@return string
+*/
+func testAccUserEmail(suffix string) string {
+	return "tf-acc-" + suffix + "@" + testAccUserEmailDomain
+}
+
+/*
+TestNoFixtureInvitesAnUnroutableDomain is a TRIPWIRE for the domain above, and it
+is here because the defect it guards has NO offline symptom of its own.
+
+Every user acceptance fixture in this package used @example.invalid, and the
+whole offline suite was green over it: an httptest server accepts any address, so
+nothing in CI could tell that every one of those applies would have died on a
+400 from the real validator. The only signal was a live probe.
+
+A tripwire is therefore the best available gate -- it costs nothing and it fires
+on the exact edit that reintroduces the problem, which is someone "correcting"
+an example.com fixture back to the RFC 2606 TLD. It is a GREP, so it is not a
+guard in the strong sense: an address assembled at runtime, or a different
+non-registry TLD, both walk past it. Comments are stripped first, or the
+paragraphs above -- which quote the rejected address on purpose -- would trip it.
+*/
+func TestNoFixtureInvitesAnUnroutableDomain(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Assembled from two pieces so this test does not report ITSELF: the needle
+	// is code, and a literal spelling of it here would be the first hit.
+	needle := "@" + "example.invalid"
+	blockComment := regexp.MustCompile(`(?s)/\*.*?\*/`)
+	lineComment := regexp.MustCompile(`(?m)//[^\n]*$`)
+	for _, name := range files {
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		code := blockComment.ReplaceAllString(string(src), "")
+		code = lineComment.ReplaceAllString(code, "")
+		if strings.Contains(code, needle) {
+			t.Errorf("%s builds a %s address in code. The server validates the TLD against "+
+				"the IANA registry and refuses that reserved TLD with a 400 at APPLY "+
+				"time, so an acceptance fixture using it can never pass; see "+
+				"testAccUserEmailDomain. Use testAccUserEmail instead", name, needle)
+		}
+	}
 }
 
 func testAccUserConfigBasic(email string) string {

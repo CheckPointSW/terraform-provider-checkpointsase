@@ -380,6 +380,69 @@ func TestGroupReadPagesPastTheFirstPage(t *testing.T) {
 }
 
 /*
+TestGroupReadHasNoTerminatedCheck PINS THE ASYMMETRY between users and groups,
+and it exists to stop the fix for the user soft delete from being "completed"
+here.
+
+MEASURED, both halves, against the tenant:
+
+  - DELETE /v3/users/{id} answers 200 and the account STAYS in GET /v3/users
+    with terminated: true, still counted by itemsTotal. findUserByID therefore
+    treats a terminated record as absent -- see
+    TestUserReadTreatsATerminatedUserAsAbsent.
+  - DELETE /v3/groups/{id} removes the group from GET /v3/groups OUTRIGHT. There
+    is no terminated field on the group read model, no terminated attribute on
+    this resource, and nothing for an equivalent check to test.
+
+So the symmetry is a trap: copying the user filter across would add a condition
+that never fires, and -- worse -- would invite the reverse mistake of dropping
+groups whose payload happens to carry a stray key. This test asserts both the
+absence of the attribute and the behaviour: a group record that arrives WITH
+"terminated": true, whether from a future server or a hand-written fixture, must
+still read back as PRESENT, because for groups that key means nothing.
+
+The other direction is already covered: GRP-D01's drift case
+(TestAccCheckpointsaseGroupMembership_* aside) rests on the group vanishing from
+the collection, which is what testAccCheckGroupDestroy asserts.
+*/
+func TestGroupReadHasNoTerminatedCheck(t *testing.T) {
+	if _, present := resourceGroup().Schema["terminated"]; present {
+		t.Error("checkpointsase_group grew a `terminated` attribute. Groups are HARD-deleted: " +
+			"a deleted group is gone from GET /v3/groups outright, and the read model has " +
+			"no such field. Only /v3/users soft-deletes")
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// A stray terminated: true on a GROUP. For users this is a soft delete;
+		// here it is a key with no meaning and must change nothing.
+		_, _ = w.Write([]byte(groupListPage(1, 1, 1,
+			`{"id":"grp-1","name":"Engineering","isDefault":false,"terminated":true,`+
+				`"users":["usr-1"],"networks":[],"applications":[],"vpnLocations":[]}`)))
+	}))
+	defer srv.Close()
+
+	d := schema.TestResourceDataRaw(t, resourceGroup().Schema, map[string]interface{}{})
+	d.SetId("grp-1")
+
+	if diags := resourceGroupRead(context.Background(), d, newTestUserAPIClient(srv.URL)); diags.HasError() {
+		t.Fatalf("Read failed: %v", diags)
+	}
+	if d.Id() != "grp-1" {
+		t.Fatal("resourceGroupRead cleared the id for a group carrying terminated: true. " +
+			"The user soft-delete filter has been copied onto the group path, where the " +
+			"field has no meaning: a live group would be dropped from state and recreated, " +
+			"and recreating a group silently drops every membership in it")
+	}
+	if got := d.Get("name").(string); got != "Engineering" {
+		t.Errorf("name = %q, want \"Engineering\": Read stopped populating the group", got)
+	}
+	if got := d.Get("users.#").(int); got != 1 {
+		t.Errorf("users.# = %d, want 1", got)
+	}
+}
+
+/*
 TestGroupReadSurvivesANullListBody covers the one failure mode in findGroupByID
 that is a provider CRASH rather than a wrong answer.
 

@@ -1138,7 +1138,7 @@ func TestUsersDataSourceReadEchoesTheServersPagination(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(userListPage(4, 9, 17,
-			`{"id":"usr-1","email":"nobody@example.invalid","roles":["Member"]}`)))
+			`{"id":"usr-1","email":"nobody@example.com","roles":["Member"]}`)))
 	}))
 	defer srv.Close()
 
@@ -1174,8 +1174,8 @@ func TestUsersDataSourceReadEchoesTheServersPagination(t *testing.T) {
 		t.Fatalf("data holds %d rows, want 1", len(rows))
 	}
 	row := rows[0].(map[string]interface{})
-	if row["email"] != "nobody@example.invalid" {
-		t.Errorf("data.0.email = %#v, want \"nobody@example.invalid\"", row["email"])
+	if row["email"] != "nobody@example.com" {
+		t.Errorf("data.0.email = %#v, want \"nobody@example.com\"", row["email"])
 	}
 	if roles := row["roles"].([]interface{}); len(roles) != 1 || roles[0] != "Member" {
 		t.Errorf("data.0.roles = %#v, want [\"Member\"]", row["roles"])

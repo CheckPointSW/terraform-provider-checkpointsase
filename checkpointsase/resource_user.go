@@ -199,9 +199,15 @@ func resourceUser() *schema.Resource {
 				Elem:        &schema.Schema{Type: schema.TypeString},
 			},
 			"terminated": {
-				Type:        schema.TypeBool,
-				Computed:    true,
-				Description: "Whether the account has been deleted. A user this resource manages reads back `false`.",
+				Type:     schema.TypeBool,
+				Computed: true,
+				Description: "Whether the account has been soft-deleted. `DELETE /v3/users/{id}` does " +
+					"not remove the record: the account keeps appearing in the collection with " +
+					"`terminated` set to `true`. A user this resource manages therefore always " +
+					"reads back `false` — a terminated account is treated as absent, so the " +
+					"resource leaves state and the next plan proposes a fresh invitation. Read " +
+					"`terminated` from the `checkpointsase_users` data source to see " +
+					"soft-deleted accounts, which it deliberately still lists.",
 			},
 			"invitation_attempts": {
 				Type:        schema.TypeInt,
@@ -338,7 +344,65 @@ default, which is the size the server is known to serve without complaint.
 const userListPageSize = 500
 
 /*
-findUserByID walks /v3/users page by page looking for one id.
+findUserByID answers "is this user still in the tenant", which is NOT the same
+question as "is this id still in the collection".
+
+DELETE /v3/users/{id} IS A SOFT DELETE. Measured against the tenant, not read
+anywhere in the spec: the DELETE answers 200 and the account stays in
+GET /v3/users with `terminated: true`, and itemsTotal keeps counting it. Three
+probe users deleted that way were all still listed afterwards. So a terminated
+record is reported ABSENT here, and the check lives in this function rather than
+in resourceUserRead so that every caller asking the existence question inherits
+it -- Read, and the parent-survival assertion in resource_group_membership_test.go,
+which likewise must not count a soft-deleted account as a surviving parent.
+
+Without this, findUserByID matched the terminated record, Read reported it found,
+and the id stayed in state FOREVER: a user deleted from the console never
+surfaced as drift (USR-D01), and an account the tenant no longer had kept
+planning empty. TestUserReadTreatsATerminatedUserAsAbsent is the gate.
+
+GROUPS ARE THE OTHER WAY ROUND and findGroupByID deliberately has no equivalent
+check: a deleted group disappears from GET /v3/groups outright, the read model
+has no `terminated` field at all, and inventing one there would only add a
+condition that can never fire. TestGroupReadHasNoTerminatedCheck pins that
+asymmetry.
+
+Two callers need the UNFILTERED view and go to findUserRecordByID instead:
+testAccCheckUserDestroy, which must accept absent OR terminated and so has to be
+able to see the terminated record, and this function. The `checkpointsase_users`
+DATA SOURCE is not affected either way -- it calls ListUsers directly and
+exposes `terminated` as an attribute of every row, which is the right behaviour
+for a read-only listing that has a column for exactly this state.
+
+  - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc.
+  - @param client *perimeter81Sdk.APIClient - the configured SDK client
+  - @param id string - the user id held in Terraform state
+
+@return (perimeter81Sdk.User, bool, *http.Response, error) - the user and whether it is
+present and live, plus the last response and error so callers can classify a failure
+with isNotFound
+*/
+func findUserByID(ctx context.Context, client *perimeter81Sdk.APIClient, id string) (perimeter81Sdk.User, bool, *http.Response, error) {
+	user, found, resp, err := findUserRecordByID(ctx, client, id)
+	if found && user.GetTerminated() {
+		// GetTerminated, not *user.Terminated: A21b makes every User field
+		// optional, so the pointer is nil whenever the key is absent, and the
+		// nil-safe accessor reads that as false. An absent key must mean "live"
+		// -- reading it as terminated would clear the id for every user in a
+		// tenant whose list omits the field.
+		var zero perimeter81Sdk.User
+		return zero, false, resp, nil
+	}
+	return user, found, resp, err
+}
+
+/*
+findUserRecordByID walks /v3/users page by page looking for one id and reports
+whatever it finds, terminated accounts included.
+
+Callers almost never want this: use findUserByID, which applies the soft-delete
+rule above. This one exists for testAccCheckUserDestroy, which has to accept a
+terminated record and therefore has to be able to see one.
 
 PAGING IS NOT OPTIONAL HERE. /v3/users has no GET-by-id, so the only way to
 answer "does this user still exist" is to read the collection -- and raising the
@@ -356,10 +420,11 @@ what keeps the loop finite if totalPage is ever wrong.
   - @param client *perimeter81Sdk.APIClient - the configured SDK client
   - @param id string - the user id held in Terraform state
 
-@return (perimeter81Sdk.User, bool, *http.Response, error) - the user and whether it was
-found, plus the last response and error so callers can classify a failure with isNotFound
+@return (perimeter81Sdk.User, bool, *http.Response, error) - the record and whether it was
+in the collection, plus the last response and error so callers can classify a failure
+with isNotFound
 */
-func findUserByID(ctx context.Context, client *perimeter81Sdk.APIClient, id string) (perimeter81Sdk.User, bool, *http.Response, error) {
+func findUserRecordByID(ctx context.Context, client *perimeter81Sdk.APIClient, id string) (perimeter81Sdk.User, bool, *http.Response, error) {
 	var zero perimeter81Sdk.User
 	if id == "" {
 		// readByIDFromList would refuse an empty id anyway; not issuing the
@@ -476,6 +541,15 @@ func resourceUserDelete(ctx context.Context, d *schema.ResourceData, m interface
 	// A 404 means somebody already deleted the user; destroy has nothing left
 	// to do and reporting a failure would leave the resource stuck in state
 	// forever (USR-N03).
+	//
+	// THIS IS A SOFT DELETE, measured against the tenant and undocumented in the
+	// spec: the 200 does not remove the record. The account stays in
+	// GET /v3/users with terminated: true, and itemsTotal keeps counting it.
+	// Nothing more is needed HERE -- the id leaves state either way -- but it is
+	// why findUserByID treats a terminated record as absent and why
+	// testAccCheckUserDestroy accepts "absent OR terminated" rather than
+	// asserting the id is gone from the collection. Groups are hard-deleted; see
+	// the note on findUserByID.
 
 	d.SetId("")
 	return nil

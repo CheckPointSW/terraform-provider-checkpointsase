@@ -2,7 +2,9 @@ package checkpointsase
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -209,18 +211,82 @@ func resourceGroupMembershipDelete(ctx context.Context, d *schema.ResourceData, 
 	// RemoveGroupMember, never DeleteGroup or DeleteUser. GRP-04 asserts both
 	// parents outlive this call.
 	_, resp, err := client.TeamAPI.RemoveGroupMember(ctx, groupID, userID).Execute()
-	if err != nil && !isNotFound(resp, err) {
+	if err != nil && !isNotFound(resp, err) && !isMembershipAlreadyAbsent(resp, err) {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to remove member from group", err)
 	}
-	// A 404 means the pairing is already gone -- either the member was removed
-	// out of band or the group itself was deleted. Destroy has nothing left to
-	// do (GRP-D02). The swallow is NARROW on purpose: a 500 still fails, or a
-	// merely broken server would look like a successful destroy and the
-	// membership would leave state while surviving in the tenant.
+	// Two answers mean "the pairing is already gone", and only one of them is a
+	// 404. Either way destroy has nothing left to do (GRP-D02): the member was
+	// removed out of band, or the group itself was deleted.
+	//
+	// A 404 covers the two siblings on this route, USER_NOT_FOUND and
+	// GROUP_NOT_FOUND. Removing a member who is not in the group answers 409
+	// instead -- see isMembershipAlreadyAbsent -- which is why the guard as
+	// originally written could never fire on the case GRP-D02 actually exercises.
+	//
+	// Both swallows are NARROW on purpose: a 500 still fails, and so does any
+	// other 409, or a merely broken server would look like a successful destroy
+	// and the membership would leave state while surviving in the tenant.
 
 	d.SetId("")
 	return nil
+}
+
+/*
+membershipAlreadyAbsentMarker is the marker the server returns when the pairing
+this Delete targets is already gone.
+
+MEASURED against the tenant, and documented nowhere:
+
+	first remove (real)    -> 200
+	second remove (absent) -> 409 {"message":"USER_ALREADY_NOT_IN_GROUP",
+	                               "messageCode":"CONFLICT","status":409}
+
+The two siblings on the same route both answer 404 -- USER_NOT_FOUND when the
+user does not exist, GROUP_NOT_FOUND when the group does not -- which is exactly
+why "the member is not in the group" being a 409 was invisible offline and only
+showed up on the first live probe.
+*/
+const membershipAlreadyAbsentMarker = "USER_ALREADY_NOT_IN_GROUP"
+
+/*
+isMembershipAlreadyAbsent reports whether a failed RemoveGroupMember means the
+pairing was already gone.
+
+KEYED ON THE MARKER, NOT ON THE STATUS, and the status alone is emphatically not
+enough. classifyAPIError maps 409 to errKindConflict and that mapping is right in
+general: a 409 is the server refusing because of state, and DELETE
+/v3/gum/custom-roles/{id} returns one to say the role still has users assigned.
+Swallowing THAT would report a successful destroy for an object that still
+exists, and the operator would find the role in the console with no resource left
+in state to remove it. So isNotFound is deliberately NOT widened -- this
+condition is scoped to one endpoint, in the file that owns it, and matched on the
+body.
+
+A body with no marker in it -- including an unreadable or empty one -- is not
+evidence of anything and must still fail.
+
+The comparison is case-insensitive purely for tolerance: the marker is a
+distinctive SCREAMING_SNAKE token that appears nowhere else, so there is no
+false-positive room, and a server that changed its case should not resurrect the
+defect.
+
+  - @param resp *http.Response - the response the SDK returned, possibly nil
+  - @param err error - the error the SDK returned
+
+@return bool
+*/
+func isMembershipAlreadyAbsent(resp *http.Response, err error) bool {
+	if classifyAPIError(resp, err) != errKindConflict {
+		return false
+	}
+	var apiErr *perimeter81Sdk.GenericOpenAPIError
+	if !errors.As(err, &apiErr) {
+		// No body to inspect, so no evidence. errors.As rather than a bare type
+		// assertion so a future wrapped error still reaches the check.
+		return false
+	}
+	return strings.Contains(strings.ToUpper(string(apiErr.Body())), membershipAlreadyAbsentMarker)
 }
 
 /*

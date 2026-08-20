@@ -176,6 +176,17 @@ on a live run. The 500 case is half the test: the swallow must be narrow, or a
 server that is merely broken would look like a successful destroy and the
 membership would leave state while surviving in the tenant.
 
+THE NAME NOW READS NARROWER THAN THE TEST IS, and deliberately so -- it is
+referenced from three other comments in this package. A 404 is not the only
+answer that means "the pairing is already gone": the first live probe measured the
+SECOND remove of the same pairing answering 409 USER_ALREADY_NOT_IN_GROUP, while
+the two siblings on the same route (USER_NOT_FOUND, GROUP_NOT_FOUND) answer 404.
+The old guard was written for a 404 alone, so it could never fire on the case
+GRP-D02 actually exercises. The two rows after it are what keep the new swallow
+honest: a DIFFERENT 409 and a 409 with nothing to match on must both still fail,
+because 409 in general means the server refused on account of state -- and
+isNotFound is deliberately not widened to cover it.
+
 THE REQUEST COUNT IS THE PARENT-DELETE GUARD, and it is the reason this test
 records every request rather than the last one. Exactly one request may leave
 Delete. A resource that also deleted the parent group would issue two, and it
@@ -197,6 +208,26 @@ func TestGroupMembershipDeleteSwallowsA404ButNothingElse(t *testing.T) {
 			`{"message":"member not found"}`, false, true},
 		{"200 is an ordinary destroy", http.StatusOK,
 			`{"id":"grp-1","name":"Engineering","users":[]}`, false, true},
+		// MEASURED: the second DELETE of the same pairing answers 409, not 404,
+		// with this exact body. Its two siblings on the same route answer 404
+		// (USER_NOT_FOUND, GROUP_NOT_FOUND), which is why the guard was written
+		// for a 404 and why nothing offline caught it. Without the marker check
+		// this row fails and GRP-D02 is broken as shipped.
+		{"409 USER_ALREADY_NOT_IN_GROUP is the same statement as a 404", http.StatusConflict,
+			`{"message":"USER_ALREADY_NOT_IN_GROUP","messageCode":"CONFLICT","status":409}`,
+			false, true},
+		// The narrowness of the swallow, and the reason it is keyed on the
+		// marker and not on the status. A 409 in general means "the server
+		// refused because of state" -- DELETE /v3/gum/custom-roles/{id} returns
+		// one to say the role still has users assigned -- and swallowing that
+		// would report a successful destroy for an object that still exists.
+		{"a different 409 must still fail", http.StatusConflict,
+			`{"message":"ROLE_HAS_ASSIGNED_USERS","messageCode":"CONFLICT","status":409}`,
+			true, false},
+		// Same rule with nothing to match on. A body the provider cannot read
+		// is not evidence that the pairing is gone.
+		{"a 409 with no marker in the body must still fail", http.StatusConflict,
+			`{}`, true, false},
 		{"500 must not be mistaken for success", http.StatusInternalServerError,
 			`{"message":"boom"}`, true, false},
 	} {
@@ -622,7 +653,10 @@ when it was.
 func TestAccCheckpointsaseGroupMembership_basic(t *testing.T) {
 	suffix := randStringBytesRmndr()
 	groupName := "tf-acc-" + suffix
-	email := "tf-acc-" + suffix + "@example.invalid"
+	// testAccUserEmail, not a literal: the domain is defined once in
+	// resource_user_test.go, and the note there records why it is example.com
+	// and not the RFC 2606 .invalid the server rejects.
+	email := testAccUserEmail(suffix)
 	var groupID, userID string
 
 	resource.Test(t, resource.TestCase{
@@ -755,7 +789,7 @@ func TestAccCheckpointsaseGroupMembership_destroyOrder(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				Config: testAccGroupMembershipConfig("tf-acc-"+suffix,
-					"tf-acc-"+suffix+"@example.invalid"),
+					testAccUserEmail(suffix)),
 				Check: resource.TestCheckResourceAttrSet(
 					"checkpointsase_group_membership.test", "id"),
 			},
