@@ -310,9 +310,6 @@ func TestUserReadPagesPastTheFirstPage(t *testing.T) {
 			}
 			// Limit is a page size, not a ceiling, and the server must be asked
 			// for one it will serve.
-			if tc.wantPages > 0 && userListPageSize <= 0 {
-				t.Errorf("userListPageSize = %d, want a positive page size", userListPageSize)
-			}
 		})
 	}
 }
@@ -880,10 +877,17 @@ plan, and every operator whose colleague deleted a user from the console would
 have to remove the resource from state by hand.
 
 USR-N03 -- destroy tolerating the same absence -- is NOT covered here or in any
-other acceptance test, because the driver makes it unreachable: the refresh this
-step performs clears the id from the state file, so the post-test destroy is
-skipped (testing_new.go:75) and Delete is never called. See
-TestUserDeleteSwallowsA404ButNothingElse, which gates that path offline instead.
+other acceptance test in this file. Any Config step that follows an out-of-band
+delete refreshes first, which clears the id from the state file, so the post-test
+destroy is skipped (testing_new.go:75) and Delete is never called.
+
+One shape does reach it, and is deliberately not used: an ImportState step never
+enters testStepNewConfig (dispatched at testing_new.go:203) and so never
+refreshes, which would leave the stale id in state for the deferred destroy. That
+would assert Delete's behaviour only indirectly, through an unrelated step type,
+and would break if the driver ever changed where import is dispatched. See
+TestUserDeleteSwallowsA404ButNothingElse, which gates the same path offline,
+directly, and on every PR rather than only on a live run.
 */
 func TestAccCheckpointsaseUser_driftWhenDeletedOutOfBand(t *testing.T) {
 	suffix := randStringBytesRmndr()

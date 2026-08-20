@@ -371,6 +371,14 @@ func findUserByID(ctx context.Context, client *perimeter81Sdk.APIClient, id stri
 		if err != nil {
 			return zero, false, resp, err
 		}
+		if users == nil {
+			// A 2xx whose body decodes to JSON null leaves the SDK returning a
+			// nil pointer with no error, and every field access below would
+			// panic -- a provider crash with a stack trace, not a diagnostic.
+			// Treat it as "not on this page and no further pages", which makes
+			// Read report drift rather than dying.
+			return zero, false, resp, nil
+		}
 		if user, found := readByIDFromList(users.Data, id, func(u perimeter81Sdk.User) string {
 			return u.GetId()
 		}); found {
