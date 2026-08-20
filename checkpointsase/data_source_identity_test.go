@@ -56,10 +56,14 @@ func TestAccCheckpointsaseUsersDataSource_basic(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckDataSourceListMinLen(users, "data", 1),
 					testAccCheckDataSourceElemFieldsSet(users, "data", 0, "id"),
-					// roles is a nested list, so state holds data.0.roles.#
-					// rather than data.0.roles; the helper above asserts on
-					// scalar keys only.
-					testAccCheckDataSourceNestedListPresent(users, "data", 0, "roles"),
+					// `roles` is asserted on by nothing here, and that is not an
+					// oversight. It is a nested list, so the scalar helper cannot
+					// reach it; a presence check on data.0.roles.# cannot fail
+					// (d.Set writes .# = 0 even for a key the flatten function
+					// dropped); and a count assertion would be a guess about a
+					// tenant's role assignments. The mapping is covered offline
+					// instead, by TestUsersDataSourceReadEchoesTheServersPagination
+					// against a fixture whose roles are known.
 					// The three pagination fields must all be present and
 					// coherent with the rows returned.
 					testAccCheckUsersPaginationCoherent(users),
@@ -139,16 +143,26 @@ to be in Go string order: the server's collation is not documented (case folding
 and locale are both unknown), so a byte-wise assertion would fail on a correct
 server for a reason that is not a defect. What is asserted is collation-agnostic:
 
-  - both reads return the same SET of emails, so `sort` did not also filter;
   - the two orderings DIFFER, which is exactly what a server ignoring the
-    parameter cannot produce -- guarded so it only applies when there are at
-    least two distinct emails to order;
-  - where every email is distinct and non-empty and the whole collection fits on
-    one page, the descending order is the exact reverse of the ascending one.
+    parameter cannot produce. Unconditional except for needing at least two
+    distinct emails to order, and safe on a paged tenant: a server that ignored
+    `sort` would return the same page 1 twice.
+  - WHERE BOTH READS COVERED THE WHOLE COLLECTION IN ONE PAGE, the two return the
+    same SET of emails, so `sort` did not also filter;
+  - and, additionally, where every email in that single page is distinct and
+    non-empty, the descending order is the exact reverse of the ascending one.
 
-The reverse assertion is conditional because ties make it false for a correct
-server: A21b permits an account with no email at all, and two such accounts sort
-arbitrarily against each other.
+BOTH OF THE LAST TWO ARE GATED ON SINGLE-PAGE, and the first of them was not
+originally. On a tenant whose users do not fit in one page, page 1 ascending and
+page 1 descending are legitimately DIFFERENT SETS -- the first users and the last
+users -- so an ungated set-equality check accuses a correct server of filtering.
+Both steps therefore ask for `limit = 1000`, the API's documented maximum, which
+makes the gate true by construction for any tenant up to 1000 users; past that the
+two strong assertions stand down and the ordering check carries the row alone.
+
+The reverse assertion is conditional on distinctness as well, because ties make it
+false for a correct server: A21b permits an account with no email at all, and two
+such accounts sort arbitrarily against each other.
 */
 func TestAccCheckpointsaseUsersDataSource_sort(t *testing.T) {
 	const users = "data.checkpointsase_users.sorted"
@@ -162,6 +176,8 @@ func TestAccCheckpointsaseUsersDataSource_sort(t *testing.T) {
 			{
 				Config: `
 data "checkpointsase_users" "sorted" {
+  limit = 1000
+
   sort = {
     email = "asc"
   }
@@ -176,6 +192,8 @@ data "checkpointsase_users" "sorted" {
 			{
 				Config: `
 data "checkpointsase_users" "sorted" {
+  limit = 1000
+
   sort = {
     email = "desc"
   }
@@ -215,8 +233,12 @@ func TestAccCheckpointsaseGroupsDataSource_basic(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckDataSourceListMinLen(groups, "data", 1),
 					testAccCheckDataSourceElemFieldsSet(groups, "data", 0, "id", "name"),
-					testAccCheckDataSourceNestedListPresent(groups, "data", 0,
-						"applications", "networks", "vpn_locations", "users"),
+					// The four projections are deliberately not asserted here.
+					// See the note in USR-04 above: a presence check on a nested
+					// list cannot fail, and a live tenant's group memberships are
+					// not ours to predict. The mapping of all four is pinned
+					// offline by TestGroupsDataSourceReadEchoesTheServersPagination
+					// against a fixture with four distinct non-empty lists.
 					testAccCheckGroupsPaginationCoherent(groups),
 					testAccCheckDataSourceElemKeyAbsent(groups, "data", "description"),
 				),
@@ -312,26 +334,22 @@ func testAccCheckDataSourceIntAtLeast(name, attr string, min int) resource.TestC
 	}
 }
 
-// testAccCheckDataSourceNestedListPresent asserts a list nested inside a list
-// element exists in state as a countable list, i.e. that `<attr>.<i>.<field>.#`
-// is present. The scalar helpers cannot express this, and a nested list the
-// flatten function never set is absent from state rather than zero-length.
-func testAccCheckDataSourceNestedListPresent(name, attr string, index int, fields ...string) resource.TestCheckFunc {
-	return func(s *terraform.State) error {
-		attrs, err := dataSourceAttrs(s, name)
-		if err != nil {
-			return err
-		}
-		for _, field := range fields {
-			key := fmt.Sprintf("%s.%d.%s.#", attr, index, field)
-			if _, ok := attrs[key]; !ok {
-				return fmt.Errorf("%s: %s is absent from state — %s.%d.%s reads as a null "+
-					"rather than a list", name, key, attr, index, field)
-			}
-		}
-		return nil
-	}
-}
+// DELETED, DELIBERATELY: testAccCheckDataSourceNestedListPresent.
+//
+// It asserted that `<attr>.<i>.<field>.#` was present in state, on the stated
+// grounds that a nested list the flatten function never set would read as a null.
+// THAT IS FALSE, and the helper was unfailable because of it: d.Set fills a
+// schema key the flatten function omitted with the zero value, so a dropped key
+// still writes `<field>.# = 0`. The only way it could fail was `data` having no
+// element 0, which testAccCheckDataSourceListMinLen already covers in both
+// USR-04 and GRP-06.
+//
+// It is recorded here rather than silently removed because this is the THIRD
+// place in this phase where an assertion was built on the belief that the
+// nil-to-empty coercion is load-bearing. It is not. If a future row needs to
+// check a nested list, check its CONTENTS against a known fixture -- see
+// TestGroupsDataSourceReadEchoesTheServersPagination, which does exactly that and
+// catches a mis-wired field the presence check could not.
 
 // testAccCheckDataSourceElemKeyAbsent asserts NO element of a list attribute
 // carries the named key. Used for the two deliberate omissions: users.data has
@@ -471,15 +489,32 @@ func testAccCheckSortOrderIsTheOppositeOf(
 				"to compare against", field)
 		}
 
-		// Same set, so sort did not also filter.
-		ascSorted := append([]string(nil), asc...)
-		descSorted := append([]string(nil), descending...)
-		sort.Strings(ascSorted)
-		sort.Strings(descSorted)
-		if strings.Join(ascSorted, "\x00") != strings.Join(descSorted, "\x00") {
-			return fmt.Errorf("the asc and desc reads returned different sets of %s values "+
-				"(%d asc, %d desc): sort appears to filter as well as order",
-				field, len(asc), len(descending))
+		// SINGLE PAGE ON BOTH READS is the precondition for comparing the two
+		// results as sets, and getting this wrong made the check accuse a
+		// correct server. Neither step pages: on a tenant whose users do not fit
+		// in one page, page 1 ascending and page 1 descending are legitimately
+		// DIFFERENT SETS -- the first users and the last users -- and the
+		// set-equality check below would fire with "sort appears to filter as
+		// well as order" against a server doing exactly the right thing.
+		//
+		// The steps ask for the API's maximum limit, so this holds for any tenant
+		// up to 1000 users, which is the overwhelming majority. Past that the
+		// strong assertions stand down and the ordering check below carries the
+		// row on its own.
+		singlePage := *ascendingSinglePage && attrs["total_page"] == "1"
+
+		if singlePage {
+			// Same set, so sort did not also filter. Only meaningful when both
+			// reads covered the whole collection.
+			ascSorted := append([]string(nil), asc...)
+			descSorted := append([]string(nil), descending...)
+			sort.Strings(ascSorted)
+			sort.Strings(descSorted)
+			if strings.Join(ascSorted, "\x00") != strings.Join(descSorted, "\x00") {
+				return fmt.Errorf("the asc and desc reads each returned a single complete page "+
+					"but different sets of %s values (%d asc, %d desc): sort appears to filter "+
+					"as well as order", field, len(asc), len(descending))
+			}
 		}
 
 		distinct := map[string]bool{}
@@ -507,8 +542,7 @@ func testAccCheckSortOrderIsTheOppositeOf(
 
 		// Exact reverse only where there are no ties to order arbitrarily and
 		// the whole collection was on one page.
-		if empties == 0 && len(distinct) == len(asc) && *ascendingSinglePage &&
-			attrs["total_page"] == "1" {
+		if empties == 0 && len(distinct) == len(asc) && singlePage {
 			for i := range asc {
 				if asc[i] != descending[len(descending)-1-i] {
 					return fmt.Errorf("descending order is not the reverse of ascending order: "+
@@ -656,40 +690,111 @@ func TestValidateSortDirectionsRunsThroughTheSchema(t *testing.T) {
 }
 
 /*
-TestUsersDataSourceDoesNotExposeInvitationToken pins a decision, which is why it
+TestTenantWideCollectionsExposeNoSecretAttribute pins a decision, which is why it
 is a test and not only a comment.
 
-A collection read over every user in the tenant has no business handing out every
-pending user's enrolment token -- whoever holds one can complete that user's
-enrolment -- and Terraform writes data source attributes to state in PLAINTEXT
-whatever the Sensitive marker says, so marking it would not have made it safe.
-checkpointsase_user (the resource) does expose it, marked Sensitive, because there
-the scope is one account the operator is managing deliberately.
+`checkpointsase_users` deliberately omits `invitation_token`. A collection read
+over every user in the tenant has no business handing out every pending user's
+enrolment token -- whoever holds one can complete that user's enrolment -- and
+Terraform writes data source attributes to state in PLAINTEXT whatever the
+Sensitive marker says, so marking it would not have made it safe.
+`checkpointsase_user` (the resource) does expose it, marked Sensitive, because
+there the scope is one account the operator is managing deliberately.
+
+THE RULE IS DERIVED FROM secretAttributeNames, NOT FROM ONE HARDCODED NAME.
+schema_conformance_test.go already owns the provider's canonical list of secret
+attribute names, and an earlier version of this test walked for the literal
+"invitation_token" instead -- so a future `enrollment_token` added to that list
+would have been caught only by the Sensitive conformance rule, which demands a
+MARKER. The whole point of this omission is that a marker does not help, so the
+two rules now read the same list: mark it wherever it appears, and do not let it
+appear in a tenant-wide collection at all.
+
+Both new data sources are checked, not just users. `checkpointsase_groups` has no
+candidate today, and that is exactly why it belongs here rather than being added
+on the day it does.
 
 The walk covers the whole element schema rather than just its top level, so a
-later nested block cannot smuggle the field back in.
+later nested block cannot smuggle a field back in.
 */
-func TestUsersDataSourceDoesNotExposeInvitationToken(t *testing.T) {
+func TestTenantWideCollectionsExposeNoSecretAttribute(t *testing.T) {
 	t.Parallel()
 
-	elem, ok := dataSourceUsers().Schema["data"].Elem.(*schema.Resource)
-	if !ok {
-		t.Fatal("checkpointsase_users.data has no *schema.Resource element schema")
+	collections := map[string]*schema.Resource{
+		"checkpointsase_users":  dataSourceUsers(),
+		"checkpointsase_groups": dataSourceGroups(),
 	}
-	var offenders []string
-	walkSchema("", elem.Schema, func(path string, _ *schema.Schema) {
-		leaf := path
-		if i := strings.LastIndex(path, "."); i >= 0 {
-			leaf = path[i+1:]
+	secrets := normalizedSecretAttributeNames()
+	if !secrets[normalizeAttributeName("invitation_token")] {
+		t.Fatal("secretAttributeNames no longer lists invitation_token, so this test would " +
+			"pass for the wrong reason; restore it or replace this guard")
+	}
+
+	for name, ds := range collections {
+		elem, ok := ds.Schema["data"].Elem.(*schema.Resource)
+		if !ok {
+			t.Errorf("%s.data has no *schema.Resource element schema", name)
+			continue
 		}
-		if normalizeAttributeName(leaf) == normalizeAttributeName("invitation_token") {
-			offenders = append(offenders, path)
+		var offenders []string
+		walkSchema("", elem.Schema, func(path string, _ *schema.Schema) {
+			leaf := path
+			if i := strings.LastIndex(path, "."); i >= 0 {
+				leaf = path[i+1:]
+			}
+			if secrets[normalizeAttributeName(leaf)] {
+				offenders = append(offenders, path)
+			}
+		})
+		if len(offenders) > 0 {
+			sort.Strings(offenders)
+			t.Errorf("%s.data exposes %s, which secretAttributeNames lists as secret material. "+
+				"A tenant-wide read would write one copy per row into state in plaintext, and "+
+				"Sensitive: true would not change that — the attribute has to be absent",
+				name, strings.Join(offenders, ", "))
 		}
-	})
-	if len(offenders) > 0 {
-		t.Errorf("checkpointsase_users.data exposes %s. An invitation token completes a "+
-			"user's enrolment for whoever holds it, and a tenant-wide read would write one "+
-			"per pending user into state in plaintext", strings.Join(offenders, ", "))
+	}
+}
+
+/*
+TestDataSourceArgumentDigestIsUnambiguous pins the corrected claim in
+dataSourceArgumentDigest's own comment.
+
+An earlier version of that comment said a newline separator made a collision by
+concatenation impossible "because a newline cannot appear in any of the parts".
+IT CAN. `where` is a free-form pass-through and validateSortDirections constrains
+sort DIRECTIONS but not sort KEYS, so a reviewer constructed the pair below and
+both arguments produced the same id. The consequence was mild -- two data source
+instances sharing an id string, not crossed data -- but a stated invariant that is
+provably untrue is the defect regardless, so the parts are now length-prefixed and
+this test is what keeps the claim honest.
+
+Contrived on purpose. Nobody writes a newline into a sort field name; the point is
+that the encoding no longer depends on nobody doing so.
+*/
+func TestDataSourceArgumentDigestIsUnambiguous(t *testing.T) {
+	t.Parallel()
+
+	crafted := usersDataSourceID("x", 1, 500,
+		map[string]string{"\npage=1\nlimit=500\nsort=b": "asc"})
+	viaWhere := usersDataSourceID("x\npage=1\nlimit=500\nsort=", 1, 500,
+		map[string]string{"b": "asc"})
+	if crafted == viaWhere {
+		t.Errorf("two different argument sets both produced the id %q. The parts are meant to "+
+			"be length-prefixed so the joined form cannot be read as any other sequence of "+
+			"parts", crafted)
+	}
+
+	// The property that actually matters, restated here so a refactor cannot
+	// trade determinism for collision resistance: identical arguments, identical
+	// id, every time.
+	for i := 0; i < 5; i++ {
+		again := usersDataSourceID("x", 1, 500,
+			map[string]string{"\npage=1\nlimit=500\nsort=b": "asc"})
+		if again != crafted {
+			t.Fatalf("iteration %d produced %q, want %q — the digest is not deterministic",
+				i, again, crafted)
+		}
 	}
 }
 
@@ -1079,8 +1184,24 @@ func TestUsersDataSourceReadEchoesTheServersPagination(t *testing.T) {
 
 /*
 TestGroupsDataSourceReadEchoesTheServersPagination is the groups twin of the test
-above, and covers GRP-06's shape assertion offline: a group record carrying
-nothing but an id and a name must land in state with four empty lists beside it.
+above, and covers GRP-06's shape assertion offline.
+
+THE FOUR-LIST ASSERTION HERE IS A MAPPING CHECK, NOT AN EMPTINESS CHECK, and the
+difference is the whole reason it was rewritten. The first version fed this test a
+group with no projections at all and asserted each `data.0.<list>.#` was present
+and "0", on the stated grounds that an absent key would mean state held a null.
+That claim is false and the assertion was unfailable: measured 2026-08-20,
+removing every nil coercion from flattenGroupsData left it passing, and DELETING
+the "applications" key from the flatten map outright left it passing too, because
+d.Set fills a schema key the flatten function omitted with the zero value anyway.
+
+So the fixture now carries four DISTINCT non-empty lists -- distinct in length
+(2, 1, 3, 1) and in value prefix -- and the assertion is on the contents. That
+fails three ways the old one could not: a key the flatten function drops, a count
+that disagrees with the response, and, the one that matters, a key wired to the
+wrong model field. vpnLocations reading Networks is the plausible copy-paste error
+in a four-line block of near-identical entries, and nothing in the previous
+version could see it.
 */
 func TestGroupsDataSourceReadEchoesTheServersPagination(t *testing.T) {
 	t.Parallel()
@@ -1088,7 +1209,11 @@ func TestGroupsDataSourceReadEchoesTheServersPagination(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(groupListPage(1, 3, 5,
-			`{"id":"grp-1","name":"Engineering","isDefault":true}`)))
+			`{"id":"grp-1","name":"Engineering","isDefault":true,`+
+				`"applications":["app-1","app-2"],`+
+				`"networks":["net-1"],`+
+				`"vpnLocations":["vpn-1","vpn-2","vpn-3"],`+
+				`"users":["usr-1"]}`)))
 	}))
 	defer srv.Close()
 
@@ -1107,16 +1232,26 @@ func TestGroupsDataSourceReadEchoesTheServersPagination(t *testing.T) {
 	}
 
 	attrs := d.State().Attributes
+	wantLists := map[string][]string{
+		"applications":  {"app-1", "app-2"},
+		"networks":      {"net-1"},
+		"vpn_locations": {"vpn-1", "vpn-2", "vpn-3"},
+		"users":         {"usr-1"},
+	}
 	for _, key := range []string{"applications", "networks", "vpn_locations", "users"} {
-		stateKey := "data.0." + key + ".#"
-		count, present := attrs[stateKey]
-		if !present {
-			t.Errorf("%s is absent from state, so the list reads as a null rather than an "+
-				"empty list", stateKey)
+		want := wantLists[key]
+		countKey := fmt.Sprintf("data.0.%s.#", key)
+		if got := attrs[countKey]; got != strconv.Itoa(len(want)) {
+			t.Errorf("%s = %q, want %q — the flatten function is not carrying this list "+
+				"through", countKey, got, strconv.Itoa(len(want)))
 			continue
 		}
-		if count != "0" {
-			t.Errorf("%s = %q, want \"0\"", stateKey, count)
+		for i, value := range want {
+			elemKey := fmt.Sprintf("data.0.%s.%d", key, i)
+			if got := attrs[elemKey]; got != value {
+				t.Errorf("%s = %q, want %q — %s appears to be wired to the wrong field on the "+
+					"Group model", elemKey, got, value, key)
+			}
 		}
 	}
 	if attrs["data.0.is_default"] != "true" {
@@ -1258,5 +1393,155 @@ func TestCanonicalSortDirectionsIsOrderIndependent(t *testing.T) {
 			t.Fatalf("iteration %d produced %q, want %q — the rendering depends on Go's map "+
 				"iteration order", i, got, want)
 		}
+	}
+}
+
+/*
+stateWithDataSource builds the minimal terraform.State the acceptance check
+helpers read, so a TestCheckFunc can be exercised offline.
+
+The helpers all go through dataSourceAttrs, which only ever touches
+RootModule().Resources[name].Primary.Attributes, so nothing else needs filling in.
+*/
+func stateWithDataSource(name string, attrs map[string]string) *terraform.State {
+	s := terraform.NewState()
+	s.RootModule().Resources = map[string]*terraform.ResourceState{
+		name: {
+			Type:     "checkpointsase_users",
+			Primary:  &terraform.InstanceState{ID: "checkpointsase_users", Attributes: attrs},
+			Provider: "provider.checkpointsase",
+		},
+	}
+	return s
+}
+
+// usersSortState renders the flat state a users read produces for one ordering.
+func usersSortState(name string, totalPage int, emails ...string) *terraform.State {
+	attrs := map[string]string{
+		"data.#":      strconv.Itoa(len(emails)),
+		"page":        "1",
+		"total_page":  strconv.Itoa(totalPage),
+		"items_total": strconv.Itoa(len(emails) * totalPage),
+	}
+	for i, email := range emails {
+		attrs[fmt.Sprintf("data.%d.email", i)] = email
+		attrs[fmt.Sprintf("data.%d.id", i)] = fmt.Sprintf("usr-%d", i)
+	}
+	return stateWithDataSource(name, attrs)
+}
+
+/*
+TestSortOrderCheckIsHonestAboutAPagedTenant exercises USR-06's cross-step closure
+OFFLINE, against synthetic state.
+
+WHY THIS EXISTS: USR-06 needs TF_ACC and a live tenant, so its closure — the most
+intricate assertion written for this task — was originally shipped reasoned about
+rather than run. It also shipped with a real defect that only reading caught: the
+set-equality check was ungated, so on a tenant whose users do not fit in one page,
+page 1 ascending and page 1 descending are legitimately DIFFERENT SETS and the
+closure accused a correct server of filtering. That is a red test for a green
+server, and the sort of thing that gets a genuine assertion deleted rather than
+fixed.
+
+Case "paged tenant, disjoint pages" is the regression: it FAILS if the
+single-page gate is removed, and passes with it. The other cases keep the gate
+from being loosened into uselessness — "sort ignored" must still fail, and
+"single page, different sets" must still fail.
+*/
+func TestSortOrderCheckIsHonestAboutAPagedTenant(t *testing.T) {
+	t.Parallel()
+
+	const name = "data.checkpointsase_users.sorted"
+
+	cases := []struct {
+		name string
+		// the ascending step's captured emails and whether it saw one page
+		ascEmails       []string
+		ascSinglePage   bool
+		descTotalPage   int
+		descEmails      []string
+		wantErr         bool
+		wantErrFragment string
+	}{
+		{
+			name:          "single page, exact reverse",
+			ascEmails:     []string{"a@x.invalid", "b@x.invalid", "c@x.invalid"},
+			ascSinglePage: true,
+			descTotalPage: 1,
+			descEmails:    []string{"c@x.invalid", "b@x.invalid", "a@x.invalid"},
+			wantErr:       false,
+		},
+		{
+			// A server ignoring `sort` returns the same order twice. This is the
+			// defect USR-06 exists for and it must fail whatever the paging.
+			name:            "sort ignored, identical ordering",
+			ascEmails:       []string{"a@x.invalid", "b@x.invalid", "c@x.invalid"},
+			ascSinglePage:   true,
+			descTotalPage:   1,
+			descEmails:      []string{"a@x.invalid", "b@x.invalid", "c@x.invalid"},
+			wantErr:         true,
+			wantErrFragment: "IDENTICAL ordering",
+		},
+		{
+			// THE I2 REGRESSION. 600 users at limit 500: asc page 1 is the first
+			// 500, desc page 1 is the last 500. Different sets, correct server.
+			name:          "paged tenant, disjoint pages",
+			ascEmails:     []string{"a@x.invalid", "b@x.invalid"},
+			ascSinglePage: false,
+			descTotalPage: 2,
+			descEmails:    []string{"y@x.invalid", "z@x.invalid"},
+			wantErr:       false,
+		},
+		{
+			// Single page both times, so a set difference really is the server
+			// filtering as well as ordering.
+			name:            "single page, different sets",
+			ascEmails:       []string{"a@x.invalid", "b@x.invalid"},
+			ascSinglePage:   true,
+			descTotalPage:   1,
+			descEmails:      []string{"a@x.invalid", "q@x.invalid"},
+			wantErr:         true,
+			wantErrFragment: "filter",
+		},
+		{
+			// One distinct email: no ordering is observable, so the closure
+			// returns nil rather than pretending to have proved anything. USR-06
+			// is vacuous on such a tenant and the report says so.
+			name:          "single user, nothing observable",
+			ascEmails:     []string{"only@x.invalid"},
+			ascSinglePage: true,
+			descTotalPage: 1,
+			descEmails:    []string{"only@x.invalid"},
+			wantErr:       false,
+		},
+		{
+			// Two accounts with no email at all (A21b permits it) tie, so the
+			// exact-reverse branch must not fire. Distinct count is 1, so the
+			// closure returns early.
+			name:          "emailless accounts tie",
+			ascEmails:     []string{"", "", "one@x.invalid"},
+			ascSinglePage: true,
+			descTotalPage: 1,
+			descEmails:    []string{"one@x.invalid", "", ""},
+			wantErr:       false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ascending := append([]string(nil), tc.ascEmails...)
+			singlePage := tc.ascSinglePage
+			check := testAccCheckSortOrderIsTheOppositeOf(name, "data", "email",
+				&ascending, &singlePage)
+			err := check(usersSortState(name, tc.descTotalPage, tc.descEmails...))
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr = %v", err, tc.wantErr)
+			}
+			if tc.wantErr && !strings.Contains(err.Error(), tc.wantErrFragment) {
+				t.Errorf("error %q does not mention %q", err, tc.wantErrFragment)
+			}
+		})
 	}
 }

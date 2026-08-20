@@ -102,15 +102,31 @@ func dataSourceUsers() *schema.Resource {
 			},
 
 			// --- results ------------------------------------------------------
-			// invitation_token is DELIBERATELY OMITTED from `data`. A data source
-			// over every user in the tenant has no business handing out every
-			// pending user's enrolment token, and Terraform writes data source
-			// attributes to state in plaintext whatever the Sensitive marker says.
-			// TestUsersDataSourceDoesNotExposeInvitationToken pins the omission.
+			// TWO FIELDS THE User MODEL CARRIES ARE DELIBERATELY ABSENT HERE, for
+			// two different reasons. Both are decisions, not oversights.
 			//
-			// checkpointsase_user (the resource) does expose it, marked Sensitive,
-			// because there the scope is one account the operator is managing on
-			// purpose rather than every account in the tenant.
+			// invitation_token, because it is dangerous. A data source over every
+			// user in the tenant has no business handing out every pending user's
+			// enrolment token, and Terraform writes data source attributes to
+			// state in plaintext whatever the Sensitive marker says -- so marking
+			// it would not have made it safe. checkpointsase_user (the resource)
+			// does expose it, marked Sensitive, because there the scope is one
+			// account the operator is managing on purpose rather than every
+			// account in the tenant. TestTenantWideCollectionsExposeNoSecretAttribute
+			// pins the omission, and derives it from the provider's canonical
+			// secret-name list rather than from this one name.
+			//
+			// invitation_attempts, because it is not identity. Nothing about the
+			// API forces this one out -- the resource exposes it and it is not
+			// sensitive -- so it is a judgement, and the rule being kept is that
+			// this row describes WHO a member is, not how their enrolment went.
+			// The one question a per-row retry counter answers on a tenant-wide
+			// read ("who never accepted?") is answered better by email_verified,
+			// which is here. The alternative was one more integer per row in the
+			// state file for every user in the tenant, consulted by almost no
+			// read. Keeping the whole invitation cluster out is one rule rather
+			// than two exceptions; read invitation_attempts from
+			// checkpointsase_user for an account you are actually managing.
 			"data": {
 				Type:        schema.TypeList,
 				Computed:    true,
@@ -251,6 +267,10 @@ func usersDataSourceID(where string, page, limit int, sortOrder map[string]strin
 /*
 flattenUsersData flattens the User SDK models into a Terraform list.
 
+DELIBERATELY HERE AND NOT IN utils.go, which is where the task brief's file list
+put it -- see the matching note on flattenGroupsData for the reasoning. One
+caller, and data_source_web_categories.go sets the precedent.
+
 EVERY FIELD GOES THROUGH A NIL-SAFE Get* ACCESSOR, WITHOUT EXCEPTION, email
 included. Overlay entry A21b removes User.required ENTIRELY rather than trimming
 it, because a directory-synced account can lack a `mail` attribute, so every
@@ -260,21 +280,22 @@ Go address into Terraform state.
 invitation_token is absent from the map because it is absent from the schema; see
 the comment on `data` in dataSourceUsers.
 
-The Roles coercion below is belt-and-braces rather than load-bearing: measured
-2026-08-20, schema.ResourceData.Set normalises a nil slice to an empty list on
-its own, including for a list nested inside a list element, so state holds [] with
-or without it. It is kept because it makes the intent legible where Roles is
+The Roles coercion goes through coerceNilStringsToEmpty, the same helper
+flattenGroupsData uses for its four lists; it was three hand-rolled lines here
+until 2026-08-20, which is one implementation of one idea too many.
+
+THE COERCION IS BELT-AND-BRACES RATHER THAN LOAD-BEARING: measured 2026-08-20,
+schema.ResourceData.Set normalises a nil slice to an empty list on its own,
+including for a list nested inside a list element, so state holds [] with or
+without it. It is kept because it makes the intent legible where Roles is
 omitempty and nil is routine. Do not write a comment or a test claiming state
-would hold a null without it -- two comments in this repo made that claim and
-both have been corrected.
+would hold a null without it -- three assertions in this phase were built on that
+belief and all three have been corrected, the last of them a test that could not
+fail.
 */
 func flattenUsersData(users []perimeter81Sdk.User) []interface{} {
 	result := make([]interface{}, len(users))
 	for i, user := range users {
-		roles := user.Roles
-		if roles == nil {
-			roles = []string{}
-		}
 		result[i] = map[string]interface{}{
 			"id":             user.GetId(),
 			"email":          user.GetEmail(),
@@ -285,7 +306,7 @@ func flattenUsersData(users []perimeter81Sdk.User) []interface{} {
 			"initials":       user.GetInitials(),
 			"role":           user.GetRole(),
 			"role_name":      user.GetRoleName(),
-			"roles":          roles,
+			"roles":          coerceNilStringsToEmpty(user.Roles),
 			"terminated":     user.GetTerminated(),
 		}
 	}

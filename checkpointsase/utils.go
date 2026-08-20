@@ -1814,17 +1814,44 @@ func sortedMapKeys[V any](m map[string]V) []string {
 dataSourceArgumentDigest builds the short, stable suffix a parameterised data
 source appends to its base ID.
 
-The parts are joined with a newline, which cannot appear in any of them, so two
-different argument sets cannot collide by concatenation (the mistake a separator
-like "-" would allow). Six bytes of SHA-256 keeps the ID readable while leaving
-collisions far out of reach for the handful of instances one configuration holds.
+THIS IS AN IDENTITY KEY, NOT AN INTEGRITY CHECK. Nothing here is a security
+boundary: the digest exists so that two instances of one data source with
+different arguments do not share a Terraform address, and a practitioner who
+forces a collision has given two instances one id string, not access to another
+instance's data. Do not cite it as evidence of anything else.
+
+WHAT IS ACTUALLY GUARANTEED: the same arguments always produce the same suffix,
+in this process and the next. That is the property the derived ID needs and the
+one L16c is about, and it holds because every caller renders its arguments
+deterministically -- `canonicalSortDirections` sorts the map's keys before
+joining, so Go's randomised map iteration cannot leak into the digest.
+
+WHAT IS NOT GUARANTEED, corrected 2026-08-20: an earlier version of this comment
+claimed the newline separator made a collision by concatenation IMPOSSIBLE,
+"because a newline cannot appear in any of the parts". That is false and a
+reviewer built the counter-example: `where` is a free-form pass-through and
+validateSortDirections constrains sort DIRECTIONS but not sort KEYS, so both can
+carry a newline, and a crafted key can be made to produce the same joined string
+as a crafted `where`. Each part is therefore length-prefixed, which does make the
+encoding unambiguous -- but the honest claim is the narrow one: the encoding
+separates the arguments these data sources can realistically carry, and truncating
+to six bytes trades collision headroom for a readable id, which is the right trade
+for the handful of instances one configuration holds.
 
 Same construction as updatableObjectsDataSourceID, which predates it; that
 function is left as it is rather than rewritten in terms of this one, because it
 carries its own base-name special case and is covered by its own tests.
 */
 func dataSourceArgumentDigest(parts ...string) string {
-	digest := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	// Length-prefixed rather than newline-joined: "3:abc" cannot be read as any
+	// other sequence of parts, whatever the parts contain.
+	var canonical strings.Builder
+	for _, part := range parts {
+		canonical.WriteString(strconv.Itoa(len(part)))
+		canonical.WriteString(":")
+		canonical.WriteString(part)
+	}
+	digest := sha256.Sum256([]byte(canonical.String()))
 	return hex.EncodeToString(digest[:6])
 }
 

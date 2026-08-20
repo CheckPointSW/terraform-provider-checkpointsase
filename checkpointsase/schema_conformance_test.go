@@ -65,21 +65,45 @@ func normalizeAttributeName(s string) string {
 	return s
 }
 
+/*
+secretAttributeNames is the provider's canonical list of attribute names that
+carry secret material, in whichever spelling reads best -- the lookups below
+normalise both sides, so "request_config_token" and "requestConfigToken" collapse
+to one key.
+
+PACKAGE-LEVEL RATHER THAN LOCAL, so that the two rules derived from it cannot
+drift apart. TestSchemaSecretAttributesAreMarkedSensitive demands the Sensitive
+marker wherever one of these appears;
+TestTenantWideCollectionsExposeNoSecretAttribute demands ABSENCE from a data
+source that reads every object in the tenant, because the marker only redacts CLI
+and log output and does nothing about the plaintext copy in state. A name added
+here now gets both rules at once, which is the point: an "enrollment_token" added
+to this list but only to a local literal in one test would be caught by the weaker
+of the two rules and pass the stronger one.
+*/
+var secretAttributeNames = map[string]bool{
+	"passphrase": true, "secret_access_key": true, "access_key_id": true,
+	"vault": true, "private_key": true, "api_key": true,
+	"customer_root_ca": true, "request_config_token": true,
+	// An invitation token completes a user's enrolment for whoever holds it.
+	"invitation_token": true,
+}
+
+// normalizedSecretAttributeNames is secretAttributeNames keyed by the same
+// normalisation the schema walk applies to a leaf name.
+func normalizedSecretAttributeNames() map[string]bool {
+	normalized := make(map[string]bool, len(secretAttributeNames))
+	for name := range secretAttributeNames {
+		normalized[normalizeAttributeName(name)] = true
+	}
+	return normalized
+}
+
 // Terraform writes Sensitive attributes to state in plaintext; the marker only
 // redacts CLI and log output. Two attributes shipped without it in v2.3 and
 // leaked WireGuard private key material into provider logs.
 func TestSchemaSecretAttributesAreMarkedSensitive(t *testing.T) {
-	secretNames := map[string]bool{
-		"passphrase": true, "secret_access_key": true, "access_key_id": true,
-		"vault": true, "private_key": true, "api_key": true,
-		"customer_root_ca": true, "request_config_token": true,
-		// An invitation token completes a user's enrolment for whoever holds it.
-		"invitation_token": true,
-	}
-	normalizedSecretNames := make(map[string]bool, len(secretNames))
-	for name := range secretNames {
-		normalizedSecretNames[normalizeAttributeName(name)] = true
-	}
+	normalizedSecretNames := normalizedSecretAttributeNames()
 	var unmarked []string
 	for owner, s := range allRegistered() {
 		walkSchema("", s, func(path string, attr *schema.Schema) {

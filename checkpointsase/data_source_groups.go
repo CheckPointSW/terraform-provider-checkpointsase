@@ -228,6 +228,14 @@ func groupsDataSourceID(page, limit int, sortOrder string) string {
 /*
 flattenGroupsData flattens the Group SDK models into a Terraform list.
 
+DELIBERATELY HERE AND NOT IN utils.go, which is where the task brief's file list
+put it. It has exactly one caller, and data_source_web_categories.go -- the newest
+data source and the one this pair is modelled on -- keeps flattenWebCategories
+beside its own read for the same reason. utils.go is past 1900 lines and is for
+things more than one file needs; the six helpers this task genuinely shares
+(validateSortDirections, expandSortDirections, canonicalSortDirections,
+sortedMapKeys, dataSourceArgumentDigest, coerceNilStringsToEmpty) did go there.
+
 Every field goes through a nil-safe Get* accessor: overlay entry A22b removes
 Group.required ENTIRELY, so a record may carry nothing but an id and every scalar
 on the generated model is a pointer.
@@ -241,6 +249,23 @@ nil slice to an empty list by itself (measured 2026-08-20), including for a list
 nested inside a list element. They are kept because all four fields are omitempty
 and nil is the routine case for a group with no projections, so saying so at the
 point of use is worth four lines.
+
+THE TEST THAT ACTUALLY GUARDS THIS FUNCTION IS
+TestFlattenGroupsDataCoercesNilLists, and it is worth knowing why. The
+"applications" key was deleted from the map below as an experiment on 2026-08-20:
+every EMPTINESS assertion on state still passed, because d.Set fills a schema key
+the flatten function omitted with the zero value and `data.0.applications.# = 0`
+appears either way. Only the test that inspects THIS FUNCTION'S RETURN VALUE
+caught it, reporting `"applications" is absent from the flattened row`.
+
+TestGroupsDataSourceReadEchoesTheServersPagination now catches it too, and the
+difference is instructive: its fixture was changed from a group with no
+projections to one carrying four DISTINCT NON-EMPTY lists, so it asserts contents
+rather than emptiness. Under the same key deletion it reports
+`data.0.applications.# = "0", want "2" -- the flatten function is not carrying
+this list through`. So if a key here needs covering, cover it against known
+contents; an emptiness check on state cannot see a dropped key at all, and three
+assertions in this phase were written before that was understood.
 */
 func flattenGroupsData(groups []perimeter81Sdk.Group) []interface{} {
 	result := make([]interface{}, len(groups))
