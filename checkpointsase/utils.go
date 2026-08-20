@@ -1628,32 +1628,84 @@ func readByIDFromList[T any](items []T, id string, idOf func(T) string) (T, bool
 /*
 expandUserProfile builds a UserProfileDto from the profile_data block.
 
-Returns nil for an absent or empty block, which is what keeps `profileData` out
+Returns nil when no field was actually set, which is what keeps `profileData` out
 of the request body entirely. That matters: CreateUserDto.profileData is
 @IsOptional, and sending a present-but-empty object is a different request from
 omitting the key.
 
+The emptiness test is "did any field get a value", NOT "is the block present".
+A bare `profile_data {}` in HCL yields a non-nil map of empty strings, so
+guarding on block presence alone would set every pointer to nil and then send
+`"profileData": {}` -- the exact request this comment claims to avoid.
+
   - @param profileItems []interface{} - the profile_data block as Terraform holds it
 
-@return *perimeter81Sdk.UserProfileDto - nil when no profile was configured
+@return *perimeter81Sdk.UserProfileDto - nil when no profile field was configured
 */
 func expandUserProfile(profileItems []interface{}) *perimeter81Sdk.UserProfileDto {
 	if len(profileItems) == 0 || profileItems[0] == nil {
 		return nil
 	}
-	item := profileItems[0].(map[string]interface{})
+	item, ok := profileItems[0].(map[string]interface{})
+	if !ok {
+		return nil
+	}
 	profile := perimeter81Sdk.UserProfileDto{}
-	if v, ok := item["first_name"].(string); ok && v != "" {
-		profile.FirstName = &v
+	set := false
+	for key, target := range map[string]**string{
+		"first_name": &profile.FirstName,
+		"last_name":  &profile.LastName,
+		"role_name":  &profile.RoleName,
+		"phone":      &profile.Phone,
+	} {
+		if v, ok := item[key].(string); ok && v != "" {
+			value := v
+			*target = &value
+			set = true
+		}
 	}
-	if v, ok := item["last_name"].(string); ok && v != "" {
-		profile.LastName = &v
-	}
-	if v, ok := item["role_name"].(string); ok && v != "" {
-		profile.RoleName = &v
-	}
-	if v, ok := item["phone"].(string); ok && v != "" {
-		profile.Phone = &v
+	if !set {
+		return nil
 	}
 	return &profile
+}
+
+/*
+suppressDiffOnEmptyOldValue suppresses the diff for a write-only attribute on a
+resource that already exists but has no value for it in state.
+
+The case this exists for is import. A write-only attribute -- one the server
+either does not return or must not be read back from -- is absent from an
+imported resource's state, so the first plan after an import sees "" -> the
+configured value. On a ForceNew attribute that plans a REPLACEMENT: import a
+user, apply the configuration that describes her, and she is deleted and
+re-invited.
+
+THE `d.Id() != ""` CONDITION IS NOT OPTIONAL. Keyed on `old == ""` alone, this
+function breaks create instead. A create diffs against no state, so `old` is ""
+for every attribute; schemaMap.diff DROPS a suppressed attribute from the diff
+(it only converts it to a no-op when called with all=true, which the real plan
+path never does), the ResourceData a CreateContext receives is built from that
+diff, and d.Get on the attribute returns "". Measured, not theorised: with the
+condition removed, d.Get("invite_message") is "" for a configuration that sets
+it, and the provider POSTs an empty invitation message. A non-empty Id is what
+distinguishes "state has no value because the resource does not exist yet" from
+"state has no value because the resource was imported".
+
+What it does NOT do is mask a real change on a resource this provider created:
+such a resource has the operator's own value in state, so `old` is non-empty.
+The one accepted blind spot is an imported resource, whose state stays empty for
+the attribute -- a later edit to it plans clean instead of replacing. That is the
+lesser harm by a wide margin, and for these attributes it is nearly moot: there
+is no update endpoint, so "changing" one means deleting the account either way.
+
+  - @param k string - the attribute key (unused; the SDK passes it for logging)
+  - @param old string - the value in state
+  - @param new string - the value in configuration (unused)
+  - @param d *schema.ResourceData - the prior state, consulted for the resource id
+
+@return bool - true to suppress the diff
+*/
+func suppressDiffOnEmptyOldValue(_, old, _ string, d *schema.ResourceData) bool {
+	return old == "" && d != nil && d.Id() != ""
 }
