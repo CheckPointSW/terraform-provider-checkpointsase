@@ -754,7 +754,7 @@ func TestAccCheckpointsaseUser_replaceOnEmailChange(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				Config: testAccUserConfigBasic(first),
-				Check:  testAccCaptureUserID("checkpointsase_user.test", &firstID),
+				Check:  testAccCaptureResourceID("checkpointsase_user.test", &firstID),
 			},
 			{
 				Config: testAccUserConfigBasic(second),
@@ -901,7 +901,7 @@ func TestAccCheckpointsaseUser_driftWhenDeletedOutOfBand(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				Config: testAccUserConfigBasic(email),
-				Check:  testAccCaptureUserID("checkpointsase_user.test", &userID),
+				Check:  testAccCaptureResourceID("checkpointsase_user.test", &userID),
 			},
 			{
 				PreConfig: testAccDeleteUserOutOfBand(t, &userID),
@@ -916,10 +916,11 @@ func TestAccCheckpointsaseUser_driftWhenDeletedOutOfBand(t *testing.T) {
 	})
 }
 
-// testAccCaptureUserID records the id Terraform holds for a user resource so a
+// testAccCaptureResourceID records the id Terraform holds for a resource so a
 // later step can refer to it. PreConfig takes no state argument, which is why
-// the id has to be carried out of the step that created it.
-func testAccCaptureUserID(name string, out *string) resource.TestCheckFunc {
+// the id has to be carried out of the step that created it. Resource-agnostic --
+// it takes an address -- and shared with resource_group_test.go.
+func testAccCaptureResourceID(name string, out *string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		rs, ok := s.RootModule().Resources[name]
 		if !ok {
