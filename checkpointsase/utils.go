@@ -1624,3 +1624,36 @@ func readByIDFromList[T any](items []T, id string, idOf func(T) string) (T, bool
 	}
 	return zero, false
 }
+
+/*
+expandUserProfile builds a UserProfileDto from the profile_data block.
+
+Returns nil for an absent or empty block, which is what keeps `profileData` out
+of the request body entirely. That matters: CreateUserDto.profileData is
+@IsOptional, and sending a present-but-empty object is a different request from
+omitting the key.
+
+  - @param profileItems []interface{} - the profile_data block as Terraform holds it
+
+@return *perimeter81Sdk.UserProfileDto - nil when no profile was configured
+*/
+func expandUserProfile(profileItems []interface{}) *perimeter81Sdk.UserProfileDto {
+	if len(profileItems) == 0 || profileItems[0] == nil {
+		return nil
+	}
+	item := profileItems[0].(map[string]interface{})
+	profile := perimeter81Sdk.UserProfileDto{}
+	if v, ok := item["first_name"].(string); ok && v != "" {
+		profile.FirstName = &v
+	}
+	if v, ok := item["last_name"].(string); ok && v != "" {
+		profile.LastName = &v
+	}
+	if v, ok := item["role_name"].(string); ok && v != "" {
+		profile.RoleName = &v
+	}
+	if v, ok := item["phone"].(string); ok && v != "" {
+		profile.Phone = &v
+	}
+	return &profile
+}

@@ -73,6 +73,8 @@ func TestSchemaSecretAttributesAreMarkedSensitive(t *testing.T) {
 		"passphrase": true, "secret_access_key": true, "access_key_id": true,
 		"vault": true, "private_key": true, "api_key": true,
 		"customer_root_ca": true, "request_config_token": true,
+		// An invitation token completes a user's enrolment for whoever holds it.
+		"invitation_token": true,
 	}
 	normalizedSecretNames := make(map[string]bool, len(secretNames))
 	for name := range secretNames {
@@ -449,6 +451,11 @@ var listAttributeEmptyPolicy = map[string]struct {
 	"resource.checkpointsase_ipsec_redundant.tunnel2":                   {mayBeEmpty, "MaxItems 1 wrapper block"},
 	"resource.checkpointsase_firewall_policy.policy_rules.sources":      {mayBeEmpty, "MaxItems 1 wrapper block; absent means unrestricted"},
 	"resource.checkpointsase_firewall_policy.policy_rules.destinations": {mayBeEmpty, "MaxItems 1 wrapper block; absent means unrestricted"},
+	// createUser.dto.ts: @IsString({each:true}) @IsOptional() accessGroups?: string[] = []
+	// -- @IsOptional with NO @ArrayMinSize, and the DTO's own default is []. An
+	// empty list is legal and is the only way to express "no access groups".
+	"resource.checkpointsase_user.access_groups": {mayBeEmpty, "createUser.dto.ts @IsOptional, no @ArrayMinSize, defaults to []"},
+	"resource.checkpointsase_user.profile_data":  {mayBeEmpty, "MaxItems 1 wrapper block"},
 }
 
 /*
