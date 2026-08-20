@@ -51,6 +51,7 @@ func Provider() *schema.Provider {
 			"checkpointsase_support_options":         resourceSupportOptions(),
 			"checkpointsase_user":                    resourceUser(),
 			"checkpointsase_group":                   resourceGroup(),
+			"checkpointsase_group_membership":        resourceGroupMembership(),
 		},
 		DataSourcesMap: map[string]*schema.Resource{
 			"checkpointsase_networks":                         dataSourceNetworks(),
