@@ -85,7 +85,10 @@ func TestAccApplication_basic(t *testing.T) {
 						Port:       443,
 						NetworkRef: "checkpointsase_network.n1",
 						UserCount:  0,
-						GroupCount: 0,
+						// One group, matching the fixture. The API refuses an
+						// application that grants access to nobody, so this cannot
+						// be 0 -- see the comment on `groups` in the config.
+						GroupCount: 1,
 					}),
 					// State-side mirror of the same values. The API assertions
 					// above prove Create sent the right thing; these prove the
@@ -93,6 +96,12 @@ func TestAccApplication_basic(t *testing.T) {
 					resource.TestCheckResourceAttr("checkpointsase_application.app", "name", testAccApplicationName()),
 					resource.TestCheckResourceAttr("checkpointsase_application.app", "type", "https"),
 					resource.TestCheckResourceAttr("checkpointsase_application.app", "host", "10.99.0.20"),
+					// The group Read writes back. L1 records that resourceApplicationRead
+					// never calls d.Set("groups", ...) at all; if that is still true this
+					// assertion fails, which is the point -- it was unmeasurable while the
+					// fixture left groups unset.
+					resource.TestCheckResourceAttr("checkpointsase_application.app", "groups.#", "1"),
+					resource.TestCheckResourceAttr("checkpointsase_application.app", "groups.0", testAccGroupID()),
 					resource.TestCheckResourceAttr("checkpointsase_application.app", "port", "443"),
 					resource.TestCheckResourceAttrPair(
 						"checkpointsase_application.app", "network",
