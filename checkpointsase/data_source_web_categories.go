@@ -100,18 +100,25 @@ WebCategory.UnmarshalJSON enforces their presence, so a response omitting either
 fails to decode before this function is reached and both keys are written
 unconditionally.
 
-CODES IS DIFFERENT, AND THE NIL CHECK BELOW IS LOAD-BEARING — DO NOT REMOVE IT.
-The v3 document declares codes required too, but the server does not send it:
-measured live on 2026-08-19, GET /v3/objects/web-category returned a full
-catalog in which every entry carried exactly id and name and the string "codes"
-appeared nowhere (e.g. {"id":"100000034","name":"Real Estate"}). While codes was
-in the generated requiredProperties list that response failed to decode
-ENTIRELY, and this data source reported "Unable to get Web categories" on a
-valid 200. Overlay entry A20-web-category-codes-not-required makes it optional
-in the SDK, which is the layer the defect is in; the consequence here is that
-Codes is nil on every real response today, so coercing it to an empty []string
-is what puts a list rather than a null into state.
-TestWebCategoryDecodesWithoutCodes pins all of this.
+Codes is different: the v3 document declares it required too, but the server does
+not send it. Measured live on 2026-08-19, GET /v3/objects/web-category returned a
+full catalog in which every entry carried exactly id and name and the string
+"codes" appeared nowhere (e.g. {"id":"100000034","name":"Real Estate"}). While
+codes was in the generated requiredProperties list that response failed to decode
+ENTIRELY, and this data source reported "Unable to get Web categories" on a valid
+200. Overlay entry A20-web-category-codes-not-required makes the field optional
+in the SDK, which is the layer the defect is in.
+TestWebCategoryDecodesWithoutCodes pins that part, and it is the part that
+matters: without the overlay entry there is no response to flatten at all.
+
+THE NIL COERCION BELOW IS BELT-AND-BRACES, NOT LOAD-BEARING. An earlier version
+of this comment claimed removing it would put a null into state. That is wrong,
+and it was corrected on 2026-08-20 after a direct probe: schema.ResourceData.Set
+normalises a nil slice to an empty list on its own, including for a list nested
+inside a list element, so state holds [] either way. The coercion is kept because
+it makes the intent legible at the point where Codes is known to be nil on every
+real response, not because anything depends on it. Do not build another comment
+or test on the assumption that it is required.
 */
 func flattenWebCategories(categories []perimeter81Sdk.WebCategory) []interface{} {
 	result := make([]interface{}, len(categories))
