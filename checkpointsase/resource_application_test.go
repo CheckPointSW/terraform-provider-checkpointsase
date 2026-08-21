@@ -51,21 +51,22 @@ func testAccApplicationName() string { return "tfacc" + randNameApplication }
 // simply missing. That converts L1 from a code-reading claim into a measured
 // one. It is set with no ImportStateVerifyIgnore — nothing is excluded.
 //
-// Note what the import step cannot reach: terraform-plugin-sdk's
+// The import step reaches `groups` too, and that is new. terraform-plugin-sdk's
 // ImportStateVerify drops flatmap container keys whose count is "0" from both
-// sides before comparing, so with `groups` unset in configuration the missing
-// d.Set("groups", ...) is invisible — both sides are empty. Measuring the
-// groups half of L1 requires a real tenant group ID in the configuration, and
-// this test does not have one and will not invent one, because an invalid
-// group ID would fail Create for an unrelated reason and prove nothing. The
-// groups gap (APP-D03) therefore stays unmeasured here; it is called out in the
-// task report rather than papered over.
+// sides before comparing, so while `groups` was unset in configuration the
+// missing d.Set("groups", ...) was invisible — both sides were empty. Measuring
+// the groups half of L1 needs a real group ID in the configuration, and the
+// fixture now mints one instead of reading it from the environment: it declares
+// a checkpointsase_group and grants the application access to it. Step 1's state
+// therefore carries groups.# = "1", the imported state carries whatever Read
+// writes, and APP-D03 is measured rather than assumed — it is expected to fail
+// until Read sets groups (Phase 6).
 func TestAccApplication_basic(t *testing.T) {
 	t.Parallel()
 	var application perimeter81Sdk.GetApplicationById200Response
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:  func() { testAccPreCheck(t); testAccPreCheckGroup(t) },
+		PreCheck:  func() { testAccPreCheck(t) },
 		Providers: testAccProviders,
 		// No CheckDestroy: no other TestAcc test in this package defines one,
 		// and for this resource none could assert anything true. Destroy
@@ -101,7 +102,9 @@ func TestAccApplication_basic(t *testing.T) {
 					// assertion fails, which is the point -- it was unmeasurable while the
 					// fixture left groups unset.
 					resource.TestCheckResourceAttr("checkpointsase_application.app", "groups.#", "1"),
-					resource.TestCheckResourceAttr("checkpointsase_application.app", "groups.0", testAccGroupID()),
+					resource.TestCheckResourceAttrPair(
+						"checkpointsase_application.app", "groups.0",
+						"checkpointsase_group.app_access", "id"),
 					resource.TestCheckResourceAttr("checkpointsase_application.app", "port", "443"),
 					resource.TestCheckResourceAttrPair(
 						"checkpointsase_application.app", "network",
@@ -266,12 +269,26 @@ func testAccCheckApplicationAttributes(application *perimeter81Sdk.GetApplicatio
 }
 
 /*
-testAccApplicationConfig builds one network and one HTTPS application inside
-it. type is https because it is one of the three the schema's ValidateFunc
-permits creating (APP-N02), and it exercises the HttpsApplication leg of the
-response union. The host is an RFC 1918 placeholder — this test is about the
-Terraform lifecycle, not a reachable service. users and groups are omitted:
-both take tenant-specific IDs that the acceptance harness does not supply.
+testAccApplicationConfig builds one network, one group and one HTTPS application
+inside them. type is https because it is one of the three the schema's
+ValidateFunc permits creating (APP-N02), and it exercises the HttpsApplication
+leg of the response union. The host is an RFC 1918 placeholder — this test is
+about the Terraform lifecycle, not a reachable service. users is omitted: it
+takes tenant-specific directory IDs the harness cannot mint. groups is not, both
+because the API refuses an application that grants access to nobody and because
+checkpointsase_group can now mint the group in-band — which is why this fixture
+no longer reads a tenant-specific group ID out of the environment.
+
+CLEANUP: THIS FIXTURE STRANDS THREE OBJECTS, NOT TWO. LEFTOVERS.md L14 —
+applications have no delete endpoint, so `terraform destroy` clears the
+application from state, leaves it on the tenant, and then fails at the network
+the surviving application pins. The group below joins that pile: destroy does
+call DELETE /v3/groups for it, but the surviving application still grants access
+to it, so the delete may be refused as well. Budget a manual sweep of one
+application, one network and one group per run.
+
+The group name carries the same randStringBytesRmndr() suffix as the network, so
+a re-run cannot collide with a group a previous failed run left behind.
 */
 func testAccApplicationConfig() string {
 	config := `
@@ -284,6 +301,11 @@ resource "checkpointsase_network" "n1" {
     cpregion_id = "%[2]s"
     idle = true
   }
+}
+
+resource "checkpointsase_group" "app_access" {
+  name        = "tf-acc-app-access-%[1]s"
+  description = "Terraform acceptance test, safe to ignore."
 }
 
 resource "checkpointsase_application" "app" {
@@ -303,8 +325,8 @@ resource "checkpointsase_application" "app" {
   # being read back (there is no d.Set("groups", ...) anywhere in Read), which
   # was previously unmeasurable because ImportStateVerify drops empty
   # containers from both sides.
-  groups = ["%[4]s"]
+  groups = [checkpointsase_group.app_access.id]
 }
   `
-	return fmt.Sprintf(config, randNameApplication, testAccRegionID(), testAccApplicationName(), testAccGroupID())
+	return fmt.Sprintf(config, randNameApplication, testAccRegionID(), testAccApplicationName())
 }
