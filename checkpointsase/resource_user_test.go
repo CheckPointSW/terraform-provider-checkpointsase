@@ -16,6 +16,7 @@ import (
 	"time"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
@@ -1085,7 +1086,7 @@ func testAccDeleteUserOutOfBand(t *testing.T, id *string) func() {
 		if *id == "" {
 			t.Fatal("no user id was captured; the preceding step's Check did not run")
 		}
-		client := testAccProvider.Meta().(*perimeter81Sdk.APIClient)
+		client := testAccEnvClient()
 		if _, _, err := client.TeamAPI.DeleteUser(context.Background(), *id).Execute(); err != nil {
 			t.Fatalf("deleting user %s out of band: %s", *id, err)
 		}
@@ -1112,7 +1113,7 @@ filter is broken and hides live accounts" report identically, and the row would
 pass either way. Asserting the flag instead proves the server actually marked it.
 */
 func testAccCheckUserDestroy(s *terraform.State) error {
-	client := testAccProvider.Meta().(*perimeter81Sdk.APIClient)
+	client := testAccEnvClient()
 	for _, rs := range s.RootModule().Resources {
 		if rs.Type != "checkpointsase_user" {
 			continue
@@ -1230,4 +1231,79 @@ resource "checkpointsase_user" "test" {
   email_verified = true
 }
 `, email)
+}
+
+/*
+TestUserMixedCaseEmailDoesNotForceReplacement is the offline gate on the defect
+that the first live acceptance run found and the offline suite was green over.
+
+THE SERVER FOLDS THE ADDRESS TO LOWERCASE (API-FINDINGS.md 1.12). So state ends
+up holding the folded form while the configuration holds whatever the operator
+wrote, and because `email` is ForceNew the difference is not a cosmetic diff --
+it is a proposal to delete the account and re-invite it, on every plan, forever.
+The live plan that exposed it read:
+
+	~ email = "...uknwejlupb@..." -> "...uKNWejLupb@..."  # forces replacement
+
+This drives the real diff engine rather than inspecting the schema, because the
+question is not "is a StateFunc present" but "does a case-only difference
+produce a replacement". Removing the StateFunc from resource_user.go makes the
+first subtest fail with RequiresNew = true.
+*/
+func TestUserMixedCaseEmailDoesNotForceReplacement(t *testing.T) {
+	r := resourceUser()
+	for _, tc := range []struct {
+		name        string
+		stateEmail  string
+		configEmail string
+		wantReplace bool
+	}{
+		{"case-only difference is the same address", "someone@example.com", "SomeOne@Example.com", false},
+		{"identical", "someone@example.com", "someone@example.com", false},
+		{"a genuinely different address still replaces", "someone@example.com", "another@example.com", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prior := terraform.NewInstanceStateShimmedFromValue(cty.ObjectVal(map[string]cty.Value{
+				"email":          cty.StringVal(tc.stateEmail),
+				"invite_message": cty.StringVal("welcome"),
+				"idp_type":       cty.StringVal("database"),
+			}), 0)
+			prior.ID = "usr1"
+
+			cfg := terraform.NewResourceConfigRaw(map[string]interface{}{
+				"email":          tc.configEmail,
+				"invite_message": "welcome",
+				"idp_type":       "database",
+			})
+
+			diff, err := r.Diff(context.Background(), prior, cfg, nil)
+			if err != nil {
+				t.Fatalf("Diff: %v", err)
+			}
+			gotReplace := diff != nil && diff.RequiresNew()
+			if gotReplace != tc.wantReplace {
+				t.Errorf("RequiresNew = %v, want %v (state %q, config %q). A case-only "+
+					"difference must not delete and re-invite a real person; the server folds "+
+					"the address, so the provider has to agree about the canonical form",
+					gotReplace, tc.wantReplace, tc.stateEmail, tc.configEmail)
+			}
+		})
+	}
+}
+
+/*
+TestUserEmailStateFuncCanonicalises pins the direction of the normalisation, so
+a future change cannot satisfy the diff test by upper-casing instead and leaving
+state disagreeing with the server.
+*/
+func TestUserEmailStateFuncCanonicalises(t *testing.T) {
+	fn := resourceUser().Schema["email"].StateFunc
+	if fn == nil {
+		t.Fatal("email has no StateFunc: state would hold whatever case the config used, " +
+			"while the server holds the folded form")
+	}
+	if got := fn("SomeOne@Example.COM"); got != "someone@example.com" {
+		t.Errorf("StateFunc(%q) = %q, want %q -- must fold to LOWER case, which is what the "+
+			"server stores", "SomeOne@Example.COM", got, "someone@example.com")
+	}
 }

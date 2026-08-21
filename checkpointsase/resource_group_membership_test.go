@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
@@ -868,7 +867,7 @@ The group being absent counts as destroyed rather than as an error. A full
 destroy removes the group too, and a group with no members cannot hold this one.
 */
 func testAccCheckGroupMembershipDestroy(s *terraform.State) error {
-	client := testAccProvider.Meta().(*perimeter81Sdk.APIClient)
+	client := testAccEnvClient()
 	for _, rs := range s.RootModule().Resources {
 		if rs.Type != "checkpointsase_group_membership" {
 			continue
@@ -911,7 +910,7 @@ func testAccCheckGroupMembershipRemovedAndParentsAlive(groupID, userID *string) 
 		if *groupID == "" || *userID == "" {
 			return fmt.Errorf("no parent ids were captured; the first step's Check did not run")
 		}
-		client := testAccProvider.Meta().(*perimeter81Sdk.APIClient)
+		client := testAccEnvClient()
 
 		group, found, _, err := findGroupByID(context.Background(), client, *groupID)
 		if err != nil {

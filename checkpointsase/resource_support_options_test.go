@@ -3,7 +3,6 @@ package checkpointsase
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
@@ -547,12 +546,10 @@ which is after PreCheck. Both variables it reads are the ones the provider's own
 schema defaults to.
 */
 func testAccSupportOptionsClient() *perimeter81Sdk.APIClient {
-	baseURL := os.Getenv("BASE_URL")
-	if baseURL == "" {
-		baseURL = perimeter81Sdk.BaseURLUS
-	}
-	return perimeter81Sdk.NewAPIClient(
-		perimeter81Sdk.NewConfiguration(os.Getenv("CHECKPOINT_SASE_API_KEY"), baseURL))
+	// Delegates to the shared helper so the two cannot drift. Same behaviour;
+	// testAccEnvClient additionally reuses the provider's own client once the
+	// harness has configured it.
+	return testAccEnvClient()
 }
 
 /*

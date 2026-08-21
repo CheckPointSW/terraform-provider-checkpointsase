@@ -1,6 +1,7 @@
 package checkpointsase
 
 import (
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 	"os"
 	"testing"
 
@@ -35,6 +36,34 @@ func TestProvider(t *testing.T) {
 
 func TestProvider_impl(t *testing.T) {
 	var _ *schema.Provider = Provider()
+}
+
+/*
+testAccEnvClient builds an SDK client straight from the environment, exactly as
+providerConfigure builds one from the provider block.
+
+USE THIS IN CheckDestroy AND IN ANY HELPER THAT RUNS OUTSIDE A TEST STEP, never
+testAccProvider.Meta(). Meta() is nil both before the harness configures the
+provider and on the failure path afterwards, and a CheckDestroy that panics is
+worse than one that fails: on 2026-08-20 a nil Meta() panic in
+testAccCheckUserDestroy aborted a live run before it printed the real cause of
+the failure underneath it, which then took a separate single-test run to find.
+A destroy check matters most exactly when the test under it has already failed.
+
+Both variables are the ones the provider's own schema defaults to.
+*/
+func testAccEnvClient() *perimeter81Sdk.APIClient {
+	if meta := testAccProvider.Meta(); meta != nil {
+		if client, ok := meta.(*perimeter81Sdk.APIClient); ok {
+			return client
+		}
+	}
+	baseURL := os.Getenv("BASE_URL")
+	if baseURL == "" {
+		baseURL = perimeter81Sdk.BaseURLUS
+	}
+	return perimeter81Sdk.NewAPIClient(
+		perimeter81Sdk.NewConfiguration(os.Getenv("CHECKPOINT_SASE_API_KEY"), baseURL))
 }
 
 func testAccPreCheck(t *testing.T) {

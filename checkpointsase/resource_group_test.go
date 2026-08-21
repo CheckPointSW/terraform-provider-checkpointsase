@@ -1078,7 +1078,7 @@ func testAccDeleteGroupOutOfBand(t *testing.T, id *string) func() {
 		if *id == "" {
 			t.Fatal("no group id was captured; the preceding step's Check did not run")
 		}
-		client := testAccProvider.Meta().(*perimeter81Sdk.APIClient)
+		client := testAccEnvClient()
 		if _, _, err := client.TeamAPI.DeleteGroup(context.Background(), *id).Execute(); err != nil {
 			t.Fatalf("deleting group %s out of band: %s", *id, err)
 		}
@@ -1090,7 +1090,7 @@ func testAccDeleteGroupOutOfBand(t *testing.T, id *string) func() {
 // findGroupByID rather than a single page, so a tenant with more than one page of
 // groups cannot report a surviving group as destroyed.
 func testAccCheckGroupDestroy(s *terraform.State) error {
-	client := testAccProvider.Meta().(*perimeter81Sdk.APIClient)
+	client := testAccEnvClient()
 	for _, rs := range s.RootModule().Resources {
 		if rs.Type != "checkpointsase_group" {
 			continue

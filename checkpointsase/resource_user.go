@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -41,11 +42,40 @@ func resourceUser() *schema.Resource {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
+				// THE SERVER FOLDS THE ADDRESS TO LOWERCASE, so the provider has
+				// to agree with it about the canonical form. Measured live on
+				// 2026-08-20: POST /v3/users with "tf-acc-IRaJCqyhVx@example.com"
+				// stored and returned "tf-acc-irajcqyhvx@example.com", and derived
+				// `username` from the folded value. API-FINDINGS.md 1.12.
+				//
+				// The consequence of not doing this is not cosmetic. Read writes
+				// the folded value into state, the configuration still holds the
+				// original, and because `email` is ForceNew EVERY subsequent plan
+				// proposes destroying and re-inviting any user whose address
+				// contains a capital letter -- forever. Observed live:
+				//   ~ email = "...uknwejlupb@..." -> "...uKNWejLupb@..."  # forces replacement
+				//
+				// The description this replaces told the operator to "keep the
+				// configuration in whichever case the tenant stores". That advice
+				// was unfollowable: the folding rule is undocumented, so there was
+				// no way to know what case to write.
+				//
+				// StateFunc RATHER THAN DiffSuppressFunc, deliberately. Both stop
+				// the spurious replacement, but they differ in what they leave
+				// behind. DiffSuppressFunc hides a difference that is really
+				// there, leaving `terraform plan` silent about the address stored
+				// not being the address written. StateFunc canonicalises before
+				// the comparison, so state matches the server, the plan shows the
+				// value that will actually exist, and two configurations differing
+				// only in case are treated as the same address -- which is what
+				// the server thinks too.
+				StateFunc: func(v interface{}) string {
+					return strings.ToLower(v.(string))
+				},
 				Description: "Email address of the user to invite. Changing this replaces the user: " +
-					"the account is deleted and the new address is invited. The comparison is " +
-					"verbatim, including case, so keep the configuration in whichever case the " +
-					"tenant stores — a server that normalises the address would otherwise make " +
-					"the next plan a replacement.",
+					"the account is deleted and the new address is invited. Stored in lowercase, " +
+					"because the API folds the address it receives — `Someone@example.com` and " +
+					"`someone@example.com` are the same user, and both read back folded.",
 				ValidateFunc: validation.StringMatch(
 					regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`),
 					"must be an email address, e.g. someone@example.com",
