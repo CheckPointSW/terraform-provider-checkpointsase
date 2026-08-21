@@ -82,3 +82,22 @@ Optional:
 - `last_name` (String) Family name. Up to 30 characters; letters, spaces, apostrophes and hyphens.
 - `phone` (String) Phone number, 9–15 digits with an optional leading `+`.
 - `role_name` (String) Free-text profile field sent as `profileData.roleName`. The API documents no meaning for it and defaults it to an empty string. Not the same field as the computed top-level `role_name`, which names the user's assigned role.
+
+## Import
+
+Import is supported using the following syntax:
+
+The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
+
+```shell
+# A user is imported by its own ID, which you can list with the
+# checkpointsase_users data source or GET /v3/users.
+#
+# Three attributes cannot be recovered by an import, because the API does not
+# return them: invite_message, idp_type and email_verified. They stay empty in
+# state until you supply them in configuration. The resource carries a
+# DiffSuppressFunc for exactly this case, so the first plan after an import does
+# NOT propose replacing the user -- without it, the empty-to-configured
+# transition on a ForceNew attribute would delete the account and re-invite it.
+terraform import checkpointsase_user.example ktewV1wJBI
+```

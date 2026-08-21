@@ -140,12 +140,11 @@ func resourceGroupMembershipRead(ctx context.Context, d *schema.ResourceData, m 
 	// findGroupByID, not a single ListGroups call: it paginates. A group on
 	// page 2 of a large tenant would otherwise read as absent, and this Read
 	// would report the membership as drift and recreate it.
-	group, found, resp, err := findGroupByID(ctx, client, groupID)
+	// No isNotFound branch: see the note in resourceUserRead. A 404 here is a
+	// wrong URL, not a vanished group; the group being gone arrives as
+	// found == false below.
+	group, found, _, err := findGroupByID(ctx, client, groupID)
 	if err != nil {
-		if isNotFound(resp, err) {
-			d.SetId("")
-			return diags
-		}
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to list groups", err)
 	}

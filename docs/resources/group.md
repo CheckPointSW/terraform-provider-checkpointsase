@@ -65,3 +65,21 @@ output "engineering_members" {
 - `networks` (List of String) IDs of the networks this group has access to.
 - `users` (List of String) IDs of the group's members. Managed with `checkpointsase_group_membership`, one resource per member, so it is read-only here.
 - `vpn_locations` (List of String) IDs of the VPN locations this group has access to.
+
+## Import
+
+Import is supported using the following syntax:
+
+The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
+
+```shell
+# A group is imported by its own ID, which you can list with the
+# checkpointsase_groups data source or GET /v3/groups.
+#
+# `description` cannot be recovered by an import: the Group object the API
+# returns carries no description field at all, so the value is write-only. It
+# stays empty in state until you supply it in configuration, and the resource's
+# DiffSuppressFunc stops that transition from replacing the group -- which would
+# otherwise drop every membership in it.
+terraform import checkpointsase_group.example MrawzXWSFg
+```

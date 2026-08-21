@@ -849,7 +849,7 @@ func TestAccCheckpointsaseUser_basic(t *testing.T) {
 					resource.TestCheckResourceAttrSet("checkpointsase_user.test", "id"),
 					// The FOLDED form, not `email`: the fixture sends mixed case on
 					// purpose (see testAccUserEmailStored) and the server lowercases it.
-					resource.TestCheckResourceAttr("checkpointsase_user.test", "email", strings.ToLower(email)),
+					resource.TestCheckResourceAttr("checkpointsase_user.test", "email", testAccUserEmailStored(suffix)),
 					resource.TestCheckResourceAttr("checkpointsase_user.test", "terminated", "false"),
 					resource.TestCheckResourceAttrSet("checkpointsase_user.test", "username"),
 					// `role` is populated on an invited user; `role_name` is NOT.
@@ -913,7 +913,7 @@ func TestAccCheckpointsaseUser_replaceOnEmailChange(t *testing.T) {
 				Config: testAccUserConfigBasic(second),
 				Check: resource.ComposeTestCheckFunc(
 					// The FOLDED form; see testAccUserEmailStored.
-					resource.TestCheckResourceAttr("checkpointsase_user.test", "email", strings.ToLower(second)),
+					resource.TestCheckResourceAttr("checkpointsase_user.test", "email", testAccUserEmailStored(suffix+"-b")),
 					func(s *terraform.State) error {
 						rs := s.RootModule().Resources["checkpointsase_user.test"]
 						if rs.Primary.ID == firstID {
@@ -998,6 +998,19 @@ resource "checkpointsase_user" "first" {
 }
 
 resource "checkpointsase_user" "second" {
+  # depends_on IS LOAD-BEARING, and its absence explains a flake.
+  #
+  # Terraform creates unrelated resources concurrently, so without this both
+  # POSTs race. The create is keyed on the address -- API-FINDINGS 1.14 shows
+  # re-inviting a deleted address reactivates the original record -- so which
+  # request wins, and whether the loser sees a duplicate at all, depends on
+  # arrival order at the server. This test failed once in five live runs with no
+  # explanation; the whole-branch review identified the race as the mechanism.
+  #
+  # Serialising the two makes the second POST deterministically the duplicate,
+  # which is the only thing this row is trying to observe.
+  depends_on = [checkpointsase_user.first]
+
   email          = %[1]q
   invite_message = "Terraform acceptance test, safe to ignore."
   email_verified = true

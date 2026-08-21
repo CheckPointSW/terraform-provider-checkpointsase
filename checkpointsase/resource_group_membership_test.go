@@ -427,10 +427,19 @@ member is in fact still there the re-POST papers over it -- while any operator
 running `terraform plan` during a server incident sees phantom changes across
 every membership they own.
 
-A 404 on the COLLECTION is different and must still clear the id: /v3/groups
-answering "not found" means the tenant has no such collection to search, so the
-membership cannot be established either way. That is the drift path GRP-D02's
-precondition uses.
+A 404 on the COLLECTION is ALSO an error, and this test used to assert the
+opposite. The old reasoning was that /v3/groups answering "not found" means
+there is no collection to search, so the membership cannot be established
+either way. That is wrong, and the whole-branch review caught it: a collection
+endpoint does not 404 because its contents are missing. It 404s because the URL
+is wrong -- which is the failure the README documents, where an unset BASE_URL
+sends every call to the US production host and the server answers "Cannot POST
+/api/v3/groups".
+
+Under the old behaviour a single misconfiguration cleared the id of every
+membership on refresh, and the next apply re-POSTed all of them. Absence of the
+group arrives as found == false, which is the real drift path GRP-D02 uses; the
+404 branch was never on it.
 */
 func TestGroupMembershipReadDoesNotMistakeAServerErrorForDrift(t *testing.T) {
 	for _, tc := range []struct {
@@ -444,8 +453,10 @@ func TestGroupMembershipReadDoesNotMistakeAServerErrorForDrift(t *testing.T) {
 			`{"message":"boom"}`, true, false},
 		{"503 likewise", http.StatusServiceUnavailable,
 			`{"message":"upstream unavailable"}`, true, false},
-		{"404 on the collection is drift", http.StatusNotFound,
-			`{"message":"not found"}`, false, true},
+		// A 404 from the COLLECTION endpoint is a wrong URL, not a vanished
+		// membership. It must error and must NOT clear the id.
+		{"404 on the collection is a wrong URL, not drift", http.StatusNotFound,
+			`{"message":"not found"}`, true, false},
 		{"200 with the pairing present is no drift at all", http.StatusOK,
 			groupListPage(1, 1, 1, `{"id":"grp-1","name":"Engineering","users":["usr-1"]}`),
 			false, false},

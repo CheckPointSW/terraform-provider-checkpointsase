@@ -497,12 +497,20 @@ func resourceUserRead(ctx context.Context, d *schema.ResourceData, m interface{}
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
 
-	user, found, resp, err := findUserByID(ctx, client, d.Id())
+	// NO isNotFound BRANCH HERE, DELIBERATELY. This is a COLLECTION read, and
+	// a collection endpoint does not 404 because one user is missing -- absence
+	// arrives below as found == false. A 404 from GET /v3/users means the URL
+	// itself is wrong, which is the failure the README documents: with BASE_URL
+	// unset the provider talks to the US production host and every call comes
+	// back "Cannot POST /api/v3/groups".
+	//
+	// Treating that as drift would clear the id of EVERY user on refresh, and
+	// the next apply would re-POST all of them. For groups the same mistake
+	// orphans real groups and every membership in them. A hard error is the
+	// only safe reading. The two data sources over these endpoints already
+	// surface it as an error; this makes the resources agree with them.
+	user, found, _, err := findUserByID(ctx, client, d.Id())
 	if err != nil {
-		if isNotFound(resp, err) {
-			d.SetId("")
-			return diags
-		}
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to list users", err)
 	}
@@ -527,7 +535,17 @@ func resourceUserRead(ctx context.Context, d *schema.ResourceData, m interface{}
 	// when v3 flipped Address.Name to *string; see the comment in
 	// resource_object_addresses.go.
 	for key, value := range map[string]interface{}{
-		"email":               user.GetEmail(),
+		// FOLDED ON THE WAY IN TOO, not just on the config side. The StateFunc
+		// on `email` canonicalises what the operator wrote; this canonicalises
+		// what the server sent, so the two cannot disagree. Without it the
+		// defect API-FINDINGS 1.12 describes just moves to the Read side: a
+		// stored "Ada@Example.com" would differ from the folded config value and
+		// force a replacement on every plan, with no spelling the operator could
+		// use to escape it. The server is believed to fold every address, which
+		// makes this defensive rather than load-bearing -- but the invariant
+		// "state holds the canonical form" should hold because the provider
+		// enforces it, not because the server happens to.
+		"email":               strings.ToLower(user.GetEmail()),
 		"username":            user.GetUsername(),
 		"first_name":          user.GetFirstName(),
 		"last_name":           user.GetLastName(),

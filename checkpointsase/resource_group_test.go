@@ -999,6 +999,13 @@ resource "checkpointsase_group" "first" {
 }
 
 resource "checkpointsase_group" "second" {
+  # Serialised for the same reason as the user twin: Terraform creates unrelated
+  # resources concurrently, so without depends_on both POSTs race and which one
+  # is the duplicate depends on arrival order. See the note in
+  # TestAccCheckpointsaseUser_rejectsDuplicateEmail -- that test flaked once in
+  # five live runs before this was understood.
+  depends_on = [checkpointsase_group.first]
+
   name        = %[1]q
   description = "Terraform acceptance test, safe to ignore."
 }

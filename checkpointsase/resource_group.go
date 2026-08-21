@@ -362,12 +362,12 @@ func resourceGroupRead(ctx context.Context, d *schema.ResourceData, m interface{
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
 
-	group, found, resp, err := findGroupByID(ctx, client, d.Id())
+	// No isNotFound branch: see the note in resourceUserRead. A 404 from the
+	// COLLECTION endpoint means the URL is wrong, not that this group is gone --
+	// absence arrives as found == false. Treating it as drift would clear every
+	// group id on refresh and orphan every membership in them.
+	group, found, _, err := findGroupByID(ctx, client, d.Id())
 	if err != nil {
-		if isNotFound(resp, err) {
-			d.SetId("")
-			return diags
-		}
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to list groups", err)
 	}
