@@ -56,11 +56,22 @@ func testAccApplicationName() string { return "tfacc" + randNameApplication }
 // sides before comparing, so while `groups` was unset in configuration the
 // missing d.Set("groups", ...) was invisible — both sides were empty. Measuring
 // the groups half of L1 needs a real group ID in the configuration, and the
-// fixture now mints one instead of reading it from the environment: it declares
-// a checkpointsase_group and grants the application access to it. Step 1's state
-// therefore carries groups.# = "1", the imported state carries whatever Read
-// writes, and APP-D03 is measured rather than assumed — it is expected to fail
-// until Read sets groups (Phase 6).
+// fixture now reads the tenant's default group through checkpointsase_groups
+// instead of taking it from the environment. Step 1's state therefore carries
+// groups.# = "1", the imported state carries whatever Read writes, and APP-D03
+// is measured rather than assumed — it is expected to fail until Read sets
+// groups (Phase 6).
+//
+// SO THIS TEST IS KNOWN-RED, DELIBERATELY, and that is a tradeoff worth stating.
+// It measures L1 continuously, which is the point. The cost is that
+// TestAccApplication_basic can never be green, so a NEW regression here is
+// invisible against the existing failure. The alternative — listing groups in
+// ImportStateVerifyIgnore and pinning the broken behaviour in a separate test —
+// keeps the suite green at the cost of measuring L1 only indirectly. Neither is
+// obviously right; the choice was made when this test was written and is left
+// alone here. Measured 2026-08-20: the import step fails with exactly
+// `groups.# "1"` and `groups.0` missing after import, which is L1 and nothing
+// else.
 func TestAccApplication_basic(t *testing.T) {
 	t.Parallel()
 	var application perimeter81Sdk.GetApplicationById200Response
@@ -303,9 +314,27 @@ resource "checkpointsase_network" "n1" {
   }
 }
 
-resource "checkpointsase_group" "app_access" {
-  name        = "tf-acc-app-access-%[1]s"
-  description = "Terraform acceptance test, safe to ignore."
+# The tenant's own default group, read rather than created.
+#
+# CREATING A GROUP HERE LEAKS ONE PER RUN, PERMANENTLY. Measured 2026-08-20: the
+# first version of this fixture created its own group, and the post-test destroy
+# then failed with
+#   Unable to delete group {"message":"GROUP_IN_USE","messageCode":"CONFLICT"}
+# because the application still referenced it -- and applications cannot be
+# deleted at all (LEFTOVERS L14), so the reference can never be released. The
+# group, the application AND the network are all stranded together; the network
+# refuses deletion with "Associated applications must be removed first".
+#
+# Reading the default group instead removes the environment variable this task
+# set out to retire WITHOUT adding a leak in its place. Every tenant has exactly
+# one default group, so this needs no fixture, no cleanup and no configuration.
+# It is only possible because Phase 3 built checkpointsase_groups; before that
+# there was no way to discover the group, which is why the ID used to come from
+# CHECKPOINT_SASE_TEST_GROUP_ID.
+data "checkpointsase_groups" "all" {}
+
+locals {
+  default_group_id = one([for g in data.checkpointsase_groups.all.data : g.id if g.is_default])
 }
 
 resource "checkpointsase_application" "app" {
@@ -325,7 +354,7 @@ resource "checkpointsase_application" "app" {
   # being read back (there is no d.Set("groups", ...) anywhere in Read), which
   # was previously unmeasurable because ImportStateVerify drops empty
   # containers from both sides.
-  groups = [checkpointsase_group.app_access.id]
+  groups = [local.default_group_id]
 }
   `
 	return fmt.Sprintf(config, randNameApplication, testAccRegionID(), testAccApplicationName())
