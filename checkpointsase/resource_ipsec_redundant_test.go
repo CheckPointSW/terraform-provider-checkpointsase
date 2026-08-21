@@ -15,7 +15,7 @@ func TestAccIpsecRedundant_basic(t *testing.T) {
 	t.Parallel()
 	var tunnel perimeter81Sdk.IPSecRedundantTunnels
 	resource.Test(t, resource.TestCase{
-		PreCheck:  func() { testAccPreCheck(t) },
+		PreCheck:  func() { testAccPreCheck(t); testAccPreCheckRegion(t) },
 		Providers: testAccProviders,
 		Steps: []resource.TestStep{
 			{

@@ -17,7 +17,7 @@ func TestAccGateway_basic(t *testing.T) {
 	var network perimeter81Sdk.Network
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:  func() { testAccPreCheck(t) },
+		PreCheck:  func() { testAccPreCheck(t); testAccPreCheckRegion(t) },
 		Providers: testAccProviders,
 		Steps: []resource.TestStep{
 			{

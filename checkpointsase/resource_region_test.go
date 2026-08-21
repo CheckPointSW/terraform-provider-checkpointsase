@@ -19,6 +19,7 @@ func TestAccRegion_basic(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck: func() {
 			testAccPreCheck(t)
+			testAccPreCheckRegion(t)
 			testAccPreCheckSecondaryRegion(t)
 		},
 		Providers: testAccProviders,

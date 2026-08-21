@@ -66,7 +66,7 @@ func TestAccApplication_basic(t *testing.T) {
 	var application perimeter81Sdk.GetApplicationById200Response
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:  func() { testAccPreCheck(t) },
+		PreCheck:  func() { testAccPreCheck(t); testAccPreCheckRegion(t) },
 		Providers: testAccProviders,
 		// No CheckDestroy: no other TestAcc test in this package defines one,
 		// and for this resource none could assert anything true. Destroy

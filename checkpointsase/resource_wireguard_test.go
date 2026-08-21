@@ -18,7 +18,7 @@ func TestAccWireguard_basic(t *testing.T) {
 	var tunnel perimeter81Sdk.WireguardTunnel
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:  func() { testAccPreCheck(t) },
+		PreCheck:  func() { testAccPreCheck(t); testAccPreCheckRegion(t) },
 		Providers: testAccProviders,
 		Steps: []resource.TestStep{
 			{

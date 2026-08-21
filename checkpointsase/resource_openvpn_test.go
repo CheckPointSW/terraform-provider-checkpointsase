@@ -29,7 +29,7 @@ func TestAccOpenvpn_basic(t *testing.T) {
 	// the previous version of this test ended up comparing against "".
 	var createdSecret string
 	resource.Test(t, resource.TestCase{
-		PreCheck:  func() { testAccPreCheck(t) },
+		PreCheck:  func() { testAccPreCheck(t); testAccPreCheckRegion(t) },
 		Providers: testAccProviders,
 		Steps: []resource.TestStep{
 			{

@@ -76,7 +76,7 @@ func TestAccFirewallPolicy_basic(t *testing.T) {
 	var policy perimeter81Sdk.GranularFirewallPolicy
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:  func() { testAccPreCheck(t) },
+		PreCheck:  func() { testAccPreCheck(t); testAccPreCheckRegion(t) },
 		Providers: testAccProviders,
 		Steps: []resource.TestStep{
 			// Step 1 (FW-01): adopt the auto-created policy and push a
