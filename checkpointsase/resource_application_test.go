@@ -3,6 +3,7 @@ package checkpointsase
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
@@ -113,9 +114,22 @@ func TestAccApplication_basic(t *testing.T) {
 					// assertion fails, which is the point -- it was unmeasurable while the
 					// fixture left groups unset.
 					resource.TestCheckResourceAttr("checkpointsase_application.app", "groups.#", "1"),
-					resource.TestCheckResourceAttrPair(
-						"checkpointsase_application.app", "groups.0",
-						"checkpointsase_group.app_access", "id"),
+					// The fixture reads the tenant's DEFAULT group rather than
+					// creating one, so there is no checkpointsase_group.app_access
+					// to compare against. An earlier version of this file still
+					// pointed at one after the fixture had changed, and step 1
+					// failed with
+					//   Not found: checkpointsase_group.app_access in [root]
+					// -- the same half-fix that bit this file once before, when
+					// GroupCount stayed 0 after a group was added. If you change
+					// where the group comes from, change this too.
+					//
+					// NOT a TestCheckResourceAttrPair against data.0.id: that
+					// would assume the default group is FIRST in the data
+					// source's list, which nothing guarantees. It happens to be
+					// true on a tenant with one group and would break silently on
+					// a tenant with several.
+					testAccCheckApplicationGrantsTheDefaultGroup(),
 					resource.TestCheckResourceAttr("checkpointsase_application.app", "port", "443"),
 					resource.TestCheckResourceAttrPair(
 						"checkpointsase_application.app", "network",
@@ -358,4 +372,56 @@ resource "checkpointsase_application" "app" {
 }
   `
 	return fmt.Sprintf(config, randNameApplication, testAccRegionID(), testAccApplicationName())
+}
+
+/*
+testAccCheckApplicationGrantsTheDefaultGroup asserts the application's single
+granted group is the tenant's default group, found by its is_default flag rather
+than by position in the data source's list.
+
+Written as a custom check because the obvious one-liner --
+TestCheckResourceAttrPair against "data.0.id" -- silently assumes the default
+group sorts first. That holds on a tenant with one group and fails on a tenant
+with several, which is the worst kind of assertion: correct where it is
+developed, wrong where it matters.
+*/
+func testAccCheckApplicationGrantsTheDefaultGroup() resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		ds, ok := s.RootModule().Resources["data.checkpointsase_groups.all"]
+		if !ok {
+			return fmt.Errorf("data.checkpointsase_groups.all not in state")
+		}
+		attrs := ds.Primary.Attributes
+		count, err := strconv.Atoi(attrs["data.#"])
+		if err != nil {
+			return fmt.Errorf("data.# is %q, not a number", attrs["data.#"])
+		}
+		var defaultID string
+		for i := 0; i < count; i++ {
+			if attrs[fmt.Sprintf("data.%d.is_default", i)] == "true" {
+				if defaultID != "" {
+					return fmt.Errorf("the tenant reports more than one default group; " +
+						"the fixture's `one(...)` would already have failed, so this means " +
+						"the data source is misreporting is_default")
+				}
+				defaultID = attrs[fmt.Sprintf("data.%d.id", i)]
+			}
+		}
+		if defaultID == "" {
+			return fmt.Errorf("no group in data.checkpointsase_groups.all has "+
+				"is_default = true, out of %d; the fixture cannot grant access to "+
+				"anything and the API refuses an application that grants access to "+
+				"nobody", count)
+		}
+
+		app, ok := s.RootModule().Resources["checkpointsase_application.app"]
+		if !ok {
+			return fmt.Errorf("checkpointsase_application.app not in state")
+		}
+		if got := app.Primary.Attributes["groups.0"]; got != defaultID {
+			return fmt.Errorf("application groups.0 = %q, want the default group %q",
+				got, defaultID)
+		}
+		return nil
+	}
 }
