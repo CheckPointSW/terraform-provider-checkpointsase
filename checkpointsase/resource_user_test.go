@@ -847,10 +847,20 @@ func TestAccCheckpointsaseUser_basic(t *testing.T) {
 				Config: testAccUserConfigBasic(email),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttrSet("checkpointsase_user.test", "id"),
-					resource.TestCheckResourceAttr("checkpointsase_user.test", "email", email),
+					// The FOLDED form, not `email`: the fixture sends mixed case on
+					// purpose (see testAccUserEmailStored) and the server lowercases it.
+					resource.TestCheckResourceAttr("checkpointsase_user.test", "email", strings.ToLower(email)),
 					resource.TestCheckResourceAttr("checkpointsase_user.test", "terminated", "false"),
 					resource.TestCheckResourceAttrSet("checkpointsase_user.test", "username"),
-					resource.TestCheckResourceAttrSet("checkpointsase_user.test", "role_name"),
+					// `role` is populated on an invited user; `role_name` is NOT.
+					// Measured live 2026-08-20: a freshly invited account comes back
+					// with role = "User" and roleName empty, and the name only
+					// appears once the invitation is accepted. So this asserts the
+					// id-shaped field and deliberately does not require the display
+					// name to be non-empty -- the same distinction the plan draws for
+					// GUM-01's cp_role_id, asserting presence rather than content for
+					// a value the server fills in later.
+					resource.TestCheckResourceAttrSet("checkpointsase_user.test", "role"),
 				),
 			},
 			// USR-01's second half: the same config must produce no diff.
@@ -902,7 +912,8 @@ func TestAccCheckpointsaseUser_replaceOnEmailChange(t *testing.T) {
 			{
 				Config: testAccUserConfigBasic(second),
 				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttr("checkpointsase_user.test", "email", second),
+					// The FOLDED form; see testAccUserEmailStored.
+					resource.TestCheckResourceAttr("checkpointsase_user.test", "email", strings.ToLower(second)),
 					func(s *terraform.State) error {
 						rs := s.RootModule().Resources["checkpointsase_user.test"]
 						if rs.Primary.ID == firstID {
@@ -1179,6 +1190,22 @@ an address the tenant already has.
 */
 func testAccUserEmail(suffix string) string {
 	return "tf-acc-" + suffix + "@" + testAccUserEmailDomain
+}
+
+/*
+testAccUserEmailStored is what the address READS BACK as, which is not what the
+fixture sent: the API folds the address to lowercase (API-FINDINGS.md 1.12) and
+resource_user.go's StateFunc canonicalises to match, so state holds the folded
+form.
+
+THE FIXTURES DELIBERATELY KEEP MIXED CASE. randStringBytesRmndr returns mixed
+case, and that is now the only thing standing between us and a silent regression
+of 1.12 -- lowercasing the fixture would make every one of these tests pass
+whether or not the StateFunc survives. So the fixture stays mixed and the
+EXPECTATION is folded, which is the pairing that actually asserts the behaviour.
+*/
+func testAccUserEmailStored(suffix string) string {
+	return strings.ToLower(testAccUserEmail(suffix))
 }
 
 /*
