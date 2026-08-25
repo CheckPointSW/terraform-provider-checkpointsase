@@ -70,9 +70,14 @@ httpsInspectionDestinationBuckets is the same for destinations, from the
 `HttpsInspectionDestination.type` enum, again agreeing with
 `$defs.ruleBypassDestinations`.
 
-Five types against the access policy's four, and only two names overlap. Note
-`addresses` appears in BOTH tables here, which it never does for the access
-policy -- so an attribute name alone does not tell you which side it belongs to.
+Five types against the access policy's four, and THREE names overlap:
+`categories`, `updatable_objects` and `application_control_applications`. (This
+said "only two" from the commit that introduced the table until the final review;
+in a file whose whole argument is that the two vocabularies must not be assumed
+to be the same, a miscount of the overlap is the wrong thing to leave lying
+about.) Note `addresses` appears in BOTH tables here, which it never does for the
+access policy -- so an attribute name alone does not tell you which side it
+belongs to.
 */
 var httpsInspectionDestinationBuckets = []httpsInspectionBucket{
 	{attr: "categories", apiType: "categories"},
@@ -228,8 +233,13 @@ func resourceHttpsInspectionPolicy() *schema.Resource {
 							Type:     schema.TypeString,
 							Computed: true,
 							Description: "The server-assigned id of this rule. Computed only: the API " +
-								"mints it and there is nothing useful a configuration could set it " +
-								"to. It is stable across a rewrite that leaves the rule in place.",
+								"mints it and there is nothing useful a configuration could set " +
+								"it to. **It is stable for a rule whose _position_ in the list " +
+								"does not change, and not otherwise.** Ids follow array " +
+								"position, not rule content: remove or reorder a preceding " +
+								"block and the ids move with the positions, so the rule that " +
+								"kept its configuration can come back with the id of the one " +
+								"above it. **Key on `name`, not on `id`.**",
 						},
 						"priority": {
 							Type:     schema.TypeInt,
@@ -581,7 +591,12 @@ func httpsInspectionDestinationsResource() *schema.Resource {
 				Description: "Ids of application-control applications this rule matches, as " +
 					"returned by the `checkpointsase_application_control_applications` data " +
 					"source. A set: order is not significant. Omit it to leave the rule " +
-					"unrestricted by application.",
+					"unrestricted by application. **This type is declared by the API " +
+					"document for this endpoint but was not observed in a captured response " +
+					"from it** (API-FINDINGS 1.20) — the one rule measured came back without " +
+					"a bucket of this type — so it is offered on the strength of the contract " +
+					"without having been exercised. Whether a write carrying it is accepted " +
+					"here is unverified.",
 				Elem: &schema.Schema{Type: schema.TypeString},
 			},
 		},
@@ -881,7 +896,7 @@ request minimal and matches what the flattener produces.
 
   - @param raw interface{} - block["sources"], a MaxItems-1 list
 
-@return []perimeter81Sdk.HttpsInspectionSource - never nil; a nil slice serialises as JSON null, which this endpoint family answers with a 500 (API-FINDINGS 1.19)
+@return []perimeter81Sdk.HttpsInspectionSource - never nil; a nil slice serialises as JSON null, and what null does here is EXTRAPOLATION (API-FINDINGS 1.19 measured the STRING "disabled" answering 500, not null) -- see sanitiseAccessPolicyRule
 */
 func expandHttpsInspectionSources(raw interface{}) []perimeter81Sdk.HttpsInspectionSource {
 	sources := []perimeter81Sdk.HttpsInspectionSource{}
@@ -1047,10 +1062,14 @@ loss and it is recorded on httpsInspectionBucket; under a whole-policy resource
 the value would be removed on the next apply regardless, because the
 configuration is the policy.
 
-The loop over the table BREAKS on the first match rather than continuing: two
-buckets of the same type would otherwise silently last-win instead of being
-noticed, and on this policy `addresses` is a legal type on both sides, so the
-table lookup is doing more work than the access policy's.
+The loop over the table BREAKS once the type has matched, because every apiType
+in the table is distinct and nothing after the match can match. That is all the
+break does. It used to claim it stopped two buckets of the same TYPE from
+silently last-winning; it does not -- it exits the inner loop over the table,
+while the outer loop over the server's buckets carries on, so a second bucket of
+one type still overwrites the first exactly as it does in the access policy's
+flatteners, which have no break. Detecting that would be a behaviour change and a
+different decision; it is recorded in LEFTOVERS rather than half-claimed here.
 */
 func flattenHttpsInspectionSources(sources []perimeter81Sdk.HttpsInspectionSource) []interface{} {
 	block := map[string]interface{}{}

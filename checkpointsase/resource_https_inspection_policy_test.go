@@ -32,32 +32,25 @@ ACCEPTANCE tests. They run only under TF_ACC, against a real tenant, and they
 replace that tenant's entire HTTPS-inspection policy. Read the header on
 swg_acc_check_helpers_test.go before touching them.
 
-WHERE THE FIXTURE COMES FROM, because the last resource's reviewer had to ask.
+WHERE THE FIXTURE COMES FROM: a real GET, and the provenance lives on the builder
+that produces it, not here. See the comment inside
+httpsInspectionCanonicalRuleJSON.
 
-No raw GET body from /v3/ia/https-inspection/policy exists anywhere in this
-repository, so the fixture below is CONSTRUCTED, not captured, and every part of
-it is traceable to one of four sources:
+THIS BLOCK USED TO SAY THE OPPOSITE, and that is worth one line of history. Until
+2026-08-25 no raw GET body from /v3/ia/https-inspection/policy existed anywhere in
+this repository, so the fixture was CONSTRUCTED from the OpenAPI document and the
+sibling endpoint's measurements, and this header said so at length -- including
+that the destination bucket order was "the OpenAPI `type` enums in the document's
+own order", which it called an inference. A body was then captured and it
+disagreed on three points; the builder was replaced and the replacement documented
+on the builder, and this header was left behind asserting the inference.
 
-  - The envelope `{status, data:{controlledBy, bypassRules[]}}` -- the surface
-    table in phase4-verification, corroborated by HttpsInspectionPolicyGetResponse
-    in the OpenAPI document. `controlledBy: "hsase"` is what W3 measured on the
-    live tenant.
-  - The empty-bucket expansion -- phase4-verification W1, "Same canonicalisation",
-    over the empty case API-FINDINGS 1.15 measured on the sibling endpoint. WHICH
-    buckets and in WHAT ORDER the server returns for this list was NOT recorded,
-    so the set below is the OpenAPI `type` enums in the document's own order.
-    That is an inference and it is deliberately harmless: the flatteners key on
-    `type`, never on position or count, which
-    TestHttpsInspectionFlattenDropsTheServerEmptyBuckets asserts directly.
-  - `_created_at` -- phase4-verification W1, which lists it as the field this read
-    model has and the access policy's does not. That is a measurement.
-  - `className: "RuleBypass"` and `objectId` -- perimeter81-swg-api's own
-    component fixtures for stored bypass rules
-    (test/customMocks/component/data.ts, `bypassRules`), which carry both.
-    `fromDefault` is deliberately ABSENT: it appears on access-policy reads and
-    nothing records it on this endpoint, and inventing it would be exactly the
-    fidelity claim the last fixture was pulled up for. httpsInspectionRefusedFields
-    strips it either way, and policy_list_test.go pins that list.
+A header that contradicts the code forty lines below it is worse than no header,
+because the fixture is the one thing in this file a reader cannot check by
+reading: the next engineer to notice that the bucket order is not the document's
+order would have found a header telling them it was supposed to be, and
+"corrected" the one captured body this endpoint has. Nothing would have failed --
+the flatteners key on `type`.
 
 Enum values used below (`appliedOn`, `action`, `status`, `log`, and every bucket
 `type`) were each checked against the OpenAPI document rather than carried over
@@ -71,8 +64,8 @@ form -- what the server returns, not what a client sends -- with the bucket
 expansion spelled out literally:
 
 	sources      [] -> users, groups, applications, addresses, each empty
-	destinations [] -> categories, domains, addresses, updatableObjects,
-	                   applicationControlApplications, each empty
+	destinations [] -> addresses, categories, domains, updatableObjects,
+	                   each empty
 
 The caller supplies the buckets that are NOT empty, so one helper produces both
 the "unrestricted rule" case and the populated one. The empty buckets are always
@@ -100,8 +93,18 @@ func httpsInspectionCanonicalRuleJSON(id, name, appliedOn, action string, priori
 	//
 	//   - DESTINATION ORDER is addresses, categories, domains, updatableObjects.
 	//     The constructed version led with categories.
-	//   - There is NO applicationControlApplications bucket on this endpoint.
-	//     The constructed version invented one; it belongs to the access policy.
+	//   - The captured rule's canonicalised destinations carried NO
+	//     applicationControlApplications bucket, and the constructed version
+	//     emitted one. Note what that does and does not establish: it is one
+	//     rule's canonicalisation, not the endpoint's legal vocabulary.
+	//     HttpsInspectionDestination.type declares applicationControlApplications
+	//     (v3.yaml:5644), this resource ships it in
+	//     httpsInspectionDestinationBuckets, and
+	//     TestHttpsInspectionBucketTablesCoverTheAPIEnums holds the table to that
+	//     enum in both directions. Whether a POST carrying one is accepted here
+	//     is UNMEASURED (API-FINDINGS 1.20, as corrected). So the fixture omits
+	//     the bucket because the server omitted it, and nothing in this file may
+	//     assert that the type is illegal.
 	//   - The rule carries NO className, objectId or fromDefault. Only
 	//     _created_at. The constructed version added two the server never sends,
 	//     so the strip list was being exercised against fields that never arrive.
@@ -462,7 +465,12 @@ func TestHttpsInspectionFlattenDropsTheServerEmptyBuckets(t *testing.T) {
 		t.Errorf("destinations.domains = %v, want [domain-1]. `domains` is a destination type "+
 			"this policy has and the access policy does not.", destinations["domains"])
 	}
-	for _, empty := range []string{"addresses", "updatable_objects", "application_control_applications"} {
+	// application_control_applications is NOT in this list, and its absence is
+	// the point. The captured body does not emit that bucket at all, so asserting
+	// it is absent from flattened state asserted nothing: the row could never
+	// fail. TestHttpsInspectionFlattensTheApplicationControlApplicationsBucket
+	// covers the type against a response that actually contains it.
+	for _, empty := range []string{"addresses", "updatable_objects"} {
 		if _, present := destinations[empty]; present {
 			t.Errorf("destinations carries %s from an empty bucket", empty)
 		}
@@ -506,6 +514,59 @@ func TestHttpsInspectionFlattenDropsTheServerEmptyBuckets(t *testing.T) {
 			t.Errorf("rule %d priority = %d, want %d", i, got, want)
 		}
 	}
+}
+
+/*
+TestHttpsInspectionFlattensTheApplicationControlApplicationsBucket replaces an
+assertion that could not fail.
+
+`application_control_applications` is one of the five destination types this
+resource ships, because HttpsInspectionDestination.type declares it. The captured
+GET body does not contain a bucket of that type -- one rule's canonicalisation
+did not produce one -- so the row in
+TestHttpsInspectionFlattenDropsTheServerEmptyBuckets that required it to be
+ABSENT from flattened state was vacuous: the fixture never emitted it, so the
+assertion proved nothing about the flattener and would have gone on passing if
+the type had been deleted from httpsInspectionDestinationBuckets entirely.
+
+This drives the type through the flattener directly, in both directions, against
+a response that does contain it. The response is explicitly HYPOTHETICAL and is
+not folded into the captured fixture: whether this endpoint ever emits such a
+bucket is unmeasured (API-FINDINGS 1.20, as corrected), and a fixture that
+claimed otherwise would be the fidelity defect this file has already shipped
+twice.
+
+Delete the table entry and the first half fails; break the empty-bucket rule and
+the second half fails.
+*/
+func TestHttpsInspectionFlattensTheApplicationControlApplicationsBucket(t *testing.T) {
+	t.Run("a populated bucket reaches state", func(t *testing.T) {
+		block := flattenHttpsInspectionDestinations([]perimeter81Sdk.HttpsInspectionDestination{
+			{Type: "applicationControlApplications", Value: []string{"aca-1", "aca-2"}},
+		})
+		if len(block) != 1 {
+			t.Fatalf("flattened to %v, want one destinations block: the type is declared on "+
+				"HttpsInspectionDestination.type and this resource offers it, so a server "+
+				"that returns one must not have it dropped on the floor", block)
+		}
+		got, ok := block[0].(map[string]interface{})["application_control_applications"].([]string)
+		if !ok || !testComparableArraiesEq(got, []string{"aca-1", "aca-2"}) {
+			t.Errorf("destinations.application_control_applications = %v, want [aca-1 aca-2]",
+				block[0].(map[string]interface{})["application_control_applications"])
+		}
+	})
+
+	t.Run("an empty bucket is dropped like every other", func(t *testing.T) {
+		block := flattenHttpsInspectionDestinations([]perimeter81Sdk.HttpsInspectionDestination{
+			{Type: "applicationControlApplications", Value: []string{}},
+			{Type: "categories", Value: []string{}},
+		})
+		if len(block) != 0 {
+			t.Errorf("flattened to %v, want no block at all: empty buckets mean "+
+				"\"unrestricted\", and writing them into state is a diff on every plan, "+
+				"forever", block)
+		}
+	})
 }
 
 /*
@@ -567,9 +628,11 @@ declare (phase4-verification W1), alongside the className/objectId that
 perimeter81-swg-api's own stored bypass rules carry -- and echoing a GET body
 back on the sibling endpoint answers 422 `"fromDefault" is not allowed`
 (API-FINDINGS 1.17). And a nil Go slice serialises as JSON null, which is a type
-error, which this endpoint family answers with a 500 (API-FINDINGS 1.19) --
-indistinguishable from the endpoint being down, and misread as exactly that when
-it was first measured.
+error. What null itself does is EXTRAPOLATION and this comment used to state it
+as measurement: §1.19 measured the STRING "disabled" answering a 500 on the
+sibling endpoint -- indistinguishable from the endpoint being down, and misread as
+exactly that when it was first measured. null is a type error of the same shape,
+so the same 500 is likely but was not observed.
 
 The assertion is on the serialised bytes because both problems only exist on the
 wire, and it uses httpsInspectionRefusedFields rather than a literal so that the
