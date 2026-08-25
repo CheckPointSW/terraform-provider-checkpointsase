@@ -229,6 +229,125 @@ func TestInternetAccessStatusWriteSendsOneFieldAndThenReads(t *testing.T) {
 	}
 }
 
+/*
+TestInternetAccessStatusWriteSaysTheWriteLandedWhenTheReadBackFails covers the
+window on the far side of a successful POST, which is the window this resource
+had no answer for at all.
+
+THE BLAST RADIUS IS THE WHOLE ARGUMENT. This one field switches Internet Access,
+Threat Prevention and DLP for the entire tenant. If the POST lands and the GET
+after it fails, the tenant's security enforcement HAS changed and Terraform's
+report of the apply says it failed. An operator reading "Unable to read the
+tenant's Internet Access security enforcement status" concludes, reasonably,
+that nothing happened -- and three security features are in the opposite state
+from the one they believe. The two policy resources say the opposite in their
+first clause (policy_list.go, policyWrittenNotReadBack); this one has to as well.
+
+The second half is the retry. §1.19 measured this endpoint family answering 500s,
+and rereadAfterWrite spends three attempts on exactly that rather than fail an
+apply that succeeded. A singleton whose write is the largest in the phase should
+not be the one object that gives up on the first 502.
+
+Both halves are pinned by the request log, not just by the message, because
+"reports it loudly" and "tried again" are different claims.
+*/
+func TestInternetAccessStatusWriteSaysTheWriteLandedWhenTheReadBackFails(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// getStatus is returned for each GET in order; 0 means "answer normally".
+		getStatus []int
+		wantCalls []string
+		wantErr   bool
+	}{
+		{
+			"a transient 500 on the read-back is retried",
+			[]int{http.StatusInternalServerError, 0},
+			[]string{"POST /v3/ia/status", "GET /v3/ia/status", "GET /v3/ia/status"},
+			false,
+		},
+		{
+			"two transient failures are still within budget",
+			[]int{502, 503, 0},
+			[]string{"POST /v3/ia/status", "GET /v3/ia/status", "GET /v3/ia/status",
+				"GET /v3/ia/status"},
+			false,
+		},
+		{
+			// 422 is not transient. Repeating it changes nothing, so it is not
+			// repeated -- but it still has to be reported as a write that landed.
+			"a permanent failure is not retried and is still reported as a write that landed",
+			[]int{http.StatusUnprocessableEntity},
+			[]string{"POST /v3/ia/status", "GET /v3/ia/status"},
+			true,
+		},
+		{
+			"a transient failure that outlives the budget is reported",
+			[]int{500, 500, 500, 500},
+			[]string{"POST /v3/ia/status", "GET /v3/ia/status", "GET /v3/ia/status",
+				"GET /v3/ia/status", "GET /v3/ia/status"},
+			true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &requestLog{}
+			attempt := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				log.record(r)
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method != http.MethodGet {
+					// The write itself always succeeds. That is the premise:
+					// the tenant IS in the new state.
+					_, _ = w.Write([]byte(internetAccessStatusFlatBody("inactive")))
+					return
+				}
+				status := 0
+				if attempt < len(tc.getStatus) {
+					status = tc.getStatus[attempt]
+				}
+				attempt++
+				if status != 0 {
+					w.WriteHeader(status)
+					_, _ = w.Write([]byte(`{"message":"read-back failed"}`))
+					return
+				}
+				_, _ = w.Write([]byte(internetAccessStatusFlatBody("inactive")))
+			}))
+			defer srv.Close()
+
+			d := schema.TestResourceDataRaw(t, resourceInternetAccessStatus().Schema,
+				map[string]interface{}{"ia_status": "inactive"})
+			diags := resourceInternetAccessStatusWrite(context.Background(), d,
+				newTestUserAPIClient(srv.URL))
+
+			if diags.HasError() != tc.wantErr {
+				t.Fatalf("diags = %v, want an error = %v", diags, tc.wantErr)
+			}
+			if calls, _ := log.snapshot(); !testComparableArraiesEq(calls, tc.wantCalls) {
+				t.Errorf("requests were %v, want %v", calls, tc.wantCalls)
+			}
+			if !tc.wantErr {
+				return
+			}
+
+			var joined string
+			for _, reported := range diags {
+				joined += reported.Summary + " " + reported.Detail + " "
+			}
+			// It has to lead with the fact that the tenant is already in the new
+			// state, then say what to do about it.
+			for _, fragment := range []string{"WAS written", "Threat Prevention",
+				"terraform refresh"} {
+				if !strings.Contains(joined, fragment) {
+					t.Errorf("the diagnostic does not contain %q, so an operator reads it as "+
+						"\"the apply did not happen\" while the tenant's Internet Access, "+
+						"Threat Prevention and DLP enforcement has already changed:\n%s",
+						fragment, joined)
+				}
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Read
 // ---------------------------------------------------------------------------

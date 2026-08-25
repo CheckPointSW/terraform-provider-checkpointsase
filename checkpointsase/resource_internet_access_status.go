@@ -3,6 +3,7 @@ package checkpointsase
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
@@ -161,12 +162,22 @@ by a bug rather than by a plan.
 @return string, error - the `iaStatus` value, or an error
 */
 func readInternetAccessStatus(ctx context.Context, client *perimeter81Sdk.APIClient) (string, error) {
-	body, _, err := client.InternetAccessPoliciesAPI.GetIAStatus(ctx).Execute()
+	status, _, err := readInternetAccessStatusResponse(ctx, client)
+	return status, err
+}
+
+// readInternetAccessStatusResponse is readInternetAccessStatus with the raw
+// *http.Response handed back as well, which is what classifyAPIError needs to
+// tell a transient 5xx from a permanent refusal. Only the retrying re-read after
+// a write cares; every other caller takes the two-value wrapper above.
+func readInternetAccessStatusResponse(ctx context.Context, client *perimeter81Sdk.APIClient) (
+	string, *http.Response, error) {
+	body, resp, err := client.InternetAccessPoliciesAPI.GetIAStatus(ctx).Execute()
 	if err != nil {
-		return "", err
+		return "", resp, err
 	}
 	if body == nil {
-		return "", fmt.Errorf("GET /v3/ia/status answered with no body at all, which is " +
+		return "", resp, fmt.Errorf("GET /v3/ia/status answered with no body at all, which is " +
 			"neither a value nor a documented response")
 	}
 
@@ -183,17 +194,93 @@ func readInternetAccessStatus(ctx context.Context, client *perimeter81Sdk.APICli
 	// error -- it yields ia_status = "" on a healthy 200, and a Required
 	// attribute reading "" plans to flip the tenant's security enforcement.
 	if status := body.GetIaStatus(); status != "" {
-		return status, nil
+		return status, resp, nil
 	}
 	if status, ok := internetAccessStatusFromEnvelope(body.AdditionalProperties); ok {
-		return status, nil
+		return status, resp, nil
 	}
 
-	return "", fmt.Errorf("GET /v3/ia/status returned a body with no iaStatus in it, at the "+
-		"top level or inside a `data` envelope: %v. The tenant's %s enforcement state is "+
+	return "", resp, fmt.Errorf("GET /v3/ia/status returned a body with no iaStatus in it, at "+
+		"the top level or inside a `data` envelope: %v. The tenant's %s enforcement state is "+
 		"therefore unknown, and writing an empty value into state would make the next plan "+
 		"propose changing it", body.AdditionalProperties, internetAccessStatusScope)
 }
+
+/*
+rereadInternetAccessStatusAfterWrite re-reads the setting after a POST that has
+already succeeded, and is the singleton's half of a discipline the two policy
+resources already have.
+
+WHY IT IS NOT resourceInternetAccessStatusRead. The two are the same GET and a
+different situation, and the situation is the whole point. A failed FIRST read
+has changed nothing, so reporting "unable to read" is complete and accurate. A
+failed read on THIS side of the write is not: the POST landed, the tenant's
+Internet Access, Threat Prevention and DLP enforcement is already in the new
+state, and an operator told only "unable to read" concludes the apply did not
+happen. That is the largest blast radius in the phase reported as the smallest.
+
+The retry budget, interval and classifier are policy_list.go's, deliberately --
+three objects that differ here differ for no reason, and §1.19 measured this
+endpoint family answering 500s.
+
+  - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc.
+  - @param client *perimeter81Sdk.APIClient - the SDK client
+
+@return string, error - the server's own value, or an error that leads with the fact that the write landed
+*/
+func rereadInternetAccessStatusAfterWrite(ctx context.Context,
+	client *perimeter81Sdk.APIClient) (string, error) {
+	backoff := policyReReadInterval
+	remaining := policyReReadTransientBudget
+
+	for {
+		status, resp, err := readInternetAccessStatusResponse(ctx, client)
+		if err == nil {
+			return status, nil
+		}
+		if classifyAPIError(resp, err) == errKindTransient && remaining > 0 {
+			remaining--
+			if waitErr := sleepCtx(ctx, backoff); waitErr != nil {
+				return "", fmt.Errorf("%s %s Cause: %w",
+					internetAccessStatusWrittenNotReadBack, internetAccessStatusResync, waitErr)
+			}
+			backoff *= 2
+			continue
+		}
+		return "", fmt.Errorf("%s %s Cause: %w",
+			internetAccessStatusWrittenNotReadBack, internetAccessStatusResync, err)
+	}
+}
+
+/*
+internetAccessStatusWrittenNotReadBack opens every error on the far side of a
+successful write, for the same reason policyWrittenNotReadBack does: the operator
+has to be told the tenant CHANGED before being told what went wrong.
+
+It names the three features rather than saying "the status", because "Internet
+Access status" reads like a label and "Threat Prevention and DLP are now off"
+does not.
+*/
+const internetAccessStatusWrittenNotReadBack = "The Internet Access status WAS written and " +
+	"the tenant is now in that state -- Internet Access, Threat Prevention and DLP " +
+	"enforcement have already changed -- but Terraform could not read it back, so state does " +
+	"not record it."
+
+/*
+internetAccessStatusResync is what to do about it, and it is NOT
+reapplyToResync.
+
+The advice differs because the resources differ where it matters. This
+resource's Delete makes no API call at all, so a tainted replace here destroys
+nothing and re-POSTs the same value; there is no DELETE to walk into. What is
+left is that a plain re-apply writes the tenant's security enforcement a second
+time, which is unnecessary when a read-only refresh reconciles state.
+*/
+const internetAccessStatusResync = "The tenant's setting is already correct; only Terraform's " +
+	"record of it is missing, so run `terraform refresh` (or `terraform plan`) first rather " +
+	"than re-applying: this resource writes the tenant's security enforcement on every apply " +
+	"and does not need to write it again. Do NOT remove the resource from the configuration " +
+	"instead -- the setting is live on the tenant and nothing would be tracking it."
 
 /*
 internetAccessStatusFromEnvelope digs `iaStatus` out of a `{"data": {...}}`
@@ -265,7 +352,28 @@ func resourceInternetAccessStatusWrite(ctx context.Context, d *schema.ResourceDa
 	// leave a resource in state claiming a setting it never changed.
 	d.SetId(internetAccessStatusResourceID)
 
-	return append(diags, resourceInternetAccessStatusRead(ctx, d, m)...)
+	// NOT resourceInternetAccessStatusRead. Delegating to it was the original
+	// shape and it reported a failed read-back as though nothing had happened;
+	// see rereadInternetAccessStatusAfterWrite for why that is the wrong report
+	// on the far side of a write that switches three security features for the
+	// whole tenant.
+	status, err := rereadInternetAccessStatusAfterWrite(ctx, client)
+	if err != nil {
+		d.Partial(true)
+		// appendErrorDiagsWithGuidance, not appendErrorDiags: see its doc comment
+		// for what the latter discards on this path.
+		return appendErrorDiagsWithGuidance(diags,
+			"The Internet Access status WAS written and could not be read back",
+			internetAccessStatusWrittenNotReadBack+" "+internetAccessStatusResync, err)
+	}
+
+	if err := d.Set("ia_status", status); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags,
+			"Unable to record the tenant's Internet Access security enforcement status", err)
+	}
+
+	return diags
 }
 
 /*
