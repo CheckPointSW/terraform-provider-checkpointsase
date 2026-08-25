@@ -410,6 +410,47 @@ var listAttributeEmptyPolicy = map[string]struct {
 	// that made the expand path return an empty slice would need MinItems to be the backstop
 	// it is here.
 	"resource.checkpointsase_support_options.support_phone_numbers": {mustReject, "putCompanyBranding.schema.ts minItems 1 (account-domain, not public-api)"},
+	// checkpointsase_access_policy.rule is the tenant's whole webRules array. MEASURED, not read
+	// off a validator: POST /v3/ia/access/policy with {"webRules": []} answers
+	// 400 VALIDATION_WEB_RULES_REQUIRED, "webRules must contain at least one rule"
+	// (API-FINDINGS 1.18), which matches minItems: 1 on the request schema in v3.yaml. An empty
+	// list can therefore never succeed, and the tempting "fix" for that is to route it to the
+	// DELETE that clears the tenant's entire policy -- so it has to fail at plan time. Emptying
+	// the policy is `terraform destroy`, which calls that DELETE deliberately.
+	"resource.checkpointsase_access_policy.rule": {mustReject, "measured: 400 VALIDATION_WEB_RULES_REQUIRED on an empty webRules array (API-FINDINGS 1.18)"},
+
+	// --- mayBeEmpty: the access policy's buckets, all `minItems: 0` in the stored schema -------
+	// p81-mongo-validation-schemas schemas-shared/molecules.types.json declares `value` as
+	// `bsonType: array, minItems: 0` on every one of usersObject, groupsObject, addressObject,
+	// customUrls, categories, applicationControlsObject and updatableObjects -- an explicit zero,
+	// not an omission. API-FINDINGS 1.15 measured the same thing from the other side: the server
+	// answers an empty `sources`/`destinations` by EXPANDING it into one empty bucket per legal
+	// type, which it could not do if an empty bucket were illegal.
+	//
+	// It is also the only way to say "any". perimeter81-swg-api's own component fixtures spell
+	// "any source" as buckets with empty values (test/customMocks/component/data.ts,
+	// webRulesWithAnySource), so MinItems here would refuse the configuration that means
+	// "unrestricted" -- which is the default a user is most likely to write.
+	"resource.checkpointsase_access_policy.rule.sources.users":                                 {mayBeEmpty, "molecules.types.json usersObject.value minItems 0"},
+	"resource.checkpointsase_access_policy.rule.sources.groups":                                {mayBeEmpty, "molecules.types.json groupsObject.value minItems 0"},
+	"resource.checkpointsase_access_policy.rule.sources.addresses":                             {mayBeEmpty, "molecules.types.json addressObject.value minItems 0"},
+	"resource.checkpointsase_access_policy.rule.destinations.custom_urls":                      {mayBeEmpty, "molecules.types.json customUrls.value minItems 0"},
+	"resource.checkpointsase_access_policy.rule.destinations.categories":                       {mayBeEmpty, "molecules.types.json categories.value minItems 0"},
+	"resource.checkpointsase_access_policy.rule.destinations.application_control_applications": {mayBeEmpty, "molecules.types.json applicationControlsObject.value minItems 0"},
+	"resource.checkpointsase_access_policy.rule.destinations.updatable_objects":                {mayBeEmpty, "molecules.types.json updatableObjects.value minItems 0"},
+	// RuleWeb.json: conditions[].value[].weekdays is `bsonType: array, uniqueItems: true` with NO
+	// minItems, so [] validates. It is also unreachable in practice -- `weekdays` is Required and
+	// Terraform's config shim drops an empty list, so schemaMap.validate sees the key as absent
+	// and reports the missing argument instead. The verdict is still the honest one: nothing on
+	// the server refuses an empty weekdays array, so nothing here should either.
+	"resource.checkpointsase_access_policy.rule.conditions.weekdays": {mayBeEmpty, "RuleWeb.json conditions[].value[].weekdays has uniqueItems but no minItems"},
+	// The two MaxItems-1 wrapper blocks, and the conditions list itself. `conditions` is the
+	// value of the API's single `datetime` bucket; RuleWeb.json puts no minItems on it, and
+	// API-FINDINGS 1.15 measured `conditions: []` accepted -- it is in fact the form the server
+	// canonicalises FROM.
+	"resource.checkpointsase_access_policy.rule.sources":      {mayBeEmpty, "MaxItems 1 wrapper block; absent means any source"},
+	"resource.checkpointsase_access_policy.rule.destinations": {mayBeEmpty, "MaxItems 1 wrapper block; absent means any destination"},
+	"resource.checkpointsase_access_policy.rule.conditions":   {mayBeEmpty, "measured: conditions: [] accepted (API-FINDINGS 1.15); RuleWeb.json sets no minItems"},
 
 	// --- mayBeEmpty: [] is legal, and for most of these it is the only way to clear -------------
 	// baseNetwork.dto.ts: tags is @IsString({each:true}) @IsOptional() with no minimum. The enhanced

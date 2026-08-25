@@ -37,13 +37,20 @@ The refused fields are the point of the fixture. A rule fixture that omits them
 cannot prove anything about stripping, because the round trip would succeed by
 accident; with them present, an implementation that echoes the GET body back is
 visible in the POST body the test reads.
+
+status is "active". It read "enabled" when this fixture was written, which is not
+a value the API has: the OpenAPI document declares `enum: [active, inactive]` on
+AccessPolicyRule.status, `$defs.SWGStatus` in p81-mongo-validation-schemas agrees,
+and perimeter81-swg-api's own component fixtures use "active". Nothing in this
+file asserted on it, so the wrong value was invisible here -- but a fixture that
+claims to be what the server returns has to be.
 */
 func accessPolicyRuleJSON(id, name string, priority int) string {
 	return fmt.Sprintf(`{"id":%q,"name":%q,"appliedOn":"both","action":"block",`+
 		`"conditions":[{"type":"datetime","value":[]}],`+
 		`"destinations":[{"type":"categories","value":[]}],`+
 		`"sources":[{"type":"users","value":[]}],`+
-		`"log":"summaryWithUrls","status":"enabled","priority":%d,`+
+		`"log":"summaryWithUrls","status":"active","priority":%d,`+
 		`"className":"RuleWeb","fromDefault":false,"objectId":"obj-%s"}`,
 		id, name, priority, id)
 }
