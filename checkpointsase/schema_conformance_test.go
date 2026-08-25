@@ -462,12 +462,12 @@ var listAttributeEmptyPolicy = map[string]struct {
 	// --- the HTTPS-inspection policy: same shape, different vocabulary -------------------------
 	// checkpointsase_https_inspection_policy.rule is the tenant's whole bypassRules array.
 	// MEASURED, not read off a validator: POST /v3/ia/https-inspection/policy with an empty array
-	// answers 400 VALIDATION_BYPASS_RULES_REQUIRED (phase4-verification, W1: "Empty array rejected
+	// answers 400 VALIDATION_BYPASS_RULES_REQUIRED (API-FINDINGS 1.18: "Empty array rejected
 	// identically"), which matches `minItems: 1` on UpsertHttpsInspectionPolicy.bypassRules in the
 	// OpenAPI document. Same consequence as the access policy's: an empty list can never succeed,
 	// and the tempting "fix" is to route it to the DELETE that clears the tenant's whole policy, so
 	// it has to fail at plan time. Emptying the policy is `terraform destroy`.
-	"resource.checkpointsase_https_inspection_policy.rule": {mustReject, "measured: 400 VALIDATION_BYPASS_RULES_REQUIRED on an empty bypassRules array (phase4-verification W1); minItems 1 in the OpenAPI document"},
+	"resource.checkpointsase_https_inspection_policy.rule": {mustReject, "measured: 400 VALIDATION_BYPASS_RULES_REQUIRED on an empty bypassRules array (API-FINDINGS 1.18); minItems 1 in the OpenAPI document"},
 	// Every leaf bucket, from p81-mongo-validation-schemas schemas-shared/molecules.types.json,
 	// which declares `value` as `bsonType: array, minItems: 0` on every object RuleBypass's
 	// $defs.ruleBypassSources and $defs.ruleBypassDestinations compose -- an explicit zero, not an

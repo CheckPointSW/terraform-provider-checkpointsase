@@ -46,7 +46,7 @@ func internetAccessStatusFlatBody(status string) string {
 }
 
 /*
-internetAccessStatusEnvelopeBody is the shape phase4-verification's surface table
+internetAccessStatusEnvelopeBody is the shape API-FINDINGS 1.22
 records for the same endpoint, and the shape its two siblings on /v3/ia/
 demonstrably use (compare accessPolicyGetBody in policy_list_test.go).
 
@@ -356,8 +356,8 @@ func TestInternetAccessStatusWriteSaysTheWriteLandedWhenTheReadBackFails(t *test
 TestInternetAccessStatusReadAcceptsBothResponseShapes covers the disagreement
 between the two authorities, in both directions.
 
-The OpenAPI document declares the 200 body flat; phase4-verification's surface
-table records it enveloped in `{status, data}`, which is what the two sibling
+The OpenAPI document declares the 200 body flat; API-FINDINGS 1.22 measured it
+enveloped in `{status, data}`, which is what the two sibling
 endpoints on /v3/ia/ verifiably return. Nothing available offline settles which
 one this endpoint sends, so the reader accepts both and this test drives both
 through the real SDK decode.

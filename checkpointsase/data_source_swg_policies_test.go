@@ -295,8 +295,8 @@ func TestSwgPolicyDataSourceIDsDifferFromTheResourceIDs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 /*
-TestSwgPolicyDataSourcesExposeControlledBy covers the field phase4-verification
-found and the milestone spec never mentioned.
+TestSwgPolicyDataSourcesExposeControlledBy covers the field the SWG probe found
+and the milestone spec never mentioned (API-FINDINGS 1.24).
 
 Both values are exercised, plus the absent case. `controlledBy` is `omitempty` on
 the generated model, so a response without it decodes to a nil pointer and
@@ -364,8 +364,8 @@ wherever it exists.
 That is the shape of "not acted on" this provider can enforce. `controlledBy`
 says which product owns the policy; the obvious inference -- that a `quantum`
 tenant is one this provider should not write to -- is a hypothesis, because
-phase4-verification W3 recorded the value the tenant returned and recorded that
-its meaning is uninvestigated. Building a plan-time refusal on it would be the
+API-FINDINGS 1.24 records the value the tenant returned and records that its
+meaning is uninvestigated. Building a plan-time refusal on it would be the
 Phase 3 group-name mistake again: a rule that is right on the tenant you
 developed against and wrong elsewhere. Keeping it off the resources entirely
 means there is no writable path it could ever reach.
@@ -390,7 +390,7 @@ func TestSwgPolicyControlledByIsReadOnlyAndOnlyOnTheDataSources(t *testing.T) {
 
 		if _, present := ds.resource.Schema["controlled_by"]; present {
 			t.Errorf("resource.%s has a controlled_by attribute. The field is read-only and "+
-				"uninvestigated (phase4-verification W3): putting it on a resource makes it "+
+				"uninvestigated (API-FINDINGS 1.24): putting it on a resource makes it "+
 				"reachable from a write path and invites a plan-time rule built on a guess",
 				ds.name)
 		}
@@ -609,7 +609,7 @@ right side of the rule.
 
 The HTTPS-inspection case is the one worth having. `addresses` is a legal type on
 BOTH sides of a bypass rule and on NEITHER side of an access-policy rule
-(phase4-verification W1), so a lookup keyed on attribute name alone would put a
+(API-FINDINGS 1.20), so a lookup keyed on attribute name alone would put a
 destination id into sources and match the wrong traffic with nothing failing.
 */
 func TestSwgPolicyDataSourcesPopulateTheBucketsTheyDoHave(t *testing.T) {

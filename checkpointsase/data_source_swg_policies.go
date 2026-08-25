@@ -65,7 +65,7 @@ documentation, shared by both data sources because the field is the same field.
 
 It says what is known and stops. `controlledBy` reads `quantum` or `hsase`; the
 enum is all the API document gives, the live tenant answered `hsase`
-(phase4-verification, W3), and what the value MEANS for a client has not been
+(API-FINDINGS 1.24), and what the value MEANS for a client has not been
 investigated. So it is surfaced and nothing acts on it -- not the resources, not
 these data sources, no validator, no branch. A guess about it would be a guess
 about whether this provider should be writing to a tenant at all.

@@ -1850,7 +1850,7 @@ provider that stored a sent priority would show the old numbers here and the
 re-plan would then be non-empty forever.
 
 SAP-02's "in-place, never a replace" is asserted through the FIRST rule's
-server-assigned id surviving the rewrite -- measured in phase4-verification,
+server-assigned id surviving the rewrite -- measured in API-FINDINGS 1.27,
 where re-POSTing a list preserved the existing rule's id. It cannot be asserted
 through the resource id, which is the constant `access-policy` whether the
 resource was updated or recreated.

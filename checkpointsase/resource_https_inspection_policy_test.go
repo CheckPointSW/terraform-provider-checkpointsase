@@ -131,7 +131,7 @@ func httpsInspectionCanonicalRuleJSON(id, name, appliedOn, action string, priori
 
 // httpsInspectionGetBody wraps rules in the envelope
 // GET /v3/ia/https-inspection/policy returns. controlledBy is included because
-// the live tenant returns it (phase4-verification W3) and a fixture that omits
+// the live tenant returns it (API-FINDINGS 1.24) and a fixture that omits
 // it would not exercise the same decode path. cleanupBypassRuleDefaultAction is
 // deliberately absent: the OpenAPI document says the field is omitted entirely
 // when the tenant lacks the Inspection Policy feature, and W4 measured that this
@@ -381,14 +381,14 @@ func TestHttpsInspectionWritePreservesConfigurationOrder(t *testing.T) {
 		cleanupBypassRuleDefaultAction is OUT OF SCOPE and must stay off the
 		wire. It is feature-gated off on the only tenant available -- both values
 		answer 422 "Cleanup rule default action is not available on your tenant"
-		(phase4-verification W4) -- so this provider cannot exercise it, and
+		(API-FINDINGS 1.25) -- so this provider cannot exercise it, and
 		sending any value for it would fail every apply on such a tenant. Leaving
 		the key absent is also what keeps a feature-ENABLED tenant's existing
 		setting untouched by a write from here.
 	*/
 	if sent.Cleanup != nil {
 		t.Errorf("the POST body carries cleanupBypassRuleDefaultAction = %q. It is feature-gated "+
-			"off on the only tenant available (422, phase4-verification W4), so this provider "+
+			"off on the only tenant available (422, API-FINDINGS 1.25), so this provider "+
 			"does not manage it and must not send it:\n%s", *sent.Cleanup, bodies[0])
 	}
 }
@@ -402,8 +402,8 @@ TestHttpsInspectionFlattenDropsTheServerEmptyBuckets covers the single most
 likely defect in this resource, at the level where the cause is legible.
 
 The server answers an empty sources/destinations by EXPANDING it into one bucket
-per legal type with an empty value (API-FINDINGS 1.15; phase4-verification W1
-records that this list canonicalises the same way). A flattener that copies those
+per legal type with an empty value (API-FINDINGS 1.15, which records that this
+list canonicalises the same way). A flattener that copies those
 into state puts `sources { users = [] groups = [] ... }` in state against a
 configuration with no sources block at all -- and then every plan proposes a
 change to a resource nobody touched, forever, with an apply that cannot converge
@@ -624,7 +624,7 @@ TestHttpsInspectionWriteSendsNeitherRefusedFieldsNorNullArrays pins the two ways
 a POST built from a previous read gets rejected.
 
 This list's read model carries _created_at, which the write model does not
-declare (phase4-verification W1), alongside the className/objectId that
+declare (API-FINDINGS 1.20), alongside the className/objectId that
 perimeter81-swg-api's own stored bypass rules carry -- and echoing a GET body
 back on the sibling endpoint answers 422 `"fromDefault" is not allowed`
 (API-FINDINGS 1.17). And a nil Go slice serialises as JSON null, which is a type
@@ -751,7 +751,7 @@ func TestHttpsInspectionExpandOmitsEmptyBuckets(t *testing.T) {
 TestHttpsInspectionEmptyRuleListIsRejectedAtPlanTime pins MinItems on `rule`.
 
 POST with an empty array answers 400 VALIDATION_BYPASS_RULES_REQUIRED
-(phase4-verification W1, API-FINDINGS 1.18), so an empty list can never succeed
+(API-FINDINGS 1.18, measured on this endpoint too), so an empty list can never succeed
 and there is no reason to spend a round trip discovering that. Worse, the
 tempting "fix" for the failure is to route an empty write to DELETE -- which
 would put the call that clears a tenant's entire policy onto the ordinary apply
@@ -1832,7 +1832,7 @@ type testAccHttpsInspectionRule struct {
 testAccHttpsInspectionRules is the four-rule set shared by the tests below, and
 it is THE ACTION/APPLIED_ON MATRIX, measured rather than guessed.
 
-phase4-verification recorded what a tenant WITHOUT the Inspection Policy feature
+API-FINDINGS 1.26 records what a tenant WITHOUT the Inspection Policy feature
 accepts:
 
 	bypass           + sites/agents/both  -> 200

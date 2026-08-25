@@ -174,7 +174,7 @@ func TestStripServerFieldsRemovesExactlyTheRefusedKeys(t *testing.T) {
 	if !testComparableArraiesEq(httpsInspectionRefusedFields,
 		[]string{"_created_at", "className", "fromDefault", "objectId"}) {
 		t.Errorf("httpsInspectionRefusedFields = %v; the HTTPS-inspection read model "+
-			"additionally carries _created_at (phase4-verification W1)",
+			"additionally carries _created_at (API-FINDINGS 1.20)",
 			httpsInspectionRefusedFields)
 	}
 }

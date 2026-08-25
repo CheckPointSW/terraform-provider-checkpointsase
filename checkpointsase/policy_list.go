@@ -71,7 +71,7 @@ var accessPolicyRefusedFields = []string{"className", "fromDefault", "objectId"}
 
 /*
 httpsInspectionRefusedFields is the same list for /v3/ia/https-inspection/policy,
-which additionally returns _created_at (phase4-verification, W1).
+which additionally returns _created_at (API-FINDINGS 1.20).
 
 The two lists are supersets of one policy's needs, so a single union would also
 work -- stripping a key that is absent is a no-op. They are kept separate and
@@ -186,8 +186,7 @@ the same request is how the data source and the resource end up disagreeing
 about what a read of this endpoint is. The resources discard it with `_`, which
 is the honest spelling of "this resource does not manage that field": the value
 says which product owns the policy (quantum or hsase) and its meaning is
-UNINVESTIGATED (phase4-verification, W3), so nothing in this provider may act on
-it. The two data sources surface it read-only.
+UNINVESTIGATED (API-FINDINGS 1.24), so nothing in this provider may act on it. The two data sources surface it read-only.
 
 Errors from all three may be wrapped with %w. appendErrorDiags recovers the
 server's message body with errors.As, so wrapping no longer costs the operator

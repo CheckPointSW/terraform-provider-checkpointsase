@@ -31,7 +31,7 @@ internetAccessStatusValues is the `iaStatus` enum.
 
 Both values are transcribed from the OpenAPI document, which declares
 `enum: [active, inactive]` on the request body and on both 200 responses of
-/v3/ia/status. Measured (phase4-verification, W2): POST takes exactly
+/v3/ia/status. Measured (API-FINDINGS 1.23): POST takes exactly
 {"iaStatus": "active"|"inactive"} and nothing else -- one field is the entire
 write surface of this endpoint.
 
@@ -137,10 +137,10 @@ authorities available disagree and neither could be settled without a live call:
     with `additionalProperties: true` -- which is what the SDK model
     GetIAStatus200Response was generated from, so a flat body lands in the
     declared IaStatus field.
-  - phase4-verification's surface table records the shape as
-    `{status, data:{iaStatus}}`, i.e. the same envelope its two sibling endpoints
-    on /v3/ia/ demonstrably use (AccessPolicyRulesGetResponse and
-    HttpsInspectionPolicyGetResponse both declare `status` + `data`).
+  - API-FINDINGS 1.22 MEASURED the shape as `{status, data:{iaStatus}}`, i.e.
+    the same envelope its two sibling endpoints on /v3/ia/ demonstrably use
+    (AccessPolicyRulesGetResponse and HttpsInspectionPolicyGetResponse both
+    declare `status` + `data`).
 
 If the envelope is what the server sends, the generated model puts `status` and
 `data` in AdditionalProperties and GetIaStatus() returns "" -- so a reader that
