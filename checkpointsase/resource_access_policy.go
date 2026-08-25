@@ -1098,16 +1098,25 @@ func unknownAccessPolicyBucketTypes(rules []perimeter81Sdk.AccessPolicyRule) []s
 		return false
 	}
 
+	// AN EMPTY BUCKET OF AN UNKNOWN TYPE IS NOT A DROPPED VALUE, so it must not
+	// warn. The server returns one bucket per legal type with an empty `value`
+	// for any unrestricted rule (API-FINDINGS 1.15), so the day the API grows a
+	// type, EVERY unrestricted rule on the tenant would otherwise report that
+	// the next apply is about to remove entries that do not exist. A warning
+	// that fires on healthy configuration teaches operators to ignore warnings,
+	// which costs more than the one it was written to raise.
+	hasValues := func(v []string) bool { return len(v) > 0 }
+
 	var dropped []string
 	for _, rule := range rules {
 		for _, source := range rule.GetSources() {
-			if !known(accessPolicySourceBuckets, source.GetType()) {
+			if hasValues(source.GetValue()) && !known(accessPolicySourceBuckets, source.GetType()) {
 				dropped = append(dropped,
 					fmt.Sprintf("%s: sources.%s", rule.GetName(), source.GetType()))
 			}
 		}
 		for _, destination := range rule.GetDestinations() {
-			if !known(accessPolicyDestinationBuckets, destination.GetType()) {
+			if hasValues(destination.GetValue()) && !known(accessPolicyDestinationBuckets, destination.GetType()) {
 				dropped = append(dropped,
 					fmt.Sprintf("%s: destinations.%s", rule.GetName(), destination.GetType()))
 			}

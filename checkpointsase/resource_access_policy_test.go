@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
+
 	"gopkg.in/yaml.v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -1426,5 +1428,39 @@ func TestAccessPolicyReadWarnsAboutBucketTypesItDropped(t *testing.T) {
 	// The rule itself must still be read; a dropped bucket is not a dropped rule.
 	if got := len(d.Get("rule").([]interface{})); got != 1 {
 		t.Errorf("read %d rules into state, want 1", got)
+	}
+}
+
+/*
+TestUnknownBucketWarningIgnoresEmptyBuckets pins the gate added on 2026-08-25.
+
+The server returns one bucket per legal type with an empty `value` for every
+unrestricted rule (API-FINDINGS 1.15). Without the len(value) > 0 gate, the day
+the API grows a bucket type EVERY unrestricted rule on the tenant reports that
+the next apply is about to remove entries it does not have.
+
+That is worse than missing the warning entirely: a warning that fires on healthy
+configuration is one operators learn to scroll past, and this one exists to catch
+a silent widening of a security policy.
+*/
+func TestUnknownBucketWarningIgnoresEmptyBuckets(t *testing.T) {
+	unknownEmpty := perimeter81Sdk.AccessPolicyRule{Name: "unrestricted"}
+	unknownEmpty.SetSources([]perimeter81Sdk.AccessPolicySource{
+		{Type: "somethingNew", Value: []string{}},
+	})
+	if got := unknownAccessPolicyBucketTypes([]perimeter81Sdk.AccessPolicyRule{unknownEmpty}); len(got) != 0 {
+		t.Errorf("an EMPTY bucket of an unknown type warned: %v. The server sends one "+
+			"empty bucket per legal type on every unrestricted rule, so this would fire "+
+			"on healthy configuration the day the enum grows", got)
+	}
+
+	unknownPopulated := perimeter81Sdk.AccessPolicyRule{Name: "restricted"}
+	unknownPopulated.SetSources([]perimeter81Sdk.AccessPolicySource{
+		{Type: "somethingNew", Value: []string{"id-1"}},
+	})
+	got := unknownAccessPolicyBucketTypes([]perimeter81Sdk.AccessPolicyRule{unknownPopulated})
+	if len(got) != 1 {
+		t.Fatalf("a POPULATED bucket of an unknown type must warn; got %v. Silence here is "+
+			"the silent policy-widening this function exists to prevent", got)
 	}
 }
