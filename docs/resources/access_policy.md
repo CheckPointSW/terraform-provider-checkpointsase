@@ -114,7 +114,7 @@ Required:
 
 - `action` (String) What the rule does with traffic it matches: `allow`, `block` or `warning`.
 - `applied_on` (String) Where the rule applies: `agents`, `sites`, or `both`. All three were exercised against a live tenant.
-- `name` (String) The name of the rule. 1–100 characters and may not contain `<` or `>`.
+- `name` (String) The name of the rule. 1–100 characters — characters, not bytes, so a 100-character name in any script is accepted — and it may not contain `<` or `>`.
 - `status` (String) Whether the rule is in force: `active` or `inactive`. An `inactive` rule stays in the policy and keeps its position, but is not evaluated.
 
 Optional:
@@ -125,7 +125,7 @@ Optional:
 
 Read-Only:
 
-- `id` (String) The server-assigned id of this rule. Computed only: the API mints it and there is nothing useful a configuration could set it to. It is stable across a rewrite that leaves the rule in place.
+- `id` (String) The server-assigned id of this rule. Computed only: the API mints it and there is nothing useful a configuration could set it to. **It is stable for a rule whose _position_ in the list does not change, and not otherwise.** Ids follow array position, not rule content: remove or reorder a preceding block and the ids move with the positions, so the rule that kept its configuration can come back with the id of the one above it. **Key on `name`, not on `id`.**
 - `priority` (Number) The server-assigned priority of this rule. Computed only — **a `priority` sent by a client is discarded outright**, not adjusted. Measured: priority descends with array position, `len(rule) - 1 - index`, so the first block gets the highest number and the last block gets `0`. **Whether priority `0` is evaluated first or last is not established.** The API documents the field only as "updated automatically", and it cannot be inferred from the numbering. Do not rely on either reading until it is measured.
 
 <a id="nestedblock--rule--conditions"></a>

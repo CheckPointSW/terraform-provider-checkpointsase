@@ -19,6 +19,15 @@ resource "checkpointsase_internet_access_status" "this" {
 # dependency below is therefore deliberate ORDERING, not a requirement: it makes
 # an apply that both writes rules and turns enforcement on put the rules in
 # place first.
+#
+# WARNING, BECAUSE THIS BLOCK IS HERE ONLY TO DEMONSTRATE depends_on: a
+# checkpointsase_access_policy resource owns the tenant's ENTIRE web access
+# policy and REMOVES EVERY RULE NOT LISTED IN IT. Applied as written against a
+# tenant that already has rules -- from the console or from another
+# configuration -- it deletes all of them and leaves the single rule below. If
+# you only want to order this example's apply, read the policy instead:
+# `data "checkpointsase_access_policy" "existing" {}` takes no arguments and
+# changes nothing.
 resource "checkpointsase_access_policy" "example" {
   depends_on = [checkpointsase_internet_access_status.this]
 

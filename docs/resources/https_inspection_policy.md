@@ -127,7 +127,7 @@ Required:
 
 - `action` (String) What the rule does with traffic it matches: `bypass` (skip HTTPS inspection), `inspect`, or `inspectNoDecrypt`. **`action` and `applied_on` are validated together by the server, and most of that rule depends on whether your tenant has the Inspection Policy feature — which this provider cannot see.** Only the part that is true on every tenant is checked at plan time: `inspectNoDecrypt` is rejected with `sites` or `both` regardless of the feature. `inspect` outside `sites` is deliberately **not** refused here: it is valid on `agents` and `both` once the feature is enabled, and the server answers `422 VALIDATION_ACTION_INSPECT_NOT_ALLOWED` when it is not. The API declares `action` optional and defaults it to `bypass`; it is required here so that both halves of that cross-field rule are always visible in the configuration. Write `bypass` to get the API's default.
 - `applied_on` (String) Where the rule applies: `agents`, `sites`, or `both`. All three were exercised against a live tenant. This is half of a cross-field rule the server enforces: see `action`.
-- `name` (String) The name of the rule. 1–100 characters and may not contain `<` or `>`.
+- `name` (String) The name of the rule. 1–100 characters — characters, not bytes, so a 100-character name in any script is accepted — and it may not contain `<` or `>`.
 - `status` (String) Whether the rule is in force: `active` or `inactive`. An `inactive` rule stays in the policy and keeps its position, but is not evaluated.
 
 Optional:
@@ -137,7 +137,7 @@ Optional:
 
 Read-Only:
 
-- `id` (String) The server-assigned id of this rule. Computed only: the API mints it and there is nothing useful a configuration could set it to. It is stable across a rewrite that leaves the rule in place.
+- `id` (String) The server-assigned id of this rule. Computed only: the API mints it and there is nothing useful a configuration could set it to. **It is stable for a rule whose _position_ in the list does not change, and not otherwise.** Ids follow array position, not rule content: remove or reorder a preceding block and the ids move with the positions, so the rule that kept its configuration can come back with the id of the one above it. **Key on `name`, not on `id`.**
 - `priority` (Number) The server-assigned priority of this rule. Computed only — **a `priority` sent by a client is discarded outright**, not adjusted. Measured: priority descends with array position, `len(rule) - 1 - index`, so the first block gets the highest number and the last block gets `0`. **Whether priority `0` is evaluated first or last is not established.** The API documents the field only as "updated automatically", and it cannot be inferred from the numbering. Do not rely on either reading until it is measured.
 
 <a id="nestedblock--rule--destinations"></a>
@@ -146,7 +146,7 @@ Read-Only:
 Optional:
 
 - `addresses` (Set of String) Ids of `checkpointsase_object_addresses` objects this rule matches — **not** CIDRs or IP literals. A set: order is not significant. Omit it to leave the rule unrestricted by address.
-- `application_control_applications` (Set of String) Ids of application-control applications this rule matches, as returned by the `checkpointsase_application_control_applications` data source. A set: order is not significant. Omit it to leave the rule unrestricted by application.
+- `application_control_applications` (Set of String) Ids of application-control applications this rule matches, as returned by the `checkpointsase_application_control_applications` data source. A set: order is not significant. Omit it to leave the rule unrestricted by application. **This type is declared by the API document for this endpoint but was not observed in a captured response from it** (API-FINDINGS 1.20) — the one rule measured came back without a bucket of this type — so it is offered on the strength of the contract without having been exercised. Whether a write carrying it is accepted here is unverified.
 - `categories` (Set of String) Ids of web categories this rule matches, as returned by the `checkpointsase_web_categories` data source. A set: order is not significant. Omit it to leave the rule unrestricted by category.
 - `domains` (Set of String) Domains this rule matches — a destination type the web access policy does not have. A set: order is not significant. Omit it to leave the rule unrestricted by domain.
 - `updatable_objects` (Set of String) Ids of updatable objects this rule matches, as returned by the `checkpointsase_updatable_objects` data source. A set: order is not significant. Omit it to leave the rule unrestricted by updatable object.

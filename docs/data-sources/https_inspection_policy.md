@@ -39,10 +39,16 @@ output "bypassed_rules" {
 # destination type here only, and `addresses` is legal on BOTH sides of a rule
 # here and on neither side there -- so an attribute name alone does not tell you
 # which side it belongs to.
+#
+# `try` rather than `length(rule.sources) > 0 && ...`: a rule with no sources
+# block is the common case, and the right-hand operand of that `&&` indexes an
+# empty collection. Current Terraform short-circuits `&&` and evaluates it
+# correctly, but HCL has not always, and this provider declares no minimum
+# Terraform version. `try` is unconditionally safe.
 output "rules_restricted_by_address" {
   value = [
     for rule in data.checkpointsase_https_inspection_policy.current.rule : rule.name
-    if length(rule.sources) > 0 && length(rule.sources[0].addresses) > 0
+    if try(length(rule.sources[0].addresses), 0) > 0
   ]
 }
 
