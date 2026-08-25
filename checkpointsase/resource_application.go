@@ -376,12 +376,13 @@ func resourceApplicationRead(ctx context.Context, d *schema.ResourceData, m inte
 
 	// Extract the common fields from whichever sub-application variant
 	// the union dispatcher routed the response into. The schema fields
-	// (name/type/host/network/port/users) are identical across http/https/
-	// rdp variants for our purposes.
+	// (name/type/host/network/port/users/groups) are identical across
+	// http/https/rdp variants for our purposes.
 	var (
 		appName, appType, appHost, appNetwork string
 		appPort                               int
 		appUsers                              []string
+		appGroups                             []string
 	)
 	switch {
 	case appData.HttpApplication != nil:
@@ -396,6 +397,11 @@ func resourceApplicationRead(ctx context.Context, d *schema.ResourceData, m inte
 				appUsers = append(appUsers, *u.Id)
 			}
 		}
+		for _, g := range a.Groups {
+			if g.Id != nil {
+				appGroups = append(appGroups, *g.Id)
+			}
+		}
 	case appData.HttpsApplication != nil:
 		a := appData.HttpsApplication
 		appName, appType, appHost = a.Name, a.Type, a.Host.Value
@@ -408,6 +414,11 @@ func resourceApplicationRead(ctx context.Context, d *schema.ResourceData, m inte
 				appUsers = append(appUsers, *u.Id)
 			}
 		}
+		for _, g := range a.Groups {
+			if g.Id != nil {
+				appGroups = append(appGroups, *g.Id)
+			}
+		}
 	case appData.RdpApplication != nil:
 		a := appData.RdpApplication
 		appName, appType, appHost = a.Name, a.Type, a.Host.Value
@@ -418,6 +429,11 @@ func resourceApplicationRead(ctx context.Context, d *schema.ResourceData, m inte
 		for _, u := range a.Users {
 			if u.Id != nil {
 				appUsers = append(appUsers, *u.Id)
+			}
+		}
+		for _, g := range a.Groups {
+			if g.Id != nil {
+				appGroups = append(appGroups, *g.Id)
 			}
 		}
 	}
@@ -447,6 +463,24 @@ func resourceApplicationRead(ctx context.Context, d *schema.ResourceData, m inte
 	if err := d.Set("users", appUsers); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set Application users", err)
+	}
+	// groups was read back by nothing at all until 2026-08-25, which is
+	// LEFTOVERS L1 / test row APP-D03. The field was invisible rather than
+	// merely unread: while no fixture set `groups`, both sides of an
+	// ImportStateVerify comparison were empty and the missing d.Set could not
+	// be detected. Phase 3's fixture put a real group in the configuration,
+	// TestAccApplication_basic's import step started failing with `groups.#`
+	// and `groups.0` missing, and the gap became measurable.
+	//
+	// THIS CHANGES BEHAVIOUR ON UPGRADE. State that previously held whatever
+	// the configuration said now holds what the server reports. Where the two
+	// agree -- the normal case -- nothing moves. Where they disagree, the next
+	// plan surfaces a diff that was always real and was simply never shown.
+	// That is the correct direction, and it is why the v3 plan lists this fix
+	// as drift-producing and requires a migration-guide entry.
+	if err := d.Set("groups", appGroups); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to set Application groups", err)
 	}
 
 	return diags
