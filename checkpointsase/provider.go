@@ -53,6 +53,7 @@ func Provider() *schema.Provider {
 			"checkpointsase_group":                   resourceGroup(),
 			"checkpointsase_group_membership":        resourceGroupMembership(),
 			"checkpointsase_access_policy":           resourceAccessPolicy(),
+			"checkpointsase_https_inspection_policy": resourceHttpsInspectionPolicy(),
 		},
 		DataSourcesMap: map[string]*schema.Resource{
 			"checkpointsase_networks":                         dataSourceNetworks(),

@@ -458,7 +458,7 @@ func resourceAccessPolicyCustomizeDiff(_ context.Context, d *schema.ResourceDiff
 					empty = false
 					break
 				}
-				if len(accessPolicyCollection(d.Get(key))) > 0 {
+				if len(policyCollection(d.Get(key))) > 0 {
 					empty = false
 					break
 				}
@@ -888,13 +888,13 @@ API-FINDINGS 1.15 measured as accepted.
 */
 func expandAccessPolicySources(raw interface{}) []perimeter81Sdk.AccessPolicySource {
 	sources := []perimeter81Sdk.AccessPolicySource{}
-	block := accessPolicySingleBlock(raw)
+	block := policySingleBlock(raw)
 	if block == nil {
 		return sources
 	}
 
 	for _, bucket := range accessPolicySourceBuckets {
-		values := flattenStringsArrayData(accessPolicyCollection(block[bucket.attr]))
+		values := flattenStringsArrayData(policyCollection(block[bucket.attr]))
 		if len(values) == 0 {
 			continue
 		}
@@ -912,13 +912,13 @@ func expandAccessPolicySources(raw interface{}) []perimeter81Sdk.AccessPolicySou
 // disjoint and the generated models are different types.
 func expandAccessPolicyDestinations(raw interface{}) []perimeter81Sdk.AccessPolicyDestination {
 	destinations := []perimeter81Sdk.AccessPolicyDestination{}
-	block := accessPolicySingleBlock(raw)
+	block := policySingleBlock(raw)
 	if block == nil {
 		return destinations
 	}
 
 	for _, bucket := range accessPolicyDestinationBuckets {
-		values := flattenStringsArrayData(accessPolicyCollection(block[bucket.attr]))
+		values := flattenStringsArrayData(policyCollection(block[bucket.attr]))
 		if len(values) == 0 {
 			continue
 		}
@@ -947,7 +947,7 @@ canonicalises FROM, so it is the known-good shape to send.
 func expandAccessPolicyConditions(raw interface{}) []perimeter81Sdk.Condition {
 	conditions := []perimeter81Sdk.Condition{}
 
-	windows := accessPolicyCollection(raw)
+	windows := policyCollection(raw)
 	if len(windows) == 0 {
 		return conditions
 	}
@@ -959,7 +959,7 @@ func expandAccessPolicyConditions(raw interface{}) []perimeter81Sdk.Condition {
 			continue
 		}
 		values = append(values, perimeter81Sdk.ConditionValueInner{
-			Weekdays: flattenStringsArrayData(accessPolicyCollection(block["weekdays"])),
+			Weekdays: flattenStringsArrayData(policyCollection(block["weekdays"])),
 			StartTime: perimeter81Sdk.ConditionTime{
 				Hour:   int32(block["start_hour"].(int)),
 				Minute: int32(block["start_minute"].(int)),
@@ -979,49 +979,6 @@ func expandAccessPolicyConditions(raw interface{}) []perimeter81Sdk.Condition {
 		Type:  accessPolicyConditionTypeDatetime,
 		Value: values,
 	})
-}
-
-// accessPolicySingleBlock unwraps a MaxItems-1 nested block, returning nil when
-// it is absent or explicitly null. `sources {}` with no attributes set decodes to
-// a non-nil map with empty values, which the callers then produce an empty
-// bucket array from -- the same result as omitting the block, which is what the
-// server means by it.
-func accessPolicySingleBlock(raw interface{}) map[string]interface{} {
-	list := accessPolicyCollection(raw)
-	if len(list) == 0 || list[0] == nil {
-		return nil
-	}
-	block, ok := list[0].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	return block
-}
-
-/*
-accessPolicyCollection narrows an interface{} that should hold a collection --
-of strings, or of nested blocks -- returning nil for an absent or wrongly-typed value rather than
-panicking. The nested attributes are all Optional, so absent is ordinary.
-
-It accepts BOTH forms because the two are not interchangeable and the compiler
-will not tell you which one you have: every id collection in this resource, and
-`conditions`, are TypeSets, which d.Get hands back as a *schema.Set, while
-`sources` and `destinations` are TypeLists and arrive as []interface{}. Handling
-only the second is how a set attribute silently reads as empty -- which here
-would mean "unrestricted", i.e. a rule that matches everything.
-*/
-func accessPolicyCollection(raw interface{}) []interface{} {
-	switch value := raw.(type) {
-	case *schema.Set:
-		if value == nil {
-			return nil
-		}
-		return value.List()
-	case []interface{}:
-		return value
-	default:
-		return nil
-	}
 }
 
 /*

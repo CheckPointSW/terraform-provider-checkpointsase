@@ -7,6 +7,8 @@ import (
 	"time"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
 /*
@@ -378,3 +380,54 @@ const reapplyToResync = "Re-applying is safe and is the fix: the write replaces 
 	"list, so it cannot duplicate anything. Do NOT remove the resource from the " +
 	"configuration instead -- the rules are live on the server and nothing would be " +
 	"tracking them."
+
+/*
+policySingleBlock unwraps a MaxItems-1 nested block, returning nil when it is
+absent or explicitly null. `sources {}` with no attributes set decodes to a
+non-nil map with empty values, which the callers then produce an empty bucket
+array from -- the same result as omitting the block, which is what the server
+means by it. (The configuration is refused at plan time anyway; see each
+resource's CustomizeDiff.)
+
+It lives here rather than in either resource because both whole-policy resources
+have the same MaxItems-1 `sources`/`destinations` blocks. It was named
+accessPolicySingleBlock while only one of them existed.
+*/
+func policySingleBlock(raw interface{}) map[string]interface{} {
+	list := policyCollection(raw)
+	if len(list) == 0 || list[0] == nil {
+		return nil
+	}
+	block, ok := list[0].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	return block
+}
+
+/*
+policyCollection narrows an interface{} that should hold a collection -- of
+strings, or of nested blocks -- returning nil for an absent or wrongly-typed
+value rather than panicking. The nested attributes are all Optional, so absent is
+ordinary.
+
+It accepts BOTH forms because the two are not interchangeable and the compiler
+will not tell you which one you have: every id collection in these two resources
+is a TypeSet, which d.Get hands back as a *schema.Set, while the `sources` and
+`destinations` wrapper blocks are TypeLists and arrive as []interface{}. Handling
+only the second is how a set attribute silently reads as empty -- which in a
+policy rule would mean "unrestricted", i.e. a rule that matches everything.
+*/
+func policyCollection(raw interface{}) []interface{} {
+	switch value := raw.(type) {
+	case *schema.Set:
+		if value == nil {
+			return nil
+		}
+		return value.List()
+	case []interface{}:
+		return value
+	default:
+		return nil
+	}
+}

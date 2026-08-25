@@ -459,6 +459,38 @@ var listAttributeEmptyPolicy = map[string]struct {
 	"resource.checkpointsase_access_policy.rule.destinations": {mayBeEmpty, "MaxItems 1 wrapper block; ZERO blocks means any destination, an empty block is refused in CustomizeDiff"},
 	"resource.checkpointsase_access_policy.rule.conditions":   {mayBeEmpty, "measured: conditions: [] accepted (API-FINDINGS 1.15); RuleWeb.json sets no minItems"},
 
+	// --- the HTTPS-inspection policy: same shape, different vocabulary -------------------------
+	// checkpointsase_https_inspection_policy.rule is the tenant's whole bypassRules array.
+	// MEASURED, not read off a validator: POST /v3/ia/https-inspection/policy with an empty array
+	// answers 400 VALIDATION_BYPASS_RULES_REQUIRED (phase4-verification, W1: "Empty array rejected
+	// identically"), which matches `minItems: 1` on UpsertHttpsInspectionPolicy.bypassRules in the
+	// OpenAPI document. Same consequence as the access policy's: an empty list can never succeed,
+	// and the tempting "fix" is to route it to the DELETE that clears the tenant's whole policy, so
+	// it has to fail at plan time. Emptying the policy is `terraform destroy`.
+	"resource.checkpointsase_https_inspection_policy.rule": {mustReject, "measured: 400 VALIDATION_BYPASS_RULES_REQUIRED on an empty bypassRules array (phase4-verification W1); minItems 1 in the OpenAPI document"},
+	// Every leaf bucket, from p81-mongo-validation-schemas schemas-shared/molecules.types.json,
+	// which declares `value` as `bsonType: array, minItems: 0` on every object RuleBypass's
+	// $defs.ruleBypassSources and $defs.ruleBypassDestinations compose -- an explicit zero, not an
+	// omission. perimeter81-swg-api's own component fixtures spell "any source" as buckets with
+	// empty values (bypassRulesWithAnySource / bypassRulesWithAnyDestinations), so MinItems here
+	// would refuse the configuration that means "unrestricted".
+	"resource.checkpointsase_https_inspection_policy.rule.sources.users":                                 {mayBeEmpty, "molecules.types.json usersObject.value minItems 0"},
+	"resource.checkpointsase_https_inspection_policy.rule.sources.groups":                                {mayBeEmpty, "molecules.types.json groupsObject.value minItems 0"},
+	"resource.checkpointsase_https_inspection_policy.rule.sources.applications":                          {mayBeEmpty, "molecules.types.json applicationsObject.value minItems 0"},
+	"resource.checkpointsase_https_inspection_policy.rule.sources.addresses":                             {mayBeEmpty, "molecules.types.json addressObject.value minItems 0"},
+	"resource.checkpointsase_https_inspection_policy.rule.destinations.categories":                       {mayBeEmpty, "molecules.types.json categories.value minItems 0"},
+	"resource.checkpointsase_https_inspection_policy.rule.destinations.domains":                          {mayBeEmpty, "molecules.types.json domains.value minItems 0"},
+	"resource.checkpointsase_https_inspection_policy.rule.destinations.addresses":                        {mayBeEmpty, "molecules.types.json addressObject.value minItems 0"},
+	"resource.checkpointsase_https_inspection_policy.rule.destinations.updatable_objects":                {mayBeEmpty, "molecules.types.json updatableObjects.value minItems 0"},
+	"resource.checkpointsase_https_inspection_policy.rule.destinations.application_control_applications": {mayBeEmpty, "molecules.types.json applicationControlsObject.value minItems 0"},
+	// The two MaxItems-1 wrapper blocks. mayBeEmpty is about the NUMBER OF BLOCKS -- zero blocks is
+	// legal and is how "any source" is spelled. A block that is present but EMPTY is a different
+	// thing and is refused by resourceHttpsInspectionPolicyCustomizeDiff, because the server returns
+	// an unrestricted rule as empty buckets which read back as no block at all, so the two spellings
+	// could never converge. MinItems could not express that: an empty block is still one block.
+	"resource.checkpointsase_https_inspection_policy.rule.sources":      {mayBeEmpty, "MaxItems 1 wrapper block; ZERO blocks means any source, an empty block is refused in CustomizeDiff"},
+	"resource.checkpointsase_https_inspection_policy.rule.destinations": {mayBeEmpty, "MaxItems 1 wrapper block; ZERO blocks means any destination, an empty block is refused in CustomizeDiff"},
+
 	// --- mayBeEmpty: [] is legal, and for most of these it is the only way to clear -------------
 	// baseNetwork.dto.ts: tags is @IsString({each:true}) @IsOptional() with no minimum. The enhanced
 	// update handler backfills with `tags ??= network.tags`, which only fires on null/undefined — so
