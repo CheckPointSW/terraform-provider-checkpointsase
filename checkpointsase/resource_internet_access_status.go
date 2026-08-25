@@ -170,6 +170,18 @@ func readInternetAccessStatus(ctx context.Context, client *perimeter81Sdk.APICli
 			"neither a value nor a documented response")
 	}
 
+	// THE ENVELOPED SHAPE IS THE REAL ONE, measured 2026-08-25:
+	//   GET /v3/ia/status -> {"status":200,"data":{"iaStatus":"inactive"}}
+	// The OpenAPI document declares the flat shape instead, which is why the
+	// generated model has a top-level IaStatus that is always empty. Recorded as
+	// API-FINDINGS 1.22.
+	//
+	// The flat branch is kept, and it is NOT dead defence: the document is what
+	// the SDK is generated from, so the day the spec is corrected the model
+	// starts populating IaStatus and this reader keeps working across that
+	// change without a coordinated release. Getting this wrong is not a decode
+	// error -- it yields ia_status = "" on a healthy 200, and a Required
+	// attribute reading "" plans to flip the tenant's security enforcement.
 	if status := body.GetIaStatus(); status != "" {
 		return status, nil
 	}
