@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 )
@@ -54,23 +53,6 @@ func accessPolicyRuleJSON(id, name string, priority int) string {
 // a fixture that omits it would not exercise the same decode path.
 func accessPolicyGetBody(rules ...string) string {
 	return fmt.Sprintf(`{"status":200,"data":{"controlledBy":"hsase","webRules":[%s]}}`,
-		strings.Join(rules, ","))
-}
-
-// httpsInspectionRuleJSON is the HTTPS-inspection equivalent. Its refused field
-// list differs -- the server returns _created_at here and not on the access
-// policy -- which is the whole reason the two lists are defined separately.
-func httpsInspectionRuleJSON(id, name string, priority int) string {
-	return fmt.Sprintf(`{"id":%q,"name":%q,"appliedOn":"sites","action":"bypass",`+
-		`"destinations":[{"type":"domains","value":[]}],`+
-		`"sources":[{"type":"users","value":[]}],`+
-		`"log":"disabled","status":"enabled","priority":%d,`+
-		`"_created_at":"2026-08-25T09:00:00.000Z"}`,
-		id, name, priority)
-}
-
-func httpsInspectionGetBody(rules ...string) string {
-	return fmt.Sprintf(`{"status":200,"data":{"controlledBy":"hsase","bypassRules":[%s]}}`,
 		strings.Join(rules, ","))
 }
 
@@ -313,239 +295,14 @@ func TestStripServerFieldsDoesNotMutateTheCallersMap(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// The delete-the-last-rule guard
-// ---------------------------------------------------------------------------
-
 /*
-TestRewriteAccessPolicyWithoutDeletesOnlyWhenTheLastRuleGoes tests the one call
-in this phase that can destroy a tenant's policy, from both sides.
-
-DELETE /v3/ia/access/policy clears the ENTIRE tenant policy -- the API documents
-it as "all internet traffic will be allowed after deletion". It is correct in
-exactly one situation: the rule being removed is the last one, because POST
-rejects an empty array (400 VALIDATION_WEB_RULES_REQUIRED, API-FINDINGS 1.18)
-and there is no other way to express it.
-
-The assertion is on the request LIST, not the last request. A test that checked
-only the final request would pass on an implementation that issued DELETE and
-then POSTed the remainder, which is a wiped policy followed by a partial
-restore -- the worst outcome available and the one that looks most like success.
-*/
-func TestRewriteAccessPolicyWithoutDeletesOnlyWhenTheLastRuleGoes(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		stored    []string // the server's list before the rewrite
-		removeID  string
-		wantCalls []string
-		wantBody  string // a fragment the POST body must contain, "" if no POST
-		wantGone  bool
-	}{
-		{
-			name:      "the last rule can only go via DELETE",
-			stored:    []string{accessPolicyRuleJSON("rule-1", "only", 0)},
-			removeID:  "rule-1",
-			wantCalls: []string{"GET /v3/ia/access/policy", "DELETE /v3/ia/access/policy"},
-			wantGone:  true,
-		},
-		{
-			// The other side of the guard, and the one that matters most: with
-			// a remainder there must be NO DELETE anywhere in the list.
-			name: "one of two rules goes via POST and issues no DELETE at all",
-			stored: []string{
-				accessPolicyRuleJSON("rule-1", "keep", 0),
-				accessPolicyRuleJSON("rule-2", "remove", 1),
-			},
-			removeID:  "rule-2",
-			wantCalls: []string{"GET /v3/ia/access/policy", "POST /v3/ia/access/policy"},
-			wantBody:  `"id":"rule-1"`,
-			wantGone:  true,
-		},
-		{
-			// Three rules, the FIRST removed: the remainder is non-empty and
-			// keeps both survivors. A rewrite that dropped a bystander is the
-			// silent failure this whole file exists to prevent.
-			name: "removing the first of three keeps both survivors",
-			stored: []string{
-				accessPolicyRuleJSON("rule-1", "remove", 0),
-				accessPolicyRuleJSON("rule-2", "keep-a", 1),
-				accessPolicyRuleJSON("rule-3", "keep-b", 2),
-			},
-			removeID:  "rule-1",
-			wantCalls: []string{"GET /v3/ia/access/policy", "POST /v3/ia/access/policy"},
-			wantBody:  `"id":"rule-3"`,
-			wantGone:  true,
-		},
-		{
-			// Idempotency, and the second place DELETE must not be reached. An
-			// implementation guarding only on len(remaining)==0 would DELETE
-			// the tenant's whole policy here -- the list is empty, but not
-			// because we removed anything from it.
-			name:      "a rule that is not on the server writes nothing",
-			stored:    nil,
-			removeID:  "rule-1",
-			wantCalls: []string{"GET /v3/ia/access/policy"},
-			wantGone:  false,
-		},
-		{
-			// Same guard with somebody else's rules present. Nothing may be
-			// written, because nothing of ours was found.
-			name:      "an unknown id leaves a populated policy untouched",
-			stored:    []string{accessPolicyRuleJSON("rule-9", "someone else's", 0)},
-			removeID:  "rule-1",
-			wantCalls: []string{"GET /v3/ia/access/policy"},
-			wantGone:  false,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			log := &requestLog{}
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				log.record(r)
-				w.Header().Set("Content-Type", "application/json")
-				switch r.Method {
-				case http.MethodGet:
-					_, _ = w.Write([]byte(accessPolicyGetBody(tc.stored...)))
-				case http.MethodPost:
-					_, _ = w.Write([]byte(accessPolicyGetBody(tc.stored...)))
-				case http.MethodDelete:
-					w.WriteHeader(http.StatusNoContent)
-				}
-			}))
-			defer srv.Close()
-
-			removed, err := rewriteAccessPolicyWithout(
-				context.Background(), newTestUserAPIClient(srv.URL), tc.removeID)
-			if err != nil {
-				t.Fatalf("rewriteAccessPolicyWithout: %v", err)
-			}
-			if removed != tc.wantGone {
-				t.Errorf("removed = %v, want %v", removed, tc.wantGone)
-			}
-
-			calls, bodies := log.snapshot()
-			if !testComparableArraiesEq(calls, tc.wantCalls) {
-				t.Fatalf("requests were %v, want exactly %v", calls, tc.wantCalls)
-			}
-			if tc.wantBody != "" {
-				post := bodies[len(bodies)-1]
-				if !strings.Contains(post, tc.wantBody) {
-					t.Errorf("POST body %s does not contain %s", post, tc.wantBody)
-				}
-				// The removed rule must not be in the body, and neither may the
-				// fields the write model refuses (API-FINDINGS 1.17).
-				if strings.Contains(post, `"id":"`+tc.removeID+`"`) {
-					t.Errorf("POST body still carries the removed rule %s: %s", tc.removeID, post)
-				}
-				for _, refused := range accessPolicyRefusedFields {
-					if strings.Contains(post, `"`+refused+`"`) {
-						t.Errorf("POST body carries %q, which the write model refuses with a "+
-							"422 (API-FINDINGS 1.17): %s", refused, post)
-					}
-				}
-			}
-		})
-	}
-}
-
-/*
-TestRewriteHttpsInspectionPolicyWithoutDeletesOnlyWhenTheLastRuleGoes is the
-same guard on the other endpoint. It is not a copy for symmetry's sake: the
-HTTPS-inspection list has its own path, its own array name (bypassRules, whose
-empty-array refusal is 400 VALIDATION_BYPASS_RULES_REQUIRED) and its own strip
-list, so nothing about the access-policy test constrains it.
-*/
-func TestRewriteHttpsInspectionPolicyWithoutDeletesOnlyWhenTheLastRuleGoes(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		stored    []string
-		removeID  string
-		wantCalls []string
-	}{
-		{
-			"the last rule can only go via DELETE",
-			[]string{httpsInspectionRuleJSON("rule-1", "only", 0)},
-			"rule-1",
-			[]string{"GET /v3/ia/https-inspection/policy", "DELETE /v3/ia/https-inspection/policy"},
-		},
-		{
-			"one of two rules goes via POST and issues no DELETE at all",
-			[]string{
-				httpsInspectionRuleJSON("rule-1", "keep", 0),
-				httpsInspectionRuleJSON("rule-2", "remove", 1),
-			},
-			"rule-2",
-			[]string{"GET /v3/ia/https-inspection/policy", "POST /v3/ia/https-inspection/policy"},
-		},
-		{
-			"a rule that is not on the server writes nothing",
-			nil,
-			"rule-1",
-			[]string{"GET /v3/ia/https-inspection/policy"},
-		},
-		{
-			"an unknown id leaves a populated policy untouched",
-			[]string{httpsInspectionRuleJSON("rule-9", "someone else's", 0)},
-			"rule-1",
-			[]string{"GET /v3/ia/https-inspection/policy"},
-		},
-		{
-			"removing the first of three keeps both survivors",
-			[]string{
-				httpsInspectionRuleJSON("rule-1", "remove", 0),
-				httpsInspectionRuleJSON("rule-2", "keep-a", 1),
-				httpsInspectionRuleJSON("rule-3", "keep-b", 2),
-			},
-			"rule-1",
-			[]string{"GET /v3/ia/https-inspection/policy", "POST /v3/ia/https-inspection/policy"},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			log := &requestLog{}
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				log.record(r)
-				w.Header().Set("Content-Type", "application/json")
-				switch r.Method {
-				case http.MethodDelete:
-					w.WriteHeader(http.StatusNoContent)
-				default:
-					_, _ = w.Write([]byte(httpsInspectionGetBody(tc.stored...)))
-				}
-			}))
-			defer srv.Close()
-
-			if _, err := rewriteHttpsInspectionPolicyWithout(
-				context.Background(), newTestUserAPIClient(srv.URL), tc.removeID); err != nil {
-				t.Fatalf("rewriteHttpsInspectionPolicyWithout: %v", err)
-			}
-
-			calls, bodies := log.snapshot()
-			if !testComparableArraiesEq(calls, tc.wantCalls) {
-				t.Fatalf("requests were %v, want exactly %v", calls, tc.wantCalls)
-			}
-			if calls[len(calls)-1] != "POST /v3/ia/https-inspection/policy" {
-				return
-			}
-			post := bodies[len(bodies)-1]
-			for _, refused := range httpsInspectionRefusedFields {
-				if strings.Contains(post, `"`+refused+`"`) {
-					t.Errorf("POST body carries %q, which the write model refuses: %s",
-						refused, post)
-				}
-			}
-			if !strings.Contains(post, `"bypassRules"`) {
-				t.Errorf("POST body is not a bypassRules payload: %s", post)
-			}
-		})
-	}
-}
-
-/*
-TestWritePolicyRulesRefusesAnEmptyList pins the reason the DELETE branch cannot
-be generalised. POST with an empty array is rejected by the server
+TestWritePolicyRulesRefusesAnEmptyList pins the reason DELETE cannot be reached
+from the write path. POST with an empty array is rejected by the server
 (400 VALIDATION_WEB_RULES_REQUIRED, API-FINDINGS 1.18), so a writer that
 accepted one would either fail every time or -- far worse -- be "fixed" later by
-routing it to DELETE, which would put the destructive call on the ordinary write
-path. The writer refuses instead, before any request leaves.
+routing it to DELETE, which would put the call that clears a tenant's entire
+policy on the ordinary write path. The writer refuses instead, before any request
+leaves; emptying a policy is the resource's Delete calling deleteAll.
 */
 func TestWritePolicyRulesRefusesAnEmptyList(t *testing.T) {
 	for _, tc := range []struct {
@@ -553,17 +310,10 @@ func TestWritePolicyRulesRefusesAnEmptyList(t *testing.T) {
 		write func(context.Context, *perimeter81Sdk.APIClient) error
 	}{
 		{"access policy", func(ctx context.Context, c *perimeter81Sdk.APIClient) error {
-			// The lock is taken here because the writers refuse to run without
-			// it. Holding it is what a real caller does; see
-			// TestPolicyWritersRefuseToRunWithoutTheLock for the other side.
-			policyMutex.Lock()
-			defer policyMutex.Unlock()
-			return writeAccessPolicyRulesLocked(ctx, c, nil)
+			return writeAccessPolicyRules(ctx, c, nil)
 		}},
 		{"https inspection", func(ctx context.Context, c *perimeter81Sdk.APIClient) error {
-			policyMutex.Lock()
-			defer policyMutex.Unlock()
-			return writeHttpsInspectionRulesLocked(ctx, c, nil)
+			return writeHttpsInspectionRules(ctx, c, nil)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -585,230 +335,110 @@ func TestWritePolicyRulesRefusesAnEmptyList(t *testing.T) {
 }
 
 /*
-TestRewritePolicyWithoutNeverDeletesWhileABystanderSurvives is the duplicate-id
-hole, found by review rather than by the original tests.
+TestPolicyReReadRetriesAndNeverFailsSilently covers the window on the far side of
+a successful POST.
 
-If the server's list ever holds TWO rules sharing the id being removed, both are
-filtered out, `found` is true and `remaining` is empty -- and a guard of
-`len(remaining) == 0` alone would then DELETE the tenant's ENTIRE policy while a
-bystander rule was still in the list. Not reachable today, because ids are
-server-minted and unique. Guarded anyway, because the clause costs nothing and
-because "unreachable today" is not a good enough reason in the one function that
-can destroy a tenant's policy.
-
-The correct behaviour is to fall through to the writer, which refuses an empty
-list before any request leaves. So: an error, and no second request of any kind.
-*/
-func TestRewritePolicyWithoutNeverDeletesWhileABystanderSurvives(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		stored []string
-	}{
-		{
-			"two rules share the removed id",
-			[]string{
-				accessPolicyRuleJSON("dup", "a", 0),
-				accessPolicyRuleJSON("dup", "b", 1),
-			},
-		},
-		{
-			"three rules share the removed id",
-			[]string{
-				accessPolicyRuleJSON("dup", "a", 0),
-				accessPolicyRuleJSON("dup", "b", 1),
-				accessPolicyRuleJSON("dup", "c", 2),
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			log := &requestLog{}
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				log.record(r)
-				w.Header().Set("Content-Type", "application/json")
-				if r.Method == http.MethodDelete {
-					w.WriteHeader(http.StatusNoContent)
-					return
-				}
-				_, _ = w.Write([]byte(accessPolicyGetBody(tc.stored...)))
-			}))
-			defer srv.Close()
-
-			removed, err := rewriteAccessPolicyWithout(
-				context.Background(), newTestUserAPIClient(srv.URL), "dup")
-			if err == nil {
-				t.Errorf("removed = %v with no error; emptying the list by removing "+
-					"several rules at once is not the same statement as removing the "+
-					"last rule, and must not be answered with a DELETE", removed)
-			}
-
-			calls, _ := log.snapshot()
-			want := []string{"GET /v3/ia/access/policy"}
-			if !testComparableArraiesEq(calls, want) {
-				t.Fatalf("requests were %v, want exactly %v. A DELETE here clears the "+
-					"ENTIRE tenant policy while %d rules were still in the list.",
-					calls, want, len(tc.stored))
-			}
-		})
-	}
-}
-
-/*
-TestPolicyWritersRefuseToRunWithoutTheLock is the enforcement half of the
-policyMutex contract, and it exists because a comment is not a guard.
-
-Both writers are package-visible. An Update added in a later task as
-GET -> modify -> writeAccessPolicyRulesLocked would bypass policyMutex entirely,
-and no other test in this file would notice: the concurrency test drives
-appendAccessPolicyRule, not the raw writer. So the writers check, and refuse
-before any request leaves.
-
-The rules passed here are deliberately NON-empty, so that the empty-list refusal
-cannot be what produces the error. This test would pass for the wrong reason
-otherwise.
-*/
-func TestPolicyWritersRefuseToRunWithoutTheLock(t *testing.T) {
-	log := &requestLog{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.record(r)
-		t.Errorf("unexpected %s %s: a writer that does not hold policyMutex must refuse "+
-			"before any request", r.Method, r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(accessPolicyGetBody()))
-	}))
-	defer srv.Close()
-	client := newTestUserAPIClient(srv.URL)
-
-	err := writeAccessPolicyRulesLocked(context.Background(), client,
-		[]perimeter81Sdk.AccessPolicyRule{{
-			Name: "unlocked", AppliedOn: "both", Action: "block", Status: "enabled",
-		}})
-	if err == nil {
-		t.Error("writeAccessPolicyRulesLocked ran without the lock")
-	} else if !strings.Contains(err.Error(), "policyMutex") {
-		t.Errorf("the refusal does not name policyMutex, so the reader cannot tell what "+
-			"contract was broken: %v", err)
-	}
-
-	if err := writeHttpsInspectionRulesLocked(context.Background(), client,
-		[]perimeter81Sdk.HttpsInspectionRule{{
-			Name: "unlocked", AppliedOn: "sites", Status: "enabled",
-		}}); err == nil {
-		t.Error("writeHttpsInspectionRulesLocked ran without the lock")
-	}
-
-	if calls, _ := log.snapshot(); len(calls) != 0 {
-		t.Errorf("requests were %v, want none", calls)
-	}
-
-	// The other direction, against a server that ACCEPTS the write: a caller
-	// holding the lock must not be refused. A check that rejected correct
-	// callers would be worse than no check, and this half is what would catch
-	// TryLock being used the wrong way round.
-	permissive := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(accessPolicyGetBody()))
-	}))
-	defer permissive.Close()
-
-	policyMutex.Lock()
-	err = writeAccessPolicyRulesLocked(context.Background(), newTestUserAPIClient(permissive.URL),
-		[]perimeter81Sdk.AccessPolicyRule{{
-			Name: "locked", AppliedOn: "both", Action: "block", Status: "enabled",
-		}})
-	policyMutex.Unlock()
-	if err != nil && strings.Contains(err.Error(), "policyMutex") {
-		t.Errorf("a caller holding the lock was refused: %v", err)
-	}
-}
-
-/*
-TestAppendRetriesTheReReadAndNeverFailsSilently covers the window on the far side
-of a successful POST.
-
-Create is GET, POST, GET, and the last GET is how the new rule's id is learned.
-If it fails, the rule EXISTS on the server and Terraform has no id for it, so the
-next apply appends a second copy and the policy doubles -- from one transient
-500, which §1.19 says this endpoint does produce.
+The write has landed: the tenant is enforcing the new list. The re-read is the
+only authoritative account of what that list became, because the server expands
+empty sources, destinations and conditions and reassigns priority positionally
+(API-FINDINGS 1.15/1.16), so state built from the REQUEST would diff forever.
+Fail here and the apply reports failure over a change that succeeded, leaving the
+resource absent from state or tainted -- and recreating a tainted whole-policy
+resource BEGINS with the DELETE that clears the tenant's policy.
 
 Two behaviours are pinned. A transient failure is retried, so the common case
-recovers instead of orphaning anything. A permanent failure is not retried, and
-the error says the rule was written before it says what went wrong -- because the
-instinct on seeing a failed create is to apply again, and applying again is
-precisely what doubles the policy.
+recovers. A permanent failure is not retried, and the error says the policy WAS
+written before it says what went wrong.
+
+It also pins what the message must NOT say. The per-rule version told the
+operator that re-applying would create a SECOND copy and that they should import
+or hand-remove first. Under a whole-list write that is false and actively
+harmful: re-applying replaces the array and is the fix.
 */
-func TestAppendRetriesTheReReadAndNeverFailsSilently(t *testing.T) {
+func TestPolicyReReadRetriesAndNeverFailsSilently(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// reReadStatus is returned for each GET after the POST, in order; a 0
-		// means "answer normally".
-		reReadStatus []int
-		wantCalls    int
-		wantErr      bool
+		// status is returned for each GET in order; a 0 means "answer normally".
+		status    []int
+		wantCalls int
+		wantErr   bool
 	}{
-		{"a transient 500 on the re-read is retried", []int{http.StatusInternalServerError, 0}, 4, false},
-		{"two transient failures are still within budget", []int{502, 503, 0}, 5, false},
+		{"a transient 500 is retried", []int{http.StatusInternalServerError, 0}, 2, false},
+		{"two transient failures are still within budget", []int{502, 503, 0}, 3, false},
 		{
 			// 422 is not transient. Repeating it changes nothing, so it is not
-			// repeated -- but it still has to be reported as an orphan.
-			"a permanent failure is not retried and is reported as an orphan",
-			[]int{http.StatusUnprocessableEntity}, 3, true,
+			// repeated -- but it still has to be reported loudly.
+			"a permanent failure is not retried and is still reported",
+			[]int{http.StatusUnprocessableEntity}, 1, true,
 		},
 		{
-			"a transient failure that outlives the budget is reported as an orphan",
-			[]int{500, 500, 500, 500}, 6, true,
+			"a transient failure that outlives the budget is reported",
+			[]int{500, 500, 500, 500}, 4, true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log := &requestLog{}
-			stored := []string{accessPolicyRuleJSON("rule-1", "pre-existing", 0)}
-			posted := false
-			reRead := 0
+			stored := []string{
+				accessPolicyRuleJSON("rule-1", "pre-existing", 0),
+				accessPolicyRuleJSON("rule-2", "just written", 1),
+			}
+			attempt := 0
 
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				log.record(r)
 				w.Header().Set("Content-Type", "application/json")
-				if r.Method == http.MethodPost {
-					posted = true
-					stored = append(stored, accessPolicyRuleJSON("rule-2", "new", 1))
-					_, _ = w.Write([]byte(accessPolicyGetBody(stored...)))
-					return
+				status := 0
+				if attempt < len(tc.status) {
+					status = tc.status[attempt]
 				}
-				if posted {
-					status := 0
-					if reRead < len(tc.reReadStatus) {
-						status = tc.reReadStatus[reRead]
-					}
-					reRead++
-					if status != 0 {
-						w.WriteHeader(status)
-						_, _ = w.Write([]byte(`{"message":"re-read failed"}`))
-						return
-					}
+				attempt++
+				if status != 0 {
+					w.WriteHeader(status)
+					_, _ = w.Write([]byte(`{"message":"re-read failed"}`))
+					return
 				}
 				_, _ = w.Write([]byte(accessPolicyGetBody(stored...)))
 			}))
 			defer srv.Close()
 
-			created, err := appendAccessPolicyRule(context.Background(),
-				newTestUserAPIClient(srv.URL), perimeter81Sdk.AccessPolicyRule{
-					Name: "new", AppliedOn: "both", Action: "block", Status: "enabled",
-				})
+			rules, err := rereadAfterWrite(context.Background(),
+				accessPolicyOps(newTestUserAPIClient(srv.URL)))
 
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, want an error = %v", err, tc.wantErr)
 			}
 			if tc.wantErr {
-				// The message has to lead with the fact that the rule exists,
-				// and name it, or the operator re-applies and doubles the policy.
-				for _, fragment := range []string{`"new" WAS written`, "SECOND copy", "import it"} {
+				// It has to lead with the fact that the tenant is already
+				// enforcing the new policy, then say what to do about it.
+				for _, fragment := range []string{"WAS written", "Re-applying is safe",
+					"access policy"} {
 					if !strings.Contains(err.Error(), fragment) {
 						t.Errorf("the error does not contain %q, so it does not tell the "+
-							"operator a rule was created but not recorded: %v", fragment, err)
+							"operator the policy was written but not recorded: %v", fragment, err)
 					}
 				}
-			} else if created.GetId() != "rule-2" {
-				t.Errorf("created id = %q, want rule-2 after the retry succeeded",
-					created.GetId())
+				// And it must not carry the per-rule model's advice, which is
+				// now wrong in both halves.
+				for _, gone := range []string{"SECOND copy", "import it"} {
+					if strings.Contains(err.Error(), gone) {
+						t.Errorf("the error still says %q. A whole-list write replaces the "+
+							"array, so re-applying cannot duplicate anything and this sends "+
+							"the operator to hand-edit a policy that only needs re-applying: %v",
+							gone, err)
+					}
+				}
+				if rules != nil {
+					t.Errorf("rules = %v after a failed re-read, want nil: a read that "+
+						"failed must never be handed back as a list", rules)
+				}
+			} else {
+				if len(rules) != 2 {
+					t.Fatalf("read back %d rules, want 2", len(rules))
+				}
+				if rules[1].GetId() != "rule-2" {
+					t.Errorf("rules[1] id = %q, want rule-2: the retry must return the "+
+						"server's list, in the server's order", rules[1].GetId())
+				}
 			}
 
 			calls, _ := log.snapshot()
@@ -822,270 +452,63 @@ func TestAppendRetriesTheReReadAndNeverFailsSilently(t *testing.T) {
 }
 
 /*
-TestRewritePolicyWithoutRefusesAnEmptyRuleID guards the same call from the other
-direction. An empty id is not reachable from a healthy state, but it matches a
-rule the server has not assigned an id to, and on a one-rule list that would put
-an otherwise untouched policy on the DELETE branch. The refusal happens before
-any request, which is what the zero-request assertion checks.
-*/
-func TestRewritePolicyWithoutRefusesAnEmptyRuleID(t *testing.T) {
-	log := &requestLog{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.record(r)
-		t.Errorf("unexpected %s %s: an empty rule id must be refused before any request",
-			r.Method, r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
-		// The exact scenario the comment describes: ONE rule, carrying no id, so
-		// that "" would match it, the remainder would be empty and the list
-		// length would be 1 -- both clauses of the DELETE guard satisfied. The
-		// zero-request assertion below is what stops it getting that far.
-		_, _ = w.Write([]byte(accessPolicyGetBody(
-			`{"name":"no id","appliedOn":"both","action":"block",` +
-				`"conditions":[],"destinations":[],"sources":[],` +
-				`"status":"enabled","priority":0}`)))
-	}))
-	defer srv.Close()
-
-	client := newTestUserAPIClient(srv.URL)
-	if _, err := rewriteAccessPolicyWithout(context.Background(), client, ""); err == nil {
-		t.Error("rewriteAccessPolicyWithout accepted an empty rule id")
-	}
-	if _, err := rewriteHttpsInspectionPolicyWithout(context.Background(), client, ""); err == nil {
-		t.Error("rewriteHttpsInspectionPolicyWithout accepted an empty rule id")
-	}
-	if calls, _ := log.snapshot(); len(calls) != 0 {
-		t.Errorf("requests were %v, want none", calls)
-	}
-}
-
-/*
 TestPolicyReadDoesNotTreatA404AsAnEmptyPolicy pins the Phase 3 lesson on the
-endpoint where getting it wrong is most expensive.
+endpoints where getting it wrong is most expensive.
 
 These are COLLECTION endpoints: they do not 404 because a rule is missing --
 absence arrives as an empty array. A 404 means the URL is wrong, which is the
 documented failure when BASE_URL is unset and every call goes to the US
-production host. If a 404 were read as "the policy is empty", the delete path
-would see len(remaining) == 0 and fire the DELETE that clears a tenant policy
-the provider never managed to read.
+production host. Swallowing it as "the policy is empty" hands a resource's Read
+an empty list, which Terraform then plans as "every rule was deleted outside
+Terraform" and the next apply re-POSTs -- or, if the whole list is now absent
+from the server's account of itself, offers to destroy the resource, and destroy
+is the DELETE that clears the tenant policy the provider never managed to read.
+
+The assertion is on both endpoints because the discipline now lives in the two
+read closures rather than in one shared caller: nothing about the access policy's
+closure constrains the HTTPS-inspection one.
 */
 func TestPolicyReadDoesNotTreatA404AsAnEmptyPolicy(t *testing.T) {
-	log := &requestLog{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.record(r)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"message":"Cannot GET /api/v3/ia/access/policy"}`))
-	}))
-	defer srv.Close()
+	for _, tc := range []struct {
+		name string
+		path string
+		read func(context.Context, *perimeter81Sdk.APIClient) (int, error)
+	}{
+		{"access policy", "/v3/ia/access/policy",
+			func(ctx context.Context, c *perimeter81Sdk.APIClient) (int, error) {
+				rules, _, err := accessPolicyOps(c).read(ctx)
+				return len(rules), err
+			}},
+		{"https inspection policy", "/v3/ia/https-inspection/policy",
+			func(ctx context.Context, c *perimeter81Sdk.APIClient) (int, error) {
+				rules, _, err := httpsInspectionPolicyOps(c).read(ctx)
+				return len(rules), err
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &requestLog{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				log.record(r)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"message":"Cannot GET /api` + tc.path + `"}`))
+			}))
+			defer srv.Close()
 
-	removed, err := rewriteAccessPolicyWithout(
-		context.Background(), newTestUserAPIClient(srv.URL), "rule-1")
-	if err == nil {
-		t.Fatal("a 404 from the collection was swallowed; it means the URL is wrong, " +
-			"not that the policy is empty")
-	}
-	if removed {
-		t.Error("removed = true after a failed read")
-	}
-	calls, _ := log.snapshot()
-	want := []string{"GET /v3/ia/access/policy"}
-	if !testComparableArraiesEq(calls, want) {
-		t.Fatalf("requests were %v, want exactly %v: a read that failed must not be "+
-			"followed by a write of any kind", calls, want)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// policyMutex
-// ---------------------------------------------------------------------------
-
-/*
-TestPolicyMutexSerialisesRewrites runs N concurrent read-modify-write cycles
-against an httptest server that records the interleaving, and asserts no two
-cycles overlap. Without the mutex this fails; Terraform's default parallelism is
-10, so SAP-01's three concurrent applies would silently lose rules.
-
-The server delays every GET. That is what makes the failure deterministic rather
-than a race that shows up one run in fifty: with the delay, unserialised cycles
-all read the same snapshot and each POST then overwrites the previous one's
-work, so the tenant ends up with a fraction of the rules Terraform believes it
-created. Two independent assertions catch it -- the request sequence, which must
-be the per-cycle pattern repeated end to end, and the final rule count.
-
-NOTE: policyMutex serialises ONE provider process. Two concurrent `terraform
-apply` runs against the same tenant can still lose rules; that is out of scope
-for Phase 4 and documented as a resource caveat.
-*/
-func TestPolicyMutexSerialisesRewrites(t *testing.T) {
-	const cycles = 6
-	const readDelay = 15 * time.Millisecond
-
-	log := &requestLog{}
-	var mu sync.Mutex
-	stored := []string{accessPolicyRuleJSON("rule-0", "pre-existing", 0)}
-	minted := 0
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.record(r)
-		w.Header().Set("Content-Type", "application/json")
-
-		switch r.Method {
-		case http.MethodGet:
-			mu.Lock()
-			snapshot := append([]string(nil), stored...)
-			mu.Unlock()
-			// The snapshot is taken BEFORE the delay so that a serialised run
-			// still sees every earlier POST. The delay only widens the window
-			// in which an unserialised run reads a stale list.
-			time.Sleep(readDelay)
-			_, _ = w.Write([]byte(accessPolicyGetBody(snapshot...)))
-
-		case http.MethodPost:
-			var payload struct {
-				WebRules []map[string]interface{} `json:"webRules"`
+			count, err := tc.read(context.Background(), newTestUserAPIClient(srv.URL))
+			if err == nil {
+				t.Fatal("a 404 from the collection was swallowed; it means the URL is " +
+					"wrong, not that the policy is empty")
 			}
-			raw, _ := io.ReadAll(r.Body)
-			if err := json.Unmarshal(raw, &payload); err != nil {
-				t.Errorf("undecodable POST body: %v", err)
+			if count != 0 {
+				t.Errorf("read returned %d rules alongside its error, want none", count)
 			}
-			mu.Lock()
-			var next []string
-			for i, rule := range payload.WebRules {
-				id, _ := rule["id"].(string)
-				if id == "" {
-					minted++
-					id = fmt.Sprintf("minted-%d", minted)
-				}
-				name, _ := rule["name"].(string)
-				next = append(next, accessPolicyRuleJSON(id, name, i))
+			calls, _ := log.snapshot()
+			want := []string{"GET " + tc.path}
+			if !testComparableArraiesEq(calls, want) {
+				t.Fatalf("requests were %v, want exactly %v: a read that failed must not "+
+					"be followed by a request of any kind", calls, want)
 			}
-			stored = next
-			body := accessPolicyGetBody(stored...)
-			mu.Unlock()
-			_, _ = w.Write([]byte(body))
-
-		default:
-			t.Errorf("unexpected %s: appending a rule never deletes anything", r.Method)
-		}
-	}))
-	defer srv.Close()
-
-	client := newTestUserAPIClient(srv.URL)
-	var wg sync.WaitGroup
-	errs := make([]error, cycles)
-	ids := make([]string, cycles)
-	for i := 0; i < cycles; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			created, err := appendAccessPolicyRule(context.Background(), client,
-				perimeter81Sdk.AccessPolicyRule{
-					Name:      fmt.Sprintf("concurrent-%d", i),
-					AppliedOn: "both",
-					Action:    "block",
-					Status:    "enabled",
-				})
-			errs[i], ids[i] = err, created.GetId()
-		}(i)
-	}
-	wg.Wait()
-
-	for i, err := range errs {
-		if err != nil {
-			t.Errorf("cycle %d: %v", i, err)
-		}
-		if ids[i] == "" {
-			t.Errorf("cycle %d recorded no id; the resource would then have no way to "+
-				"find its own rule again", i)
-		}
-	}
-
-	// Assertion 1: the request sequence. One cycle is GET, POST, GET; N cycles
-	// end to end are that pattern repeated. Any other order means two cycles
-	// were in flight at once.
-	var want []string
-	for i := 0; i < cycles; i++ {
-		want = append(want,
-			"GET /v3/ia/access/policy",
-			"POST /v3/ia/access/policy",
-			"GET /v3/ia/access/policy")
-	}
-	calls, _ := log.snapshot()
-	if !testComparableArraiesEq(calls, want) {
-		t.Errorf("request sequence was\n  %v\nwant\n  %v\nTwo overlapping cycles read the "+
-			"same list and the second POST discards the first one's rule.", calls, want)
-	}
-
-	// Assertion 2: the consequence. Every rule survived, and so did the one
-	// that was there before Terraform touched the policy.
-	mu.Lock()
-	final := append([]string(nil), stored...)
-	mu.Unlock()
-	if len(final) != cycles+1 {
-		t.Errorf("the policy ended with %d rules, want %d (%d appended plus the "+
-			"pre-existing one): a lost update deletes somebody else's rule silently",
-			len(final), cycles+1, cycles)
-	}
-	if !strings.Contains(strings.Join(final, ","), `"name":"pre-existing"`) {
-		t.Error("the rule that existed before the applies is gone")
-	}
-}
-
-/*
-TestAppendAccessPolicyRuleStripsBeforeWriting is the create-side half of
-API-FINDINGS 1.17. The rules already on the server arrive carrying className,
-fromDefault and objectId, and an append that re-POSTs them unmodified is
-rejected with 422 -- so the strip has to happen to the EXISTING rules, not just
-to the new one. That asymmetry is easy to miss and produces a resource that
-works on an empty policy and fails on every populated one.
-*/
-func TestAppendAccessPolicyRuleStripsBeforeWriting(t *testing.T) {
-	log := &requestLog{}
-	stored := []string{accessPolicyRuleJSON("rule-1", "pre-existing", 0)}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.record(r)
-		w.Header().Set("Content-Type", "application/json")
-		if r.Method == http.MethodPost {
-			stored = append(stored, accessPolicyRuleJSON("rule-2", "new", 1))
-		}
-		_, _ = w.Write([]byte(accessPolicyGetBody(stored...)))
-	}))
-	defer srv.Close()
-
-	created, err := appendAccessPolicyRule(context.Background(), newTestUserAPIClient(srv.URL),
-		perimeter81Sdk.AccessPolicyRule{
-			Name: "new", AppliedOn: "both", Action: "block", Status: "enabled",
 		})
-	if err != nil {
-		t.Fatalf("appendAccessPolicyRule: %v", err)
-	}
-	if created.GetId() != "rule-2" {
-		t.Errorf("created id = %q, want rule-2: the new rule is the one whose id was not "+
-			"in the list before the write", created.GetId())
-	}
-
-	calls, bodies := log.snapshot()
-	want := []string{
-		"GET /v3/ia/access/policy",
-		"POST /v3/ia/access/policy",
-		"GET /v3/ia/access/policy",
-	}
-	if !testComparableArraiesEq(calls, want) {
-		t.Fatalf("requests were %v, want exactly %v", calls, want)
-	}
-	post := bodies[1]
-	for _, refused := range accessPolicyRefusedFields {
-		if strings.Contains(post, `"`+refused+`"`) {
-			t.Errorf("the POST body carries %q from the rule that was already on the "+
-				"server; the server answers 422 (API-FINDINGS 1.17): %s", refused, post)
-		}
-	}
-	if !strings.Contains(post, `"id":"rule-1"`) {
-		t.Errorf("the POST body lost the existing rule's id, so the server would mint a "+
-			"duplicate of it instead of keeping it: %s", post)
-	}
-	if !strings.Contains(post, `"name":"new"`) {
-		t.Errorf("the POST body does not contain the appended rule: %s", post)
 	}
 }
