@@ -1624,3 +1624,138 @@ func TestSupportPhoneNumbersExpandOmitsRatherThanEmpties(t *testing.T) {
 		t.Errorf("flattenSupportPhoneNumbers(nil) = %#v, want an empty non-nil list", got)
 	}
 }
+
+/*
+TestPayloadMarshalCustomDnsUpdate pins the private-DNS PUT body, whose shape the
+corresponding GET cannot produce.
+
+Measured 2026-08-26 and recorded as API-FINDINGS.md 1.31. Three neighbouring
+bodies, one accepted and two refused:
+
+	{"enabled":false,"attributes":{"servers":[],"searchDomains":[]}}   -> 202
+	{"enabled":false}                                                  -> 422 VALIDATION_ERROR
+	{"enabled":false,"attributes":{"searchDomains":[]}}                -> 400 "attributes.servers must be an array"
+
+The 422 is the one that matters, because the second body is EXACTLY what
+GET .../privateDNS returns for an unconfigured network -- no `attributes` key at
+all. So the read body cannot be echoed back as a write, in either direction, and
+`attributes` has to be synthesised on every PUT rather than carried over from the
+read. Same trap as 1.17.
+
+The two refusals cannot be asserted offline as HTTP responses, so they are pinned
+as what the expander must never produce: `attributes` is always present, and
+`attributes.servers` is always present inside it. Both are golden-body
+assertions, because both bodies marshal without error and differ from the legal
+one only by an absent key.
+
+This calls expandCustomDnsUpdate rather than building the struct here, so a
+regression that lets a nil slice through fails on this fixture and not only in
+private_dns_test.go.
+*/
+func TestPayloadMarshalCustomDnsUpdate(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  map[string]interface{}
+		want string
+	}{
+		{
+			// VERIFIED 2026-08-26: this exact body returned 202. It is what a
+			// config with `enabled = false` and no attributes block must send.
+			name: "disable, no attributes block in the config",
+			raw:  map[string]interface{}{"network_id": "fake-net-1", "enabled": false},
+			want: `{"enabled": false, "attributes": {"servers": [], "searchDomains": []}}`,
+		},
+		{
+			// The same body reached the other way: an explicitly emptied block.
+			// `attributes { servers = [] search_domains = [] }` and an omitted
+			// block are one configuration on the wire.
+			name: "disable, attributes block present and emptied",
+			raw: map[string]interface{}{
+				"network_id": "fake-net-1",
+				"enabled":    false,
+				"attributes": []interface{}{map[string]interface{}{
+					"servers":        []interface{}{},
+					"search_domains": []interface{}{},
+				}},
+			},
+			want: `{"enabled": false, "attributes": {"servers": [], "searchDomains": []}}`,
+		},
+		{
+			// VERIFIED 2026-08-26: sent as written and returned byte-exactly,
+			// including the non-alphabetical search-domain order and the
+			// differing isTLS values. There is no canonicalisation here for a
+			// flattener to reproduce (API-FINDINGS.md 1.31).
+			name: "enabled, two servers and two search domains",
+			raw: map[string]interface{}{
+				"network_id": "fake-net-1",
+				"enabled":    true,
+				"attributes": []interface{}{map[string]interface{}{
+					"servers": []interface{}{
+						map[string]interface{}{"address": "10.0.0.53", "is_tls": false},
+						map[string]interface{}{"address": "10.0.1.53", "is_tls": true},
+					},
+					"search_domains": []interface{}{"b.example.com", "a.example.com"},
+				}},
+			},
+			want: `{
+				"enabled": true,
+				"attributes": {
+					"servers": [
+						{"address": "10.0.0.53", "isTLS": false},
+						{"address": "10.0.1.53", "isTLS": true}
+					],
+					"searchDomains": ["b.example.com", "a.example.com"]
+				}
+			}`,
+		},
+		{
+			// dnsPolicy is *DnsPolicy with omitempty, so an absent block keeps
+			// the key off the wire entirely -- which is what "any field omitted
+			// from attributes is cleared, not preserved" means for a resource
+			// whose config does not mention it.
+			name: "enabled with a dns policy",
+			raw: map[string]interface{}{
+				"network_id": "fake-net-1",
+				"enabled":    true,
+				"attributes": []interface{}{map[string]interface{}{
+					"servers": []interface{}{
+						map[string]interface{}{"address": "10.0.0.53", "is_tls": false},
+					},
+					"search_domains": []interface{}{"corp.example.com"},
+					"dns_policy": []interface{}{map[string]interface{}{
+						"public": []interface{}{map[string]interface{}{
+							"domains": []interface{}{"public.example.com"},
+						}},
+						"private": []interface{}{map[string]interface{}{
+							"mode":            "matchPattern",
+							"public_fallback": true,
+							"domains":         []interface{}{"private.example.com"},
+						}},
+					}},
+				}},
+			},
+			want: `{
+				"enabled": true,
+				"attributes": {
+					"servers": [{"address": "10.0.0.53", "isTLS": false}],
+					"searchDomains": ["corp.example.com"],
+					"dnsPolicy": {
+						"public": {"domains": ["public.example.com"]},
+						"private": {
+							"mode": "matchPattern",
+							"publicFallback": true,
+							"domains": ["private.example.com"]
+						}
+					}
+				}
+			}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := schema.TestResourceDataRaw(t, testPrivateDNSResourceSchema(), tt.raw)
+			assertMarshalsTo(t, expandCustomDnsUpdate(d), tt.want)
+		})
+	}
+}
