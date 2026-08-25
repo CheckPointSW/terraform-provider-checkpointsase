@@ -108,6 +108,12 @@ var accessPolicyDestinationBuckets = []accessPolicyBucket{
 	{attr: "updatable_objects", apiType: "updatableObjects"},
 }
 
+// accessPolicyRuleNameMaxRunes is AccessPolicyRule.name's `maxLength`, in
+// CHARACTERS, which is the unit OpenAPI `maxLength` and p81-mongo-validation-
+// schemas' `string-1-100` both use. Named rather than inlined so the number and
+// its unit travel together.
+const accessPolicyRuleNameMaxRunes = 100
+
 // accessPolicyAppliedOnValues is the `appliedOn` enum. The OpenAPI document and
 // `$defs.ruleAppliedOn` in p81-mongo-validation-schemas agree exactly, and
 // phase4-verification exercised all three against the live tenant.
@@ -251,12 +257,10 @@ func resourceAccessPolicy() *schema.Resource {
 						"name": {
 							Type:     schema.TypeString,
 							Required: true,
-							Description: "The name of the rule. 1–100 characters and may not contain " +
-								"`<` or `>`.",
-							ValidateFunc: validation.All(
-								validation.StringLenBetween(1, 100),
-								validateAccessPolicyRuleName,
-							),
+							Description: "The name of the rule. 1–100 characters — characters, not " +
+								"bytes, so a 100-character name in any script is accepted — and it " +
+								"may not contain `<` or `>`.",
+							ValidateFunc: validateAccessPolicyRuleName,
 						},
 						"applied_on": {
 							Type:     schema.TypeString,
@@ -341,11 +345,25 @@ func resourceAccessPolicy() *schema.Resource {
 validateAccessPolicyRuleName rejects the two characters the API's own pattern
 rejects.
 
-The OpenAPI document declares `pattern: ^[^<>]+$` on AccessPolicyRule.name, and
-p81-mongo-validation-schemas resolves `$defs.ruleName` to `string-1-100`. Only
-the character exclusion is enforced here as a pattern; the length is a separate
-validator so that a name that is both too long and contains `<` reports both
-problems rather than one.
+The OpenAPI document declares `pattern: ^[^<>]+$` and `maxLength: 100` on
+AccessPolicyRule.name, and p81-mongo-validation-schemas resolves `$defs.ruleName`
+to `string-1-100`.
+
+BOTH HALVES ARE ENFORCED HERE, IN ONE FUNCTION, AND NOT WITH
+validation.StringLenBetween — DELIBERATELY. StringLenBetween compares len(v),
+which is BYTES, while OpenAPI `maxLength` and `string-1-100` both count
+CHARACTERS. This provider has already paid for that difference once: see
+resource_group.go:119-129, where a byte-counting check refused a 22-character CJK
+name (66 bytes) and a 40-character name of "é" (80 bytes) at plan time, for values
+the server accepts, with a message naming a limit the server does not enforce and
+no workaround but to shorten a legal name. This resource reintroduced it and
+TestSwgAccessPolicyRuleNameLengthIsCountedInCharactersNotBytes now pins it in both
+directions — the accepting rows are the ones that matter, because an ASCII-only
+table cannot tell the two behaviours apart.
+
+The loop already walks the name rune by rune, so counting runes costs nothing.
+The character check runs first: a name that is both too long and contains `<` is
+reported for the `<`, which is the problem the user can see.
 
 The message quotes the rule rather than the regex, because a user shown
 `must match ^[^<>]+$` has to decode it before they can act.
@@ -355,12 +373,19 @@ func validateAccessPolicyRuleName(v interface{}, k string) (warns []string, errs
 	if !ok {
 		return nil, []error{fmt.Errorf("%s: expected a string", k)}
 	}
+	count := 0
 	for _, c := range name {
 		if c == '<' || c == '>' {
 			return nil, []error{fmt.Errorf(
 				"%s: a rule name may not contain < or >, and %q does; the API rejects it with "+
 					"a schema validation error", k, name)}
 		}
+		count++
+	}
+	if count < 1 || count > accessPolicyRuleNameMaxRunes {
+		return nil, []error{fmt.Errorf(
+			"%s: a rule name is 1-%d characters and %q is %d; the API counts characters, "+
+				"not bytes", k, accessPolicyRuleNameMaxRunes, name, count)}
 	}
 	return nil, nil
 }

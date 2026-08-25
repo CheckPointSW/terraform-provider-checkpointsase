@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
@@ -751,6 +752,8 @@ func TestHttpsInspectionRejectsValuesTheServerRejects(t *testing.T) {
 		{"the v2.3 spelling of status", map[string]interface{}{"status": "enabled"}, "status"},
 		{"a name containing an angle bracket", map[string]interface{}{"name": "<script>"}, "name"},
 		{"an empty name", map[string]interface{}{"name": ""}, "name"},
+		{"a name of 101 characters", map[string]interface{}{
+			"name": strings.Repeat("a", 101)}, "name"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			config := map[string]interface{}{
@@ -769,6 +772,67 @@ func TestHttpsInspectionRejectsValuesTheServerRejects(t *testing.T) {
 			}
 		})
 	}
+}
+
+/*
+TestHttpsInspectionRuleNameLengthIsCountedInCharactersNotBytes is the sibling of
+TestSwgAccessPolicyRuleNameLengthIsCountedInCharactersNotBytes, and it exists
+separately because the two resources have separate validators that were broken
+in the same way at the same time.
+
+`HttpsInspectionRule.name` declares `maxLength: 100` in the OpenAPI document and
+p81-mongo-validation-schemas resolves RuleBypass.name through `$defs.ruleName` to
+`string-1-100`. Both count CHARACTERS; validation.StringLenBetween counts BYTES.
+See the access-policy twin for the full argument and resource_group.go:119-129
+for the first time this repository met it.
+*/
+func TestHttpsInspectionRuleNameLengthIsCountedInCharactersNotBytes(t *testing.T) {
+	validate := resourceHttpsInspectionPolicy().Schema["rule"].Elem.(*schema.Resource).
+		Schema["name"].ValidateFunc
+	if validate == nil {
+		t.Fatal("rule.name has no ValidateFunc, so SHI-N02's empty name reaches POST " +
+			"/v3/ia/https-inspection/policy")
+	}
+
+	for _, tc := range []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"ascii, comfortably inside", "Bypass the payroll portal", false},
+		{"exactly 100 ascii characters", strings.Repeat("a", 100), false},
+		{"34 CJK characters, 102 bytes", strings.Repeat("研", 34), false},
+		{"100 CJK characters, 300 bytes -- the boundary, in the wide case",
+			strings.Repeat("研", 100), false},
+		{"51 e-acute, 102 bytes", strings.Repeat("é", 51), false},
+		{"100 e-acute, 200 bytes", strings.Repeat("é", 100), false},
+		{"empty", "", true},
+		{"101 ascii characters", strings.Repeat("a", 101), true},
+		{"101 CJK characters", strings.Repeat("研", 101), true},
+		{"101 e-acute", strings.Repeat("é", 101), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, errs := validate(tc.value, "name")
+			if gotErr := len(errs) > 0; gotErr != tc.wantErr {
+				t.Fatalf("ValidateFunc(%d characters, %d bytes) errors = %v, want error = %v",
+					utf8.RuneCountInString(tc.value), len(tc.value), errs, tc.wantErr)
+			}
+		})
+	}
+
+	t.Run("a 100-character CJK name plans cleanly", func(t *testing.T) {
+		diags := resourceHttpsInspectionPolicy().Validate(terraform.NewResourceConfigRaw(
+			map[string]interface{}{"rule": []interface{}{
+				httpsInspectionValidRule(map[string]interface{}{
+					"name": strings.Repeat("研", 100),
+				}),
+			}}))
+		if diags.HasError() {
+			t.Errorf("a 100-character rule name was refused at plan time: %v. The server "+
+				"accepts it -- maxLength counts characters -- and the operator has no "+
+				"workaround but to shorten a legal name", diags)
+		}
+	})
 }
 
 /*

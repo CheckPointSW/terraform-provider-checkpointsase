@@ -82,6 +82,10 @@ var httpsInspectionDestinationBuckets = []httpsInspectionBucket{
 	{attr: "application_control_applications", apiType: "applicationControlApplications"},
 }
 
+// httpsInspectionRuleNameMaxRunes is HttpsInspectionRule.name's `maxLength`, in
+// CHARACTERS. See accessPolicyRuleNameMaxRunes.
+const httpsInspectionRuleNameMaxRunes = 100
+
 // httpsInspectionAppliedOnValues is the `appliedOn` enum. The OpenAPI document
 // and `$defs.ruleAppliedOn` in p81-mongo-validation-schemas agree exactly, and
 // phase4-verification exercised all three against the live tenant.
@@ -243,12 +247,10 @@ func resourceHttpsInspectionPolicy() *schema.Resource {
 						"name": {
 							Type:     schema.TypeString,
 							Required: true,
-							Description: "The name of the rule. 1–100 characters and may not contain " +
-								"`<` or `>`.",
-							ValidateFunc: validation.All(
-								validation.StringLenBetween(1, 100),
-								validateHttpsInspectionRuleName,
-							),
+							Description: "The name of the rule. 1–100 characters — characters, not " +
+								"bytes, so a 100-character name in any script is accepted — and it " +
+								"may not contain `<` or `>`.",
+							ValidateFunc: validateHttpsInspectionRuleName,
 						},
 						"applied_on": {
 							Type:     schema.TypeString,
@@ -326,10 +328,14 @@ rejects.
 
 The OpenAPI document declares `pattern: ^[^<>]+$` and `maxLength: 100` on
 HttpsInspectionRule.name, and p81-mongo-validation-schemas resolves
-RuleBypass.name through `$defs.ruleName` to `string-1-100`. Only the character
-exclusion is enforced here as a pattern; the length is a separate validator so
-that a name that is both too long and contains `<` reports both problems rather
-than one.
+RuleBypass.name through `$defs.ruleName` to `string-1-100`.
+
+BOTH HALVES ARE ENFORCED HERE, IN ONE FUNCTION, AND NOT WITH
+validation.StringLenBetween — DELIBERATELY, for the reason set out at length on
+validateAccessPolicyRuleName: StringLenBetween counts BYTES and both sources count
+CHARACTERS, so it refuses non-ASCII names the server accepts and offers no
+workaround. resource_group.go:119-129 is where this repository first measured it.
+TestHttpsInspectionRuleNameLengthIsCountedInCharactersNotBytes pins it here.
 
 The message quotes the rule rather than the regex, because a user shown
 `must match ^[^<>]+$` has to decode it before they can act.
@@ -339,12 +345,19 @@ func validateHttpsInspectionRuleName(v interface{}, k string) (warns []string, e
 	if !ok {
 		return nil, []error{fmt.Errorf("%s: expected a string", k)}
 	}
+	count := 0
 	for _, c := range name {
 		if c == '<' || c == '>' {
 			return nil, []error{fmt.Errorf(
 				"%s: a rule name may not contain < or >, and %q does; the API rejects it with "+
 					"a schema validation error", k, name)}
 		}
+		count++
+	}
+	if count < 1 || count > httpsInspectionRuleNameMaxRunes {
+		return nil, []error{fmt.Errorf(
+			"%s: a rule name is 1-%d characters and %q is %d; the API counts characters, "+
+				"not bytes", k, httpsInspectionRuleNameMaxRunes, name, count)}
 	}
 	return nil, nil
 }

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
@@ -633,6 +634,8 @@ func TestSwgAccessPolicyRejectsValuesTheServerRejects(t *testing.T) {
 		{"the v2.3 spelling of status", map[string]interface{}{"status": "enabled"}, "status"},
 		{"a name containing an angle bracket", map[string]interface{}{"name": "<script>"}, "name"},
 		{"an empty name", map[string]interface{}{"name": ""}, "name"},
+		{"a name of 101 characters", map[string]interface{}{
+			"name": strings.Repeat("a", 101)}, "name"},
 		{"a lowercased weekday", map[string]interface{}{
 			"conditions": []interface{}{map[string]interface{}{
 				"weekdays": []interface{}{"mon"}, "start_hour": 9, "end_hour": 17,
@@ -659,6 +662,81 @@ func TestSwgAccessPolicyRejectsValuesTheServerRejects(t *testing.T) {
 			}
 		})
 	}
+}
+
+/*
+TestSwgAccessPolicyRuleNameLengthIsCountedInCharactersNotBytes is the row the
+Rejects table above could not carry, because it asserts in both directions.
+
+`AccessPolicyRule.name` declares `maxLength: 100` in the OpenAPI document and
+p81-mongo-validation-schemas resolves it through `$defs.ruleName` to
+`string-1-100`. Both count CHARACTERS. validation.StringLenBetween compares
+len(v), which counts BYTES, so a name of 34 CJK characters (102 bytes) is well
+inside the server's limit and outside a byte-counting one -- and there is no
+workaround but to shorten a name the server would have accepted, against a
+diagnostic naming a limit the server does not enforce.
+
+This provider already found, measured and removed exactly this defect on
+checkpointsase_group; resource_group.go:119-129 carries the reasoning and
+TestGroupNameValidationAcceptsUnicodeAndRejectsEmpty carries the table. Both
+whole-policy resources reintroduced it. THE ASCII ROWS CANNOT DISTINGUISH THE
+TWO BEHAVIOURS -- that is why the earlier version of the group table shipped a
+byte-counting check -- so every boundary below is run in CJK and in "é" as well.
+
+The last two rows keep the fix honest in the other direction: deleting the
+length rule altogether would pass every accepting row above.
+*/
+func TestSwgAccessPolicyRuleNameLengthIsCountedInCharactersNotBytes(t *testing.T) {
+	validate := resourceAccessPolicy().Schema["rule"].Elem.(*schema.Resource).
+		Schema["name"].ValidateFunc
+	if validate == nil {
+		t.Fatal("rule.name has no ValidateFunc, so SAP-N02's empty name reaches POST " +
+			"/v3/ia/access/policy")
+	}
+
+	for _, tc := range []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"ascii, comfortably inside", "Allow engineering to the internet", false},
+		{"exactly 100 ascii characters", strings.Repeat("a", 100), false},
+		// 3 bytes each. 34 of them is 102 bytes: inside 100 characters, outside
+		// 100 bytes. This is the name from the failure scenario.
+		{"34 CJK characters, 102 bytes", strings.Repeat("研", 34), false},
+		{"100 CJK characters, 300 bytes -- the boundary, in the wide case",
+			strings.Repeat("研", 100), false},
+		// 2 bytes each. 51 is 102 bytes.
+		{"51 e-acute, 102 bytes", strings.Repeat("é", 51), false},
+		{"100 e-acute, 200 bytes", strings.Repeat("é", 100), false},
+		{"empty", "", true},
+		{"101 ascii characters", strings.Repeat("a", 101), true},
+		{"101 CJK characters", strings.Repeat("研", 101), true},
+		{"101 e-acute", strings.Repeat("é", 101), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, errs := validate(tc.value, "name")
+			if gotErr := len(errs) > 0; gotErr != tc.wantErr {
+				t.Fatalf("ValidateFunc(%d characters, %d bytes) errors = %v, want error = %v",
+					utf8.RuneCountInString(tc.value), len(tc.value), errs, tc.wantErr)
+			}
+		})
+	}
+
+	// SAP-N02 says "refused at plan time", and Resource.Validate is the path
+	// `terraform plan` actually takes.
+	t.Run("a 100-character CJK name plans cleanly", func(t *testing.T) {
+		diags := resourceAccessPolicy().Validate(terraform.NewResourceConfigRaw(
+			map[string]interface{}{"rule": []interface{}{map[string]interface{}{
+				"name": strings.Repeat("研", 100), "applied_on": "both",
+				"action": "warning", "status": "active",
+			}}}))
+		if diags.HasError() {
+			t.Errorf("a 100-character rule name was refused at plan time: %v. The server "+
+				"accepts it -- maxLength counts characters -- and the operator has no "+
+				"workaround but to shorten a legal name", diags)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
