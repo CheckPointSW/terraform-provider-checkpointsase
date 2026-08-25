@@ -1011,12 +1011,14 @@ func expandAccessPolicyConditions(raw interface{}) []perimeter81Sdk.Condition {
 	values := make([]perimeter81Sdk.ConditionValueInner, 0, len(windows))
 	for _, item := range windows {
 		// This branch is UNREACHABLE in practice -- SDKv2 hands back
-		// map[string]interface{} for every element of a TypeList of
+		// map[string]interface{} for every element of a TypeSet of
 		// *schema.Resource, and HCL cannot emit a null block -- but note what it
-		// does if it ever is reached: it drops a rule from the POST with no
-		// error and no diagnostic, which is the one outcome this whole design
-		// exists to prevent. Making it loud changes behaviour, so it is
-		// LEFTOVERS.md L30 rather than a silent edit here.
+		// does if it ever is reached: it drops a TIME WINDOW from the rule with
+		// no error and no diagnostic, which WIDENS the hours the rule applies
+		// to. A rule that should be confined to Monday mornings silently applies
+		// at all the other times its remaining windows allow. Making it loud
+		// changes behaviour, so it is LEFTOVERS.md L30 rather than a silent edit
+		// here.
 		block, ok := item.(map[string]interface{})
 		if !ok {
 			continue
