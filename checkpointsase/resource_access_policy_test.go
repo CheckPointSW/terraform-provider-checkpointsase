@@ -447,9 +447,13 @@ POST built from a previous read gets rejected.
 className, fromDefault and objectId are returned on a read and refused on a
 write: echoing a GET body back answers 422 `"fromDefault" is not allowed`
 (API-FINDINGS 1.17). And a nil Go slice serialises as JSON null, which is a type
-error, which this endpoint answers with 500 "RuleWeb#upsert internal server
-error occurred" (API-FINDINGS 1.19) -- indistinguishable from the endpoint being
-down, and misread as exactly that when it was first measured.
+error. What null itself does is EXTRAPOLATION and this comment used to state it
+as measurement: §1.19 measured `conditions` sent as the STRING "disabled"
+answering 500 "RuleWeb#upsert internal server error occurred" -- indistinguishable
+from the endpoint being down, and misread as exactly that when it was first
+measured. null is a type error of the same shape, so the same 500 is likely but
+was not observed. Either way the fix is to send the form that IS known-good, and
+`conditions: []` was measured accepted (§1.15).
 
 The assertion is on the serialised bytes because both problems only exist on the
 wire.

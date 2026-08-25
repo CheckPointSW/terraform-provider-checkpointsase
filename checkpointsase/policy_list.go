@@ -197,10 +197,11 @@ server's message body with errors.As, so wrapping no longer costs the operator
 type policyListOps[R any] struct {
 	// policyName names the list in errors this file raises itself.
 	policyName string
-	// sanitise strips the fields the write model refuses. It is per-rule
-	// rather than per-list because the resource composes the list itself, from
-	// configuration, and passes each rule through this on the way out.
-	sanitise func(R) R
+	// There is deliberately no `sanitise func(R) R` here. One was bound in both
+	// constructors and never read: the expanders call sanitiseAccessPolicyRule
+	// and sanitiseHttpsInspectionRule directly, because they are the ones
+	// composing the list, and the field's comment described a binding that did
+	// not happen.
 	// read GETs the whole policy document: the rule list, and the controlledBy
 	// marker beside it in the same envelope. The response is returned so that
 	// callers who retry can classify the failure; it is nil when the request
@@ -221,7 +222,6 @@ type policyListOps[R any] struct {
 func accessPolicyOps(client *perimeter81Sdk.APIClient) policyListOps[perimeter81Sdk.AccessPolicyRule] {
 	return policyListOps[perimeter81Sdk.AccessPolicyRule]{
 		policyName: "access policy",
-		sanitise:   sanitiseAccessPolicyRule,
 		read: func(ctx context.Context) ([]perimeter81Sdk.AccessPolicyRule, string, *http.Response, error) {
 			body, httpResp, err := client.InternetAccessPoliciesAPI.GetAccessPolicy(ctx).Execute()
 			if err != nil {
@@ -247,7 +247,6 @@ func accessPolicyOps(client *perimeter81Sdk.APIClient) policyListOps[perimeter81
 func httpsInspectionPolicyOps(client *perimeter81Sdk.APIClient) policyListOps[perimeter81Sdk.HttpsInspectionRule] {
 	return policyListOps[perimeter81Sdk.HttpsInspectionRule]{
 		policyName: "HTTPS inspection policy",
-		sanitise:   sanitiseHttpsInspectionRule,
 		read: func(ctx context.Context) ([]perimeter81Sdk.HttpsInspectionRule, string, *http.Response, error) {
 			body, httpResp, err := client.InternetAccessPoliciesAPI.GetHttpsInspectionPolicy(ctx).Execute()
 			if err != nil {

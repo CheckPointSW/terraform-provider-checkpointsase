@@ -115,8 +115,11 @@ var accessPolicyDestinationBuckets = []accessPolicyBucket{
 const accessPolicyRuleNameMaxRunes = 100
 
 // accessPolicyAppliedOnValues is the `appliedOn` enum. The OpenAPI document and
-// `$defs.ruleAppliedOn` in p81-mongo-validation-schemas agree exactly, and
-// phase4-verification exercised all three against the live tenant.
+// `$defs.ruleAppliedOn` in p81-mongo-validation-schemas agree exactly, and all
+// three were confirmed live by TestAccCheckpointsaseAccessPolicy_basic on
+// 2026-08-25. NOT by phase4-verification, which this comment used to cite: the
+// one appliedOn matrix that probe recorded is the HTTPS-inspection endpoint's,
+// and the claim had been read across from the sibling.
 var accessPolicyAppliedOnValues = []string{"sites", "agents", "both"}
 
 /*
@@ -238,8 +241,13 @@ func resourceAccessPolicy() *schema.Resource {
 							Type:     schema.TypeString,
 							Computed: true,
 							Description: "The server-assigned id of this rule. Computed only: the API " +
-								"mints it and there is nothing useful a configuration could set it " +
-								"to. It is stable across a rewrite that leaves the rule in place.",
+								"mints it and there is nothing useful a configuration could set " +
+								"it to. **It is stable for a rule whose _position_ in the list " +
+								"does not change, and not otherwise.** Ids follow array " +
+								"position, not rule content: remove or reorder a preceding " +
+								"block and the ids move with the positions, so the rule that " +
+								"kept its configuration can come back with the id of the one " +
+								"above it. **Key on `name`, not on `id`.**",
 						},
 						"priority": {
 							Type:     schema.TypeInt,
@@ -916,7 +924,7 @@ API-FINDINGS 1.15 measured as accepted.
 
   - @param raw interface{} - block["sources"], a MaxItems-1 list
 
-@return []perimeter81Sdk.AccessPolicySource - never nil; a nil slice serialises as JSON null, which this endpoint answers with a 500 (API-FINDINGS 1.19)
+@return []perimeter81Sdk.AccessPolicySource - never nil; a nil slice serialises as JSON null, and what null does here is EXTRAPOLATION (API-FINDINGS 1.19 measured the STRING "disabled" answering 500, not null) -- see sanitiseAccessPolicyRule
 */
 func expandAccessPolicySources(raw interface{}) []perimeter81Sdk.AccessPolicySource {
 	sources := []perimeter81Sdk.AccessPolicySource{}
