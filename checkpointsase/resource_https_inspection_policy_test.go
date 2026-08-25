@@ -853,7 +853,7 @@ func TestHttpsInspectionRuleNameLengthIsCountedInCharactersNotBytes(t *testing.T
 	validate := resourceHttpsInspectionPolicy().Schema["rule"].Elem.(*schema.Resource).
 		Schema["name"].ValidateFunc
 	if validate == nil {
-		t.Fatal("rule.name has no ValidateFunc, so SHI-N02's empty name reaches POST " +
+		t.Fatal("rule.name has no ValidateFunc, so SHI-N03's empty name reaches POST " +
 			"/v3/ia/https-inspection/policy")
 	}
 

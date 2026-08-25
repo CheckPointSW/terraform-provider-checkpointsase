@@ -826,6 +826,13 @@ func expandHttpsInspectionRules(raw []interface{}) []perimeter81Sdk.HttpsInspect
 	rules := make([]perimeter81Sdk.HttpsInspectionRule, 0, len(raw))
 
 	for index, item := range raw {
+		// This branch is UNREACHABLE in practice -- SDKv2 hands back
+		// map[string]interface{} for every element of a TypeList of
+		// *schema.Resource, and HCL cannot emit a null block -- but note what it
+		// does if it ever is reached: it drops a rule from the POST with no
+		// error and no diagnostic, which is the one outcome this whole design
+		// exists to prevent. Making it loud changes behaviour, so it is
+		// LEFTOVERS.md L30 rather than a silent edit here.
 		block, ok := item.(map[string]interface{})
 		if !ok {
 			continue
@@ -1069,7 +1076,8 @@ silently last-winning; it does not -- it exits the inner loop over the table,
 while the outer loop over the server's buckets carries on, so a second bucket of
 one type still overwrites the first exactly as it does in the access policy's
 flatteners, which have no break. Detecting that would be a behaviour change and a
-different decision; it is recorded in LEFTOVERS rather than half-claimed here.
+different decision; it is recorded as LEFTOVERS.md L30 rather than half-claimed
+here.
 */
 func flattenHttpsInspectionSources(sources []perimeter81Sdk.HttpsInspectionSource) []interface{} {
 	block := map[string]interface{}{}
