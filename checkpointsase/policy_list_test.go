@@ -349,6 +349,54 @@ func TestWritePolicyRulesRefusesAnEmptyList(t *testing.T) {
 }
 
 /*
+TestSwgPolicyResourcesHaveNoForceNewAttribute pins the one invariant of this
+class that had no offline guard.
+
+Every other property of the same kind is pinned directly:
+TypeList-not-TypeSet (TestSwgAccessPolicyRuleListIsOrderedNotASet and its HTTPS
+twin), Create-is-Update (TestSwgAccessPolicyCreateAndUpdateAreOneFunction),
+id/priority Computed-only. "Nothing is ForceNew" was not, on either resource,
+although SAP-02 and SHI-02 both assert it.
+
+ITS BLAST RADIUS IS THE LARGEST OF THE FOUR. A ForceNew on any rule attribute
+turns every edit of that attribute into destroy-then-create, and Delete on a
+whole-policy resource is DELETE /v3/ia/access/policy -- "all internet traffic
+will be allowed after deletion". Changing one rule's name would empty the
+tenant's policy and re-POST it, with the gap between the two calls being however
+long the second request takes.
+
+There is behavioural coverage:
+TestAccCheckpointsaseAccessPolicy_removingTheMiddleRuleRenumbersPriority would
+fail because the recreated rules would carry new ids. But it runs only under
+TF_ACC, against a live tenant, and the HTTPS-inspection suite has no equivalent
+at all. This is the offline half.
+
+The walk is recursive so that a ForceNew added to a nested attribute -- inside
+`sources`, `destinations` or `conditions`, which is where one would plausibly be
+added by someone thinking about a single rule rather than about the policy -- is
+caught too.
+*/
+func TestSwgPolicyResourcesHaveNoForceNewAttribute(t *testing.T) {
+	for name, resource := range map[string]*schema.Resource{
+		"checkpointsase_access_policy":           resourceAccessPolicy(),
+		"checkpointsase_https_inspection_policy": resourceHttpsInspectionPolicy(),
+		"checkpointsase_internet_access_status":  resourceInternetAccessStatus(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			walkSchema("", resource.Schema, func(path string, s *schema.Schema) {
+				if s.ForceNew {
+					t.Errorf("%s is ForceNew. On a whole-policy resource that turns an edit "+
+						"into destroy-then-create, and this resource's Delete issues the "+
+						"endpoint's DELETE -- so editing one attribute would empty the "+
+						"tenant's policy and re-POST it. Create and Update are one function "+
+						"here precisely so that every change is an in-place rewrite.", path)
+				}
+			})
+		})
+	}
+}
+
+/*
 TestSwgPolicyWriteDiagnosticCarriesTheAdviceAndNotJustTheServerBody is the row
 TestPolicyReReadRetriesAndNeverFailsSilently could not make, because it asserts
 on what the OPERATOR sees rather than on what rereadAfterWrite returns.
