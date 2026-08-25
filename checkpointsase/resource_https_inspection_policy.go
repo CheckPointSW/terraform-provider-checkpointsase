@@ -667,7 +667,9 @@ func resourceHttpsInspectionPolicyRead(ctx context.Context, d *schema.ResourceDa
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
 
-	rules, _, err := httpsInspectionPolicyOps(client).read(ctx)
+	// controlledBy is discarded: this resource does not manage it. The two data
+	// sources surface it; see policyListOps.read.
+	rules, _, _, err := httpsInspectionPolicyOps(client).read(ctx)
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to read the tenant's HTTPS inspection policy", err)

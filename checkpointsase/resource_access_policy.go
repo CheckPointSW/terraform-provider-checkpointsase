@@ -700,7 +700,9 @@ func resourceAccessPolicyRead(ctx context.Context, d *schema.ResourceData, m int
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
 
-	rules, _, err := accessPolicyOps(client).read(ctx)
+	// controlledBy is discarded: this resource does not manage it. The two data
+	// sources surface it; see policyListOps.read.
+	rules, _, _, err := accessPolicyOps(client).read(ctx)
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to read the tenant's web access policy", err)

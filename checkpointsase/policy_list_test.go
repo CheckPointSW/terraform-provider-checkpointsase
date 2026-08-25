@@ -488,12 +488,12 @@ func TestPolicyReadDoesNotTreatA404AsAnEmptyPolicy(t *testing.T) {
 	}{
 		{"access policy", "/v3/ia/access/policy",
 			func(ctx context.Context, c *perimeter81Sdk.APIClient) (int, error) {
-				rules, _, err := accessPolicyOps(c).read(ctx)
+				rules, _, _, err := accessPolicyOps(c).read(ctx)
 				return len(rules), err
 			}},
 		{"https inspection policy", "/v3/ia/https-inspection/policy",
 			func(ctx context.Context, c *perimeter81Sdk.APIClient) (int, error) {
-				rules, _, err := httpsInspectionPolicyOps(c).read(ctx)
+				rules, _, _, err := httpsInspectionPolicyOps(c).read(ctx)
 				return len(rules), err
 			}},
 	} {

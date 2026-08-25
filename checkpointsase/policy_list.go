@@ -180,6 +180,15 @@ can be told from a permanent one -- classifyAPIError needs the status code, and
 without it a 500 is indistinguishable from a 400. Only the re-read after a write
 acts on that; see rereadAfterWrite.
 
+read also returns `controlledBy`, which no RESOURCE uses. It is here rather than
+in a second closure because there is one GET behind both, and two closures over
+the same request is how the data source and the resource end up disagreeing
+about what a read of this endpoint is. The resources discard it with `_`, which
+is the honest spelling of "this resource does not manage that field": the value
+says which product owns the policy (quantum or hsase) and its meaning is
+UNINVESTIGATED (phase4-verification, W3), so nothing in this provider may act on
+it. The two data sources surface it read-only.
+
 Errors from all three may be wrapped with %w. appendErrorDiags recovers the
 server's message body with errors.As, so wrapping no longer costs the operator
 `"fromDefault" is not allowed` in favour of a bare `422 Unprocessable Entity`.
@@ -192,9 +201,11 @@ type policyListOps[R any] struct {
 	// rather than per-list because the resource composes the list itself, from
 	// configuration, and passes each rule through this on the way out.
 	sanitise func(R) R
-	// read GETs the whole list. The response is returned so that callers who
-	// retry can classify the failure; it is nil when the request never landed.
-	read func(context.Context) ([]R, *http.Response, error)
+	// read GETs the whole policy document: the rule list, and the controlledBy
+	// marker beside it in the same envelope. The response is returned so that
+	// callers who retry can classify the failure; it is nil when the request
+	// never landed.
+	read func(context.Context) ([]R, string, *http.Response, error)
 	// write POSTs the whole list, in the order given. It refuses an empty one;
 	// see writeAccessPolicyRules.
 	write func(context.Context, []R) error
@@ -211,16 +222,16 @@ func accessPolicyOps(client *perimeter81Sdk.APIClient) policyListOps[perimeter81
 	return policyListOps[perimeter81Sdk.AccessPolicyRule]{
 		policyName: "access policy",
 		sanitise:   sanitiseAccessPolicyRule,
-		read: func(ctx context.Context) ([]perimeter81Sdk.AccessPolicyRule, *http.Response, error) {
+		read: func(ctx context.Context) ([]perimeter81Sdk.AccessPolicyRule, string, *http.Response, error) {
 			body, httpResp, err := client.InternetAccessPoliciesAPI.GetAccessPolicy(ctx).Execute()
 			if err != nil {
-				return nil, httpResp, err
+				return nil, "", httpResp, err
 			}
 			if body == nil {
-				return nil, httpResp, nil
+				return nil, "", httpResp, nil
 			}
 			data := body.GetData()
-			return data.GetWebRules(), httpResp, nil
+			return data.GetWebRules(), data.GetControlledBy(), httpResp, nil
 		},
 		write: func(ctx context.Context, rules []perimeter81Sdk.AccessPolicyRule) error {
 			return writeAccessPolicyRules(ctx, client, rules)
@@ -237,16 +248,16 @@ func httpsInspectionPolicyOps(client *perimeter81Sdk.APIClient) policyListOps[pe
 	return policyListOps[perimeter81Sdk.HttpsInspectionRule]{
 		policyName: "HTTPS inspection policy",
 		sanitise:   sanitiseHttpsInspectionRule,
-		read: func(ctx context.Context) ([]perimeter81Sdk.HttpsInspectionRule, *http.Response, error) {
+		read: func(ctx context.Context) ([]perimeter81Sdk.HttpsInspectionRule, string, *http.Response, error) {
 			body, httpResp, err := client.InternetAccessPoliciesAPI.GetHttpsInspectionPolicy(ctx).Execute()
 			if err != nil {
-				return nil, httpResp, err
+				return nil, "", httpResp, err
 			}
 			if body == nil {
-				return nil, httpResp, nil
+				return nil, "", httpResp, nil
 			}
 			data := body.GetData()
-			return data.GetBypassRules(), httpResp, nil
+			return data.GetBypassRules(), data.GetControlledBy(), httpResp, nil
 		},
 		write: func(ctx context.Context, rules []perimeter81Sdk.HttpsInspectionRule) error {
 			return writeHttpsInspectionRules(ctx, client, rules)
@@ -338,7 +349,7 @@ func rereadAfterWrite[R any](ctx context.Context, ops policyListOps[R]) ([]R, er
 	remaining := policyReReadTransientBudget
 
 	for {
-		rules, resp, err := ops.read(ctx)
+		rules, _, resp, err := ops.read(ctx)
 		if err == nil {
 			return rules, nil
 		}

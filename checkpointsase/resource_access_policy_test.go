@@ -165,7 +165,7 @@ func accessPolicyRulesFromBody(t *testing.T, body string) []interface{} {
 	}))
 	defer srv.Close()
 
-	rules, _, err := accessPolicyOps(newTestUserAPIClient(srv.URL)).read(context.Background())
+	rules, _, _, err := accessPolicyOps(newTestUserAPIClient(srv.URL)).read(context.Background())
 	if err != nil {
 		t.Fatalf("reading the fixture: %v", err)
 	}

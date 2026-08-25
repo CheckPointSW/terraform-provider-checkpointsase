@@ -78,6 +78,8 @@ func Provider() *schema.Provider {
 			"checkpointsase_updatable_objects":                dataSourceUpdatableObjects(),
 			"checkpointsase_users":                            dataSourceUsers(),
 			"checkpointsase_groups":                           dataSourceGroups(),
+			"checkpointsase_access_policy":                    dataSourceAccessPolicy(),
+			"checkpointsase_https_inspection_policy":          dataSourceHttpsInspectionPolicy(),
 		},
 		ConfigureContextFunc: providerConfigure,
 	}

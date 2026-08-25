@@ -212,7 +212,7 @@ func httpsInspectionRulesFromBody(t *testing.T, body string) []interface{} {
 	}))
 	defer srv.Close()
 
-	rules, _, err := httpsInspectionPolicyOps(newTestUserAPIClient(srv.URL)).read(context.Background())
+	rules, _, _, err := httpsInspectionPolicyOps(newTestUserAPIClient(srv.URL)).read(context.Background())
 	if err != nil {
 		t.Fatalf("reading the fixture: %v", err)
 	}
