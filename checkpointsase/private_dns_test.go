@@ -3,6 +3,7 @@ package checkpointsase
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,95 +29,188 @@ API-FINDINGS.md 1.28 and 1.31, not JSON authored here to fit the code.
 */
 
 /*
-testPrivateDNSResourceSchema mirrors the schema the two enhanced private-DNS
-resources declare.
+testPrivateDNSResourceSchema is what Tasks 2 and 3 build: the shared schema plus
+the resource's own address.
 
-It lives in the test rather than in private_dns.go on purpose: the resource
-schema -- Required/Optional, MaxItems, the validators on `mode` -- is Task 2's
-decision, and duplicating it in the shared file would pre-empt it. What Task 1
-does fix, because expandCustomDnsUpdate reads them by name, is the set of
-ATTRIBUTE KEYS:
-
-	enabled
-	attributes.servers[].address
-	attributes.servers[].is_tls
-	attributes.search_domains[]
-	attributes.dns_policy.public.domains[]
-	attributes.dns_policy.private.mode
-	attributes.dns_policy.private.public_fallback
-	attributes.dns_policy.private.domains[]
-
-A resource that spells any of those differently silently sends a zero value for
-it -- the expander cannot tell a missing key from an unset one. This mirror is
-where such a mismatch has to be reconciled.
+`network_id` is added here rather than in privateDNSSchema because it is the only
+part that genuinely differs between the two resources -- the region resource adds
+`region_id` alongside it. Everything else comes from privateDNSSchema, so this
+test drives the same declaration the resources will, and no second copy of it
+exists to drift.
 */
 func testPrivateDNSResourceSchema() map[string]*schema.Schema {
-	return map[string]*schema.Schema{
-		"network_id": {Type: schema.TypeString, Required: true, ForceNew: true},
-		"enabled":    {Type: schema.TypeBool, Required: true},
-		"attributes": {
-			Type:     schema.TypeList,
-			Optional: true,
-			MaxItems: 1,
-			Elem: &schema.Resource{
-				Schema: map[string]*schema.Schema{
-					"servers": {
-						Type:     schema.TypeList,
-						Optional: true,
-						Elem: &schema.Resource{
-							Schema: map[string]*schema.Schema{
-								"address": {Type: schema.TypeString, Required: true},
-								"is_tls":  {Type: schema.TypeBool, Optional: true},
-							},
-						},
-					},
-					"search_domains": {
-						Type:     schema.TypeList,
-						Optional: true,
-						Elem:     &schema.Schema{Type: schema.TypeString},
-					},
-					"dns_policy": {
-						Type:     schema.TypeList,
-						Optional: true,
-						MaxItems: 1,
-						Elem: &schema.Resource{
-							Schema: map[string]*schema.Schema{
-								"public": {
-									Type:     schema.TypeList,
-									Optional: true,
-									MaxItems: 1,
-									Elem: &schema.Resource{
-										Schema: map[string]*schema.Schema{
-											"domains": {
-												Type:     schema.TypeList,
-												Optional: true,
-												Elem:     &schema.Schema{Type: schema.TypeString},
-											},
-										},
-									},
-								},
-								"private": {
-									Type:     schema.TypeList,
-									Optional: true,
-									MaxItems: 1,
-									Elem: &schema.Resource{
-										Schema: map[string]*schema.Schema{
-											"mode":            {Type: schema.TypeString, Optional: true},
-											"public_fallback": {Type: schema.TypeBool, Optional: true},
-											"domains": {
-												Type:     schema.TypeList,
-												Optional: true,
-												Elem:     &schema.Schema{Type: schema.TypeString},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
+	s := privateDNSSchema()
+	s["network_id"] = &schema.Schema{
+		Type:        schema.TypeString,
+		Required:    true,
+		ForceNew:    true,
+		Description: "The network this private DNS configuration belongs to.",
+	}
+	return s
+}
+
+// privateDNSSchemaPaths is every attribute privateDNSSchema declares, written out
+// so that adding one is a test failure rather than a silent no-op. See
+// TestPrivateDNSSchemaAndExpanderAgreeOnEveryAttribute.
+var privateDNSSchemaPaths = []string{
+	privateDNSAttrEnabled,
+	privateDNSAttrAttributes,
+	privateDNSAttrAttributes + "." + privateDNSAttrServers,
+	privateDNSAttrAttributes + "." + privateDNSAttrServers + "." + privateDNSAttrAddress,
+	privateDNSAttrAttributes + "." + privateDNSAttrServers + "." + privateDNSAttrIsTLS,
+	privateDNSAttrAttributes + "." + privateDNSAttrSearchDomains,
+	privateDNSAttrAttributes + "." + privateDNSAttrDNSPolicy,
+	privateDNSAttrAttributes + "." + privateDNSAttrDNSPolicy + "." + privateDNSAttrPublic,
+	privateDNSAttrAttributes + "." + privateDNSAttrDNSPolicy + "." + privateDNSAttrPublic +
+		"." + privateDNSAttrDomains,
+	privateDNSAttrAttributes + "." + privateDNSAttrDNSPolicy + "." + privateDNSAttrPrivate,
+	privateDNSAttrAttributes + "." + privateDNSAttrDNSPolicy + "." + privateDNSAttrPrivate +
+		"." + privateDNSAttrMode,
+	privateDNSAttrAttributes + "." + privateDNSAttrDNSPolicy + "." + privateDNSAttrPrivate +
+		"." + privateDNSAttrPublicFallback,
+	privateDNSAttrAttributes + "." + privateDNSAttrDNSPolicy + "." + privateDNSAttrPrivate +
+		"." + privateDNSAttrDomains,
+}
+
+/*
+synthesizePrivateDNSConfig builds a raw config that fills EVERY attribute a schema
+declares, deriving itself from the schema rather than from a hand-written list.
+
+That is the point: an attribute added to privateDNSSchema automatically gets a
+value here, so the assertion below ("everything declared reaches the wire") keeps
+covering it without anyone remembering to extend a fixture. Every string leaf gets
+a unique sentinel, appended to sentinels, so a missing one names the attribute
+that was dropped.
+
+Sentinels ignore ValidateFunc -- `mode` gets "sentinel-N-mode", not one of its two
+enum values -- because TestResourceDataRaw does not validate and because what is
+under test is that the expander passes values through untouched. Rejecting a bad
+`mode` is the schema's job at plan time, and privateDNSPrivateModes is where that
+lives.
+
+  - @param m map[string]*schema.Schema - the schema to fill
+  - @param sentinels *[]string - collects every string value planted
+  - @param counter *int - makes the sentinels unique across nesting levels
+
+@return map[string]interface{} - a raw config for schema.TestResourceDataRaw
+*/
+func synthesizePrivateDNSConfig(
+	m map[string]*schema.Schema, sentinels *[]string, counter *int) map[string]interface{} {
+
+	plant := func(name string) string {
+		*counter++
+		value := fmt.Sprintf("sentinel-%d-%s", *counter, name)
+		*sentinels = append(*sentinels, value)
+		return value
+	}
+
+	out := map[string]interface{}{}
+	for name, attr := range m {
+		switch attr.Type {
+		case schema.TypeBool:
+			out[name] = true
+		case schema.TypeString:
+			out[name] = plant(name)
+		case schema.TypeList:
+			if nested, ok := attr.Elem.(*schema.Resource); ok {
+				out[name] = []interface{}{
+					synthesizePrivateDNSConfig(nested.Schema, sentinels, counter),
+				}
+				continue
+			}
+			out[name] = []interface{}{plant(name)}
+		}
+	}
+	return out
+}
+
+/*
+TestPrivateDNSSchemaAndExpanderAgreeOnEveryAttribute is the reason privateDNSSchema
+lives beside the expander instead of in the two resource files.
+
+expandCustomDnsUpdate reads the resource's attributes BY NAME. A name it reads that
+the schema does not declare returns a zero value -- no error, no diff, nothing in
+the logs -- and this codebase has shipped that class of defect more than once:
+enhanced_dynamic_tunnel sent routingType: "" against a required enum for every
+create, and EnhancedTunnel's read blanked eight fields of user configuration
+because the generated struct named them somewhere the server did not. Both looked
+right in review.
+
+Declaring and reading through the same constants removes the possibility of a
+mismatch rather than reducing it: there is one spelling of each name in the
+package, so a rename is one edit and a typo does not compile. Two things that
+still could go wrong are what this test covers:
+
+ 1. An attribute ADDED to the schema that no expander reads. The path list is
+    written out, so adding one fails here until someone has been to the expander.
+ 2. An attribute declared and then not sent. The config is synthesised FROM the
+    schema, so every string attribute the schema declares must appear in the
+    marshalled body -- including ones added after this test was written.
+
+Booleans carry no sentinel (true is not distinguishable in a body full of them);
+`isTLS` and `publicFallback` are pinned exactly by
+TestPayloadMarshalCustomDnsUpdate, and assertion 1 above is what stops a new
+boolean slipping in unnoticed.
+*/
+func TestPrivateDNSSchemaAndExpanderAgreeOnEveryAttribute(t *testing.T) {
+	declared := map[string]bool{}
+	walkSchema("", privateDNSSchema(), func(path string, _ *schema.Schema) {
+		declared[path] = true
+	})
+
+	expected := map[string]bool{}
+	for _, path := range privateDNSSchemaPaths {
+		expected[path] = true
+	}
+
+	for path := range declared {
+		if !expected[path] {
+			t.Errorf("privateDNSSchema declares %q, which privateDNSSchemaPaths does not list. "+
+				"Add it there AND teach expandCustomDnsUpdate/flattenCustomDnsAttributes to "+
+				"read it -- an attribute the expander never reads is sent as a zero value with "+
+				"no error and no diff", path)
+		}
+	}
+	for path := range expected {
+		if !declared[path] {
+			t.Errorf("privateDNSSchemaPaths lists %q, which privateDNSSchema no longer declares. "+
+				"If the attribute is gone, remove it from the expander and the flattener too",
+				path)
+		}
+	}
+
+	// TestSchemaEveryAttributeHasADescription only walks REGISTERED resources, and
+	// nothing registers this schema until Task 2 lands. Checking it here is what
+	// stops Tasks 2 and 3 inheriting a conformance failure they did not cause, on
+	// the commit that merely wires the schema up.
+	walkSchema("", privateDNSSchema(), func(path string, attr *schema.Schema) {
+		if strings.TrimSpace(attr.Description) == "" {
+			t.Errorf("privateDNSSchema attribute %q has no Description. tfplugindocs renders the "+
+				"registry docs from it, so a blank one ships a blank row", path)
+		}
+	})
+
+	var sentinels []string
+	counter := 0
+	raw := synthesizePrivateDNSConfig(testPrivateDNSResourceSchema(), &sentinels, &counter)
+
+	d := schema.TestResourceDataRaw(t, testPrivateDNSResourceSchema(), raw)
+	body, err := json.Marshal(expandCustomDnsUpdate(d))
+	if err != nil {
+		t.Fatalf("json.Marshal(expandCustomDnsUpdate(d)) returned an error: %v", err)
+	}
+
+	for _, sentinel := range sentinels {
+		// network_id is the resource's address, not part of the body, so its
+		// sentinel is expected to be absent.
+		if strings.Contains(sentinel, "network_id") {
+			continue
+		}
+		if !strings.Contains(string(body), sentinel) {
+			t.Errorf("%q was set in the config and never reached the request body. The attribute "+
+				"it came from is declared in privateDNSSchema and dropped by "+
+				"expandCustomDnsUpdate.\nbody: %s", sentinel, body)
+		}
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 )
 
 /*
@@ -22,6 +23,216 @@ types -- CustomDnsUpdate in, CustomDns out -- and only the SDK call and the id
 differ between the two. Two copies of the async wait would be two places for the
 "a 202 is not a completed write" bug to come back.
 */
+
+/*
+THE ATTRIBUTE NAMES ARE CONSTANTS, AND privateDNSSchema DECLARES THEM.
+
+Both are here for one reason: expandCustomDnsUpdate reads the resource's
+attributes by name, and a name it reads that the schema does not declare returns
+a zero value with no error, no diff and nothing in the logs. This codebase has
+shipped that exact class of defect repeatedly -- a flattener that never assigned
+routingType and sent `""` against a required enum, a flattener that dropped an
+unknown bucket, a diagnostic whose guidance never reached the wire. Every one
+looked right in review.
+
+Declaring the schema and reading it through the same constants makes the mismatch
+unrepresentable rather than merely unlikely: there is one spelling of each name in
+the package, so a rename is one edit and a typo is a compile error. The residual
+risk -- a NEW attribute added to the schema that no expander reads -- is what
+TestPrivateDNSSchemaDeclaresExactlyTheAttributesTheExpanderReads catches.
+
+Tasks 2 and 3 must call privateDNSSchema and add only their own address
+attributes (network_id, plus region_id for the region resource). Restating any of
+this in a resource file re-opens the hole.
+*/
+const (
+	privateDNSAttrEnabled        = "enabled"
+	privateDNSAttrAttributes     = "attributes"
+	privateDNSAttrServers        = "servers"
+	privateDNSAttrAddress        = "address"
+	privateDNSAttrIsTLS          = "is_tls"
+	privateDNSAttrSearchDomains  = "search_domains"
+	privateDNSAttrDNSPolicy      = "dns_policy"
+	privateDNSAttrPublic         = "public"
+	privateDNSAttrPrivate        = "private"
+	privateDNSAttrDomains        = "domains"
+	privateDNSAttrMode           = "mode"
+	privateDNSAttrPublicFallback = "public_fallback"
+)
+
+/*
+privateDNSPrivateModes are the two values dnsPolicy.private.mode admits
+(swagger.yaml:4616).
+
+Validated case-SENSITIVELY -- validation.StringInSlice(..., false) -- because this
+API does not fold case on enums and a case-insensitive check would let
+"matchpattern" through plan and fail 15 minutes into an apply. That is the Phase 3
+`access` / `"Read"` lesson; nothing here has been measured against a wrong-case
+value, so the strict reading is the safe one.
+*/
+var privateDNSPrivateModes = []string{"matchPattern", "resolveAllViaPrivate"}
+
+/*
+privateDNSSchema returns the attributes both enhanced private-DNS resources
+share: `enabled` and the `attributes` block under it.
+
+It is the whole resource schema bar the object's address. Callers add `network_id`
+(and `region_id`), because that is the only thing that differs between them --
+the request and response models are literally the same types.
+
+EVERY LIMIT HERE IS SOURCED, NOT CHOSEN:
+
+  - servers / search_domains maxItems 4 (swagger.yaml:4489, :4496), and the live
+    400 in API-FINDINGS.md 1.31 quotes "attributes.servers must contain not more
+    than 4 elements", so the spec and the server agree.
+  - dns_policy.public.domains and .private.domains maxItems 100
+    (swagger.yaml:4601, :4626) -- NOT 4. The plan's Task 2 Step 1 implies 4 for
+    every list here; the spec does not.
+  - `domains` is Required inside `public` and `private`, and `mode` and
+    `public_fallback` are Required inside `private` (swagger.yaml:4595, :4609).
+    The blocks themselves are optional; what is required is required only once you
+    write one.
+  - MinItems is 0 everywhere. No array here carries a minItems, and for anything
+    an operator can clear, [] is the only way to clear it.
+
+TWO RULES ARE NOT EXPRESSIBLE IN A SCHEMA and remain the resources' to add, in a
+shared CustomizeDiff, so they are recorded here rather than lost:
+
+  - servers must be non-empty WHEN enabled is true ("must contain at least one
+    entry when enabled is true", swagger.yaml:4492) and may be empty when it is
+    false -- API-FINDINGS.md 1.31 measured {"enabled": false, ...servers: []} as a
+    202. A conditional minimum is not MinItems, and setting MinItems: 1 here would
+    make the legal "off" body unwritable.
+  - servers, search_domains and both domains lists are uniqueItems
+    (swagger.yaml:4488, :4495, :4600, :4625). helper/schema has no uniqueItems for
+    a TypeList, and the order these arrive in is meaningful (API-FINDINGS.md 1.31:
+    the write round-trips byte-exactly, non-alphabetical order preserved), so a
+    TypeSet would be wrong. Uniqueness therefore has to be a diff-time check.
+
+Descriptions are mandatory: TestSchemaEveryAttributeHasADescription walks every
+registered resource and fails on a blank one, so writing them here is what stops
+Tasks 2 and 3 inheriting a failure they did not cause.
+
+Tasks 2 and 3 will each still need their own listAttributeEmptyPolicy entries --
+that map is keyed by resource name, so a shared schema cannot supply them. All
+four list attributes below are mayBeEmpty.
+
+@return map[string]*schema.Schema - `enabled` and `attributes`
+*/
+func privateDNSSchema() map[string]*schema.Schema {
+	return map[string]*schema.Schema{
+		privateDNSAttrEnabled: {
+			Type:        schema.TypeBool,
+			Required:    true,
+			Description: "Whether private DNS is enabled for this network or region.",
+		},
+		privateDNSAttrAttributes: {
+			Type:     schema.TypeList,
+			Optional: true,
+			MaxItems: 1,
+			Description: "Private DNS configuration. May be omitted when `enabled` is false; the " +
+				"provider still sends the empty servers and search domain arrays the API requires " +
+				"on every write.",
+			Elem: &schema.Resource{
+				Schema: map[string]*schema.Schema{
+					privateDNSAttrServers: {
+						Type:     schema.TypeList,
+						Optional: true,
+						MaxItems: 4,
+						Description: "Private DNS servers, in priority order. Must contain at " +
+							"least one entry when `enabled` is true. Addresses must be unique.",
+						Elem: &schema.Resource{
+							Schema: map[string]*schema.Schema{
+								privateDNSAttrAddress: {
+									Type:        schema.TypeString,
+									Required:    true,
+									Description: "IP address of the DNS server.",
+								},
+								privateDNSAttrIsTLS: {
+									Type:     schema.TypeBool,
+									Optional: true,
+									// Required in the spec, Optional here: the
+									// only value an omitted bool can mean is
+									// false, which is what the server stores and
+									// what it returns (measured: isTLS comes back
+									// even when false), so requiring every
+									// operator to write `is_tls = false` would buy
+									// nothing.
+									Description: "Whether DNS-over-TLS is used for this server. Defaults to false.",
+								},
+							},
+						},
+					},
+					privateDNSAttrSearchDomains: {
+						Type:     schema.TypeList,
+						Optional: true,
+						MaxItems: 4,
+						Description: "DNS search domains, in the order they should be tried. " +
+							"Sent as an empty array when unset; entries must be unique.",
+						Elem: &schema.Schema{Type: schema.TypeString},
+					},
+					privateDNSAttrDNSPolicy: {
+						Type:     schema.TypeList,
+						Optional: true,
+						MaxItems: 1,
+						Description: "Per-domain DNS policy. Omitting this block clears any policy " +
+							"already configured, because the write is a full replacement.",
+						Elem: &schema.Resource{
+							Schema: map[string]*schema.Schema{
+								privateDNSAttrPublic: {
+									Type:        schema.TypeList,
+									Optional:    true,
+									MaxItems:    1,
+									Description: "Domains resolved via public DNS.",
+									Elem: &schema.Resource{
+										Schema: map[string]*schema.Schema{
+											privateDNSAttrDomains: {
+												Type:        schema.TypeList,
+												Required:    true,
+												MaxItems:    100,
+												Description: "Domains to resolve via public DNS. Entries must be unique.",
+												Elem:        &schema.Schema{Type: schema.TypeString},
+											},
+										},
+									},
+								},
+								privateDNSAttrPrivate: {
+									Type:        schema.TypeList,
+									Optional:    true,
+									MaxItems:    1,
+									Description: "Domains resolved via the private DNS servers.",
+									Elem: &schema.Resource{
+										Schema: map[string]*schema.Schema{
+											privateDNSAttrMode: {
+												Type:         schema.TypeString,
+												Required:     true,
+												ValidateFunc: validation.StringInSlice(privateDNSPrivateModes, false),
+												Description: "DNS resolution mode for private domains. One of " +
+													"`matchPattern` or `resolveAllViaPrivate`. Case-sensitive.",
+											},
+											privateDNSAttrPublicFallback: {
+												Type:        schema.TypeBool,
+												Required:    true,
+												Description: "Whether to fall back to public DNS when private DNS fails.",
+											},
+											privateDNSAttrDomains: {
+												Type:        schema.TypeList,
+												Required:    true,
+												MaxItems:    100,
+												Description: "Private domains. Entries must be unique.",
+												Elem:        &schema.Schema{Type: schema.TypeString},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
 
 /*
 privateDNSPollInterval is the cadence putPrivateDNSAndWait polls the status
@@ -191,7 +402,7 @@ testPrivateDNSResourceSchema in private_dns_test.go mirrors them.
 */
 func expandCustomDnsUpdate(d *schema.ResourceData) perimeter81Sdk.CustomDnsUpdate {
 	payload := perimeter81Sdk.CustomDnsUpdate{
-		Enabled: d.Get("enabled").(bool),
+		Enabled: d.Get(privateDNSAttrEnabled).(bool),
 		Attributes: perimeter81Sdk.CustomDnsUpdateAttributes{
 			// Non-nil so the "off" body, and any config that fills one list and
 			// not the other, marshal as `[]`. Overwritten below when the
@@ -201,15 +412,15 @@ func expandCustomDnsUpdate(d *schema.ResourceData) perimeter81Sdk.CustomDnsUpdat
 		},
 	}
 
-	block, ok := singleBlock(d.Get("attributes"))
+	block, ok := singleBlock(d.Get(privateDNSAttrAttributes))
 	if !ok {
 		return payload
 	}
 
-	payload.Attributes.Servers = expandCustomDnsServers(block["servers"])
-	searchDomains, _ := block["search_domains"].([]interface{})
+	payload.Attributes.Servers = expandCustomDnsServers(block[privateDNSAttrServers])
+	searchDomains, _ := block[privateDNSAttrSearchDomains].([]interface{})
 	payload.Attributes.SearchDomains = flattenStringsArrayData(searchDomains)
-	payload.Attributes.DnsPolicy = expandDnsPolicy(block["dns_policy"])
+	payload.Attributes.DnsPolicy = expandDnsPolicy(block[privateDNSAttrDNSPolicy])
 
 	return payload
 }
@@ -271,8 +482,8 @@ func expandCustomDnsServers(raw interface{}) []perimeter81Sdk.CustomDnsServer {
 		if !ok {
 			continue
 		}
-		address, _ := entry["address"].(string)
-		isTLS, _ := entry["is_tls"].(bool)
+		address, _ := entry[privateDNSAttrAddress].(string)
+		isTLS, _ := entry[privateDNSAttrIsTLS].(bool)
 		servers = append(servers, perimeter81Sdk.CustomDnsServer{
 			Address: address,
 			IsTLS:   isTLS,
@@ -307,16 +518,16 @@ func expandDnsPolicy(raw interface{}) *perimeter81Sdk.DnsPolicy {
 	}
 
 	policy := perimeter81Sdk.DnsPolicy{}
-	if publicBlock, ok := singleBlock(block["public"]); ok {
-		domains, _ := publicBlock["domains"].([]interface{})
+	if publicBlock, ok := singleBlock(block[privateDNSAttrPublic]); ok {
+		domains, _ := publicBlock[privateDNSAttrDomains].([]interface{})
 		policy.Public = &perimeter81Sdk.DnsPolicyPublic{
 			Domains: flattenStringsArrayData(domains),
 		}
 	}
-	if privateBlock, ok := singleBlock(block["private"]); ok {
-		mode, _ := privateBlock["mode"].(string)
-		publicFallback, _ := privateBlock["public_fallback"].(bool)
-		domains, _ := privateBlock["domains"].([]interface{})
+	if privateBlock, ok := singleBlock(block[privateDNSAttrPrivate]); ok {
+		mode, _ := privateBlock[privateDNSAttrMode].(string)
+		publicFallback, _ := privateBlock[privateDNSAttrPublicFallback].(bool)
+		domains, _ := privateBlock[privateDNSAttrDomains].([]interface{})
 		policy.Private = &perimeter81Sdk.DnsPolicyPrivate{
 			Mode:           mode,
 			PublicFallback: publicFallback,
@@ -364,8 +575,8 @@ func flattenCustomDnsAttributes(a *perimeter81Sdk.CustomDnsAttributes) []interfa
 	servers := make([]interface{}, 0, len(a.Servers))
 	for _, server := range a.Servers {
 		servers = append(servers, map[string]interface{}{
-			"address": server.GetAddress(),
-			"is_tls":  server.GetIsTLS(),
+			privateDNSAttrAddress: server.GetAddress(),
+			privateDNSAttrIsTLS:   server.GetIsTLS(),
 		})
 	}
 
@@ -373,9 +584,9 @@ func flattenCustomDnsAttributes(a *perimeter81Sdk.CustomDnsAttributes) []interfa
 	searchDomains = append(searchDomains, a.GetSearchDomains()...)
 
 	return []interface{}{map[string]interface{}{
-		"servers":        servers,
-		"search_domains": searchDomains,
-		"dns_policy":     flattenDnsPolicy(a.DnsPolicy),
+		privateDNSAttrServers:       servers,
+		privateDNSAttrSearchDomains: searchDomains,
+		privateDNSAttrDNSPolicy:     flattenDnsPolicy(a.DnsPolicy),
 	}}
 }
 
@@ -397,15 +608,15 @@ func flattenDnsPolicy(p *perimeter81Sdk.DnsPolicy) []interface{} {
 
 	block := map[string]interface{}{}
 	if public := p.Public; public != nil {
-		block["public"] = []interface{}{map[string]interface{}{
-			"domains": public.GetDomains(),
+		block[privateDNSAttrPublic] = []interface{}{map[string]interface{}{
+			privateDNSAttrDomains: public.GetDomains(),
 		}}
 	}
 	if private := p.Private; private != nil {
-		block["private"] = []interface{}{map[string]interface{}{
-			"mode":            private.GetMode(),
-			"public_fallback": private.GetPublicFallback(),
-			"domains":         private.GetDomains(),
+		block[privateDNSAttrPrivate] = []interface{}{map[string]interface{}{
+			privateDNSAttrMode:           private.GetMode(),
+			privateDNSAttrPublicFallback: private.GetPublicFallback(),
+			privateDNSAttrDomains:        private.GetDomains(),
 		}}
 	}
 
