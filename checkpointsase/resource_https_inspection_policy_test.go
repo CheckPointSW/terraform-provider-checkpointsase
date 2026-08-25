@@ -83,23 +83,37 @@ func httpsInspectionCanonicalRuleJSON(id, name, appliedOn, action string, priori
 		return strings.Join(parts, ",")
 	}
 
-	return fmt.Sprintf(`{"id":%q,"name":%q,"appliedOn":%q,"action":%q,`+
-		`"status":"active","priority":%d,"log":"disabled",`+
-		`"sources":[%s],"destinations":[%s],`+
-		`"_created_at":"2026-08-25T09:00:00.000Z","className":"RuleBypass","objectId":"obj-%s"}`,
-		id, name, appliedOn, action, priority,
+	// CAPTURED, NOT CONSTRUCTED, as of 2026-08-25. An earlier version of this
+	// builder was assembled from the OpenAPI document and diverged from the wire
+	// in three ways, none of which broke a test -- which is exactly why it was
+	// worth measuring. A real GET now settles it:
+	//
+	//   - DESTINATION ORDER is addresses, categories, domains, updatableObjects.
+	//     The constructed version led with categories.
+	//   - There is NO applicationControlApplications bucket on this endpoint.
+	//     The constructed version invented one; it belongs to the access policy.
+	//   - The rule carries NO className, objectId or fromDefault. Only
+	//     _created_at. The constructed version added two the server never sends,
+	//     so the strip list was being exercised against fields that never arrive.
+	//
+	// Source order (users, groups, applications, addresses) was already right.
+	// `action` is always present -- a rule POSTed without one reads back as
+	// "bypass", the server's documented default -- so a Required schema
+	// attribute reading it through GetAction() cannot land on "".
+	return fmt.Sprintf(`{"id":%q,"_created_at":"2026-08-25T09:28:22.958Z",`+
+		`"name":%q,"appliedOn":%q,"status":"active","priority":%d,"action":%q,`+
+		`"sources":[%s],"destinations":[%s],"log":"disabled"}`,
+		id, name, appliedOn, priority, action,
 		join(sources,
 			`{"type":"users","value":[]}`,
 			`{"type":"groups","value":[]}`,
 			`{"type":"applications","value":[]}`,
 			`{"type":"addresses","value":[]}`),
 		join(destinations,
+			`{"type":"addresses","value":[]}`,
 			`{"type":"categories","value":[]}`,
 			`{"type":"domains","value":[]}`,
-			`{"type":"addresses","value":[]}`,
-			`{"type":"updatableObjects","value":[]}`,
-			`{"type":"applicationControlApplications","value":[]}`),
-		id)
+			`{"type":"updatableObjects","value":[]}`))
 }
 
 // httpsInspectionGetBody wraps rules in the envelope
