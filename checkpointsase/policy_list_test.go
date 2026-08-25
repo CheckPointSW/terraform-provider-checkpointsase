@@ -426,12 +426,6 @@ func TestRewriteAccessPolicyWithoutDeletesOnlyWhenTheLastRuleGoes(t *testing.T) 
 			if !testComparableArraiesEq(calls, tc.wantCalls) {
 				t.Fatalf("requests were %v, want exactly %v", calls, tc.wantCalls)
 			}
-			for _, c := range calls {
-				if strings.HasPrefix(c, http.MethodDelete) && len(tc.stored) > 1 {
-					t.Fatalf("DELETE issued while %d rules remained: that clears the "+
-						"ENTIRE tenant policy", len(tc.stored)-1)
-				}
-			}
 			if tc.wantBody != "" {
 				post := bodies[len(bodies)-1]
 				if !strings.Contains(post, tc.wantBody) {
@@ -488,6 +482,22 @@ func TestRewriteHttpsInspectionPolicyWithoutDeletesOnlyWhenTheLastRuleGoes(t *te
 			"rule-1",
 			[]string{"GET /v3/ia/https-inspection/policy"},
 		},
+		{
+			"an unknown id leaves a populated policy untouched",
+			[]string{httpsInspectionRuleJSON("rule-9", "someone else's", 0)},
+			"rule-1",
+			[]string{"GET /v3/ia/https-inspection/policy"},
+		},
+		{
+			"removing the first of three keeps both survivors",
+			[]string{
+				httpsInspectionRuleJSON("rule-1", "remove", 0),
+				httpsInspectionRuleJSON("rule-2", "keep-a", 1),
+				httpsInspectionRuleJSON("rule-3", "keep-b", 2),
+			},
+			"rule-1",
+			[]string{"GET /v3/ia/https-inspection/policy", "POST /v3/ia/https-inspection/policy"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log := &requestLog{}
@@ -543,10 +553,17 @@ func TestWritePolicyRulesRefusesAnEmptyList(t *testing.T) {
 		write func(context.Context, *perimeter81Sdk.APIClient) error
 	}{
 		{"access policy", func(ctx context.Context, c *perimeter81Sdk.APIClient) error {
-			return writeAccessPolicyRules(ctx, c, nil)
+			// The lock is taken here because the writers refuse to run without
+			// it. Holding it is what a real caller does; see
+			// TestPolicyWritersRefuseToRunWithoutTheLock for the other side.
+			policyMutex.Lock()
+			defer policyMutex.Unlock()
+			return writeAccessPolicyRulesLocked(ctx, c, nil)
 		}},
 		{"https inspection", func(ctx context.Context, c *perimeter81Sdk.APIClient) error {
-			return writeHttpsInspectionRules(ctx, c, nil)
+			policyMutex.Lock()
+			defer policyMutex.Unlock()
+			return writeHttpsInspectionRulesLocked(ctx, c, nil)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -568,6 +585,243 @@ func TestWritePolicyRulesRefusesAnEmptyList(t *testing.T) {
 }
 
 /*
+TestRewritePolicyWithoutNeverDeletesWhileABystanderSurvives is the duplicate-id
+hole, found by review rather than by the original tests.
+
+If the server's list ever holds TWO rules sharing the id being removed, both are
+filtered out, `found` is true and `remaining` is empty -- and a guard of
+`len(remaining) == 0` alone would then DELETE the tenant's ENTIRE policy while a
+bystander rule was still in the list. Not reachable today, because ids are
+server-minted and unique. Guarded anyway, because the clause costs nothing and
+because "unreachable today" is not a good enough reason in the one function that
+can destroy a tenant's policy.
+
+The correct behaviour is to fall through to the writer, which refuses an empty
+list before any request leaves. So: an error, and no second request of any kind.
+*/
+func TestRewritePolicyWithoutNeverDeletesWhileABystanderSurvives(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stored []string
+	}{
+		{
+			"two rules share the removed id",
+			[]string{
+				accessPolicyRuleJSON("dup", "a", 0),
+				accessPolicyRuleJSON("dup", "b", 1),
+			},
+		},
+		{
+			"three rules share the removed id",
+			[]string{
+				accessPolicyRuleJSON("dup", "a", 0),
+				accessPolicyRuleJSON("dup", "b", 1),
+				accessPolicyRuleJSON("dup", "c", 2),
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &requestLog{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				log.record(r)
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodDelete {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				_, _ = w.Write([]byte(accessPolicyGetBody(tc.stored...)))
+			}))
+			defer srv.Close()
+
+			removed, err := rewriteAccessPolicyWithout(
+				context.Background(), newTestUserAPIClient(srv.URL), "dup")
+			if err == nil {
+				t.Errorf("removed = %v with no error; emptying the list by removing "+
+					"several rules at once is not the same statement as removing the "+
+					"last rule, and must not be answered with a DELETE", removed)
+			}
+
+			calls, _ := log.snapshot()
+			want := []string{"GET /v3/ia/access/policy"}
+			if !testComparableArraiesEq(calls, want) {
+				t.Fatalf("requests were %v, want exactly %v. A DELETE here clears the "+
+					"ENTIRE tenant policy while %d rules were still in the list.",
+					calls, want, len(tc.stored))
+			}
+		})
+	}
+}
+
+/*
+TestPolicyWritersRefuseToRunWithoutTheLock is the enforcement half of the
+policyMutex contract, and it exists because a comment is not a guard.
+
+Both writers are package-visible. An Update added in a later task as
+GET -> modify -> writeAccessPolicyRulesLocked would bypass policyMutex entirely,
+and no other test in this file would notice: the concurrency test drives
+appendAccessPolicyRule, not the raw writer. So the writers check, and refuse
+before any request leaves.
+
+The rules passed here are deliberately NON-empty, so that the empty-list refusal
+cannot be what produces the error. This test would pass for the wrong reason
+otherwise.
+*/
+func TestPolicyWritersRefuseToRunWithoutTheLock(t *testing.T) {
+	log := &requestLog{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.record(r)
+		t.Errorf("unexpected %s %s: a writer that does not hold policyMutex must refuse "+
+			"before any request", r.Method, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(accessPolicyGetBody()))
+	}))
+	defer srv.Close()
+	client := newTestUserAPIClient(srv.URL)
+
+	err := writeAccessPolicyRulesLocked(context.Background(), client,
+		[]perimeter81Sdk.AccessPolicyRule{{
+			Name: "unlocked", AppliedOn: "both", Action: "block", Status: "enabled",
+		}})
+	if err == nil {
+		t.Error("writeAccessPolicyRulesLocked ran without the lock")
+	} else if !strings.Contains(err.Error(), "policyMutex") {
+		t.Errorf("the refusal does not name policyMutex, so the reader cannot tell what "+
+			"contract was broken: %v", err)
+	}
+
+	if err := writeHttpsInspectionRulesLocked(context.Background(), client,
+		[]perimeter81Sdk.HttpsInspectionRule{{
+			Name: "unlocked", AppliedOn: "sites", Status: "enabled",
+		}}); err == nil {
+		t.Error("writeHttpsInspectionRulesLocked ran without the lock")
+	}
+
+	if calls, _ := log.snapshot(); len(calls) != 0 {
+		t.Errorf("requests were %v, want none", calls)
+	}
+
+	// The other direction, against a server that ACCEPTS the write: a caller
+	// holding the lock must not be refused. A check that rejected correct
+	// callers would be worse than no check, and this half is what would catch
+	// TryLock being used the wrong way round.
+	permissive := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(accessPolicyGetBody()))
+	}))
+	defer permissive.Close()
+
+	policyMutex.Lock()
+	err = writeAccessPolicyRulesLocked(context.Background(), newTestUserAPIClient(permissive.URL),
+		[]perimeter81Sdk.AccessPolicyRule{{
+			Name: "locked", AppliedOn: "both", Action: "block", Status: "enabled",
+		}})
+	policyMutex.Unlock()
+	if err != nil && strings.Contains(err.Error(), "policyMutex") {
+		t.Errorf("a caller holding the lock was refused: %v", err)
+	}
+}
+
+/*
+TestAppendRetriesTheReReadAndNeverFailsSilently covers the window on the far side
+of a successful POST.
+
+Create is GET, POST, GET, and the last GET is how the new rule's id is learned.
+If it fails, the rule EXISTS on the server and Terraform has no id for it, so the
+next apply appends a second copy and the policy doubles -- from one transient
+500, which §1.19 says this endpoint does produce.
+
+Two behaviours are pinned. A transient failure is retried, so the common case
+recovers instead of orphaning anything. A permanent failure is not retried, and
+the error says the rule was written before it says what went wrong -- because the
+instinct on seeing a failed create is to apply again, and applying again is
+precisely what doubles the policy.
+*/
+func TestAppendRetriesTheReReadAndNeverFailsSilently(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// reReadStatus is returned for each GET after the POST, in order; a 0
+		// means "answer normally".
+		reReadStatus []int
+		wantCalls    int
+		wantErr      bool
+	}{
+		{"a transient 500 on the re-read is retried", []int{http.StatusInternalServerError, 0}, 4, false},
+		{"two transient failures are still within budget", []int{502, 503, 0}, 5, false},
+		{
+			// 422 is not transient. Repeating it changes nothing, so it is not
+			// repeated -- but it still has to be reported as an orphan.
+			"a permanent failure is not retried and is reported as an orphan",
+			[]int{http.StatusUnprocessableEntity}, 3, true,
+		},
+		{
+			"a transient failure that outlives the budget is reported as an orphan",
+			[]int{500, 500, 500, 500}, 6, true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &requestLog{}
+			stored := []string{accessPolicyRuleJSON("rule-1", "pre-existing", 0)}
+			posted := false
+			reRead := 0
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				log.record(r)
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodPost {
+					posted = true
+					stored = append(stored, accessPolicyRuleJSON("rule-2", "new", 1))
+					_, _ = w.Write([]byte(accessPolicyGetBody(stored...)))
+					return
+				}
+				if posted {
+					status := 0
+					if reRead < len(tc.reReadStatus) {
+						status = tc.reReadStatus[reRead]
+					}
+					reRead++
+					if status != 0 {
+						w.WriteHeader(status)
+						_, _ = w.Write([]byte(`{"message":"re-read failed"}`))
+						return
+					}
+				}
+				_, _ = w.Write([]byte(accessPolicyGetBody(stored...)))
+			}))
+			defer srv.Close()
+
+			created, err := appendAccessPolicyRule(context.Background(),
+				newTestUserAPIClient(srv.URL), perimeter81Sdk.AccessPolicyRule{
+					Name: "new", AppliedOn: "both", Action: "block", Status: "enabled",
+				})
+
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, want an error = %v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				// The message has to lead with the fact that the rule exists,
+				// and name it, or the operator re-applies and doubles the policy.
+				for _, fragment := range []string{`"new" WAS written`, "SECOND copy", "import it"} {
+					if !strings.Contains(err.Error(), fragment) {
+						t.Errorf("the error does not contain %q, so it does not tell the "+
+							"operator a rule was created but not recorded: %v", fragment, err)
+					}
+				}
+			} else if created.GetId() != "rule-2" {
+				t.Errorf("created id = %q, want rule-2 after the retry succeeded",
+					created.GetId())
+			}
+
+			calls, _ := log.snapshot()
+			if len(calls) != tc.wantCalls {
+				t.Errorf("requests were %v (%d), want %d: a retry budget that does not "+
+					"match means either a transient failure was given up on or a "+
+					"permanent one was hammered", calls, len(calls), tc.wantCalls)
+			}
+		})
+	}
+}
+
+/*
 TestRewritePolicyWithoutRefusesAnEmptyRuleID guards the same call from the other
 direction. An empty id is not reachable from a healthy state, but it matches a
 rule the server has not assigned an id to, and on a one-rule list that would put
@@ -581,7 +835,14 @@ func TestRewritePolicyWithoutRefusesAnEmptyRuleID(t *testing.T) {
 		t.Errorf("unexpected %s %s: an empty rule id must be refused before any request",
 			r.Method, r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(accessPolicyGetBody()))
+		// The exact scenario the comment describes: ONE rule, carrying no id, so
+		// that "" would match it, the remainder would be empty and the list
+		// length would be 1 -- both clauses of the DELETE guard satisfied. The
+		// zero-request assertion below is what stops it getting that far.
+		_, _ = w.Write([]byte(accessPolicyGetBody(
+			`{"name":"no id","appliedOn":"both","action":"block",` +
+				`"conditions":[],"destinations":[],"sources":[],` +
+				`"status":"enabled","priority":0}`)))
 	}))
 	defer srv.Close()
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
@@ -1224,7 +1225,14 @@ appendErrorDiags append the error diagnostics
 */
 func appendErrorDiags(diags diag.Diagnostics, summary string, err error) diag.Diagnostics {
 	var errMsg string
-	if apiErr, ok := err.(*perimeter81Sdk.GenericOpenAPIError); ok {
+	// errors.As rather than a bare type assertion. The SDK's error carries the
+	// server's message body -- `"fromDefault" is not allowed`, `VALIDATION_WEB_
+	// RULES_REQUIRED` -- and Error() carries only `422 Unprocessable Entity`.
+	// A direct assertion fails the moment anything wraps the error with %w, and
+	// something already does (async.go's withStatusID), so this was silently
+	// discarding the only useful half of the diagnostic on that path.
+	var apiErr *perimeter81Sdk.GenericOpenAPIError
+	if errors.As(err, &apiErr) {
 		errMsg = string(apiErr.Body())
 		if errMsg == "" {
 			errMsg = apiErr.Error()
