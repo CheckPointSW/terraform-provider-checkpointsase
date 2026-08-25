@@ -98,8 +98,8 @@ API-FINDINGS 1.15 recorded: customUrls, categories,
 applicationControlApplications, updatableObjects.
 
 Note that the source and destination vocabularies do NOT overlap, and that the
-HTTPS-inspection policy's are different again (phase4-verification, W1). Nothing
-here may be shared with that resource.
+HTTPS-inspection policy's are different again (API-FINDINGS 1.20). Nothing here
+may be shared with that resource.
 */
 var accessPolicyDestinationBuckets = []accessPolicyBucket{
 	{attr: "custom_urls", apiType: "customUrls"},
@@ -117,9 +117,9 @@ const accessPolicyRuleNameMaxRunes = 100
 // accessPolicyAppliedOnValues is the `appliedOn` enum. The OpenAPI document and
 // `$defs.ruleAppliedOn` in p81-mongo-validation-schemas agree exactly, and all
 // three were confirmed live by TestAccCheckpointsaseAccessPolicy_basic on
-// 2026-08-25. NOT by phase4-verification, which this comment used to cite: the
-// one appliedOn matrix that probe recorded is the HTTPS-inspection endpoint's,
-// and the claim had been read across from the sibling.
+// 2026-08-25. NOT by the SWG probe, which this comment used to cite: the one
+// appliedOn matrix that probe recorded is the HTTPS-inspection endpoint's
+// (API-FINDINGS 1.26), and the claim had been read across from the sibling.
 var accessPolicyAppliedOnValues = []string{"sites", "agents", "both"}
 
 /*
@@ -133,8 +133,8 @@ declares four: allow, block, warning, redirect.
 The narrower list is taken deliberately. `SWGAction` is shared across several SWG
 object types, `redirect` has no target field anywhere in RuleWeb -- whose
 $jsonSchema sets additionalProperties:false, so there is nowhere for one to go --
-and nothing in phase4-verification exercised it. The /v3 write model is what
-answers this request, and it declares three.
+and nothing in the SWG probe exercised it (API-FINDINGS 1.15-1.27). The /v3
+write model is what answers this request, and it declares three.
 
 If a tenant turns out to accept `redirect`, widening this list is the whole fix,
 and the 422 the server returns until then names the field. This is the opposite
@@ -197,6 +197,15 @@ func resourceAccessPolicy() *schema.Resource {
 			"merge with them, and adopting a tenant whose policy is also edited by hand will " +
 			"delete those edits. Only one Terraform resource, in one configuration, can manage " +
 			"this policy. " +
+			"**And only one `terraform apply` at a time.** Two applies running against the " +
+			"same tenant are two writers of one array: each composes the whole list from its " +
+			"own configuration and replaces whatever is there, so whichever `POST` lands " +
+			"second wins outright and the other run's rules are gone. **Nothing reports " +
+			"this.** There is no conflict, no error, and no diff afterwards — each apply read " +
+			"a policy that was correct when it read it, and wrote a policy that was correct " +
+			"when it wrote it. Terraform's state locking does not prevent it, because the race " +
+			"is on the server rather than on state. Serialise any applies that touch this " +
+			"policy. " +
 			"**`terraform destroy` empties the policy completely.** " + accessPolicyDestroyWarning + " " +
 			"There is no partial destroy and no rule is kept: the API cannot express an empty " +
 			"`POST` (it answers `400 VALIDATION_WEB_RULES_REQUIRED`), so removing the last rule " +
@@ -891,8 +900,8 @@ func expandAccessPolicyRules(raw []interface{}) []perimeter81Sdk.AccessPolicyRul
 
 			It is how the server recognises a rule it already holds
 			(API-FINDINGS 1.17 records that the write model accepts `id`), and
-			sending it is what keeps rule ids stable across a rewrite that left
-			the rule in place -- measured in phase4-verification.
+			sending it is what keeps a rewrite from minting new ids for rules
+			that did not change (API-FINDINGS 1.27, measured).
 
 			`id` is Computed-only, so this value always comes from state, one per
 			index, and can never collide. It does follow POSITION rather than

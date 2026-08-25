@@ -93,7 +93,7 @@ const httpsInspectionRuleNameMaxRunes = 100
 
 // httpsInspectionAppliedOnValues is the `appliedOn` enum. The OpenAPI document
 // and `$defs.ruleAppliedOn` in p81-mongo-validation-schemas agree exactly, and
-// phase4-verification exercised all three against the live tenant.
+// all three were exercised against the live tenant (API-FINDINGS 1.26).
 var httpsInspectionAppliedOnValues = []string{"sites", "agents", "both"}
 
 /*
@@ -111,7 +111,7 @@ authority here:
   - RuleBypass.json sets `validationAction: "warn"`, so the stored-document
     schema LOGS a mismatch rather than rejecting the write. It cannot be what
     refuses a value.
-  - phase4-verification MEASURED `inspectNoDecrypt` reaching the application's
+  - API-FINDINGS 1.26 MEASURED `inspectNoDecrypt` reaching the application's
     own validator and coming back 422 VALIDATION_ACTION_INSPECT_NOT_ALLOWED --
     a specific, named refusal, which is a server that KNOWS the value, not one
     that has never heard of it.
@@ -183,6 +183,15 @@ func resourceHttpsInspectionPolicy() *schema.Resource {
 			"merge with them, and adopting a tenant whose policy is also edited by hand will " +
 			"delete those edits. Only one Terraform resource, in one configuration, can manage " +
 			"this policy. " +
+			"**And only one `terraform apply` at a time.** Two applies running against the " +
+			"same tenant are two writers of one array: each composes the whole list from its " +
+			"own configuration and replaces whatever is there, so whichever `POST` lands " +
+			"second wins outright and the other run's rules are gone. **Nothing reports " +
+			"this.** There is no conflict, no error, and no diff afterwards — each apply read " +
+			"a policy that was correct when it read it, and wrote a policy that was correct " +
+			"when it wrote it. Terraform's state locking does not prevent it, because the race " +
+			"is on the server rather than on state. Serialise any applies that touch this " +
+			"policy. " +
 			"**`terraform destroy` empties the policy completely.** " + httpsInspectionDestroyWarning + " " +
 			"There is no partial destroy and no rule is kept: the API cannot express an empty " +
 			"`POST` (it answers `400 VALIDATION_BYPASS_RULES_REQUIRED`), so removing the last " +
@@ -392,7 +401,7 @@ SECOND: `action = "inspectNoDecrypt"` with `applied_on` of `sites` or `both`.
 That is the ONLY part of the action/appliedOn matrix that is safe to enforce
 here, and the restriction that looks more obvious is the one that must NOT be.
 Measured on a tenant with the Inspection Policy feature DISABLED
-(phase4-verification):
+(API-FINDINGS 1.26):
 
 	bypass           + sites/agents/both  -> 200
 	inspect          + sites              -> 200
@@ -406,7 +415,7 @@ feature is enabled, so a validator encoding it would refuse, on every tenant
 forever, configuration that a feature-enabled tenant accepts -- and this provider
 cannot see the feature flag. The server's 422 is specific and names the field,
 which is exactly when letting the server answer is right. The milestone spec says
-to enforce it; the milestone spec is wrong, and phase4-verification says so.
+to enforce it; the milestone spec is wrong, and API-FINDINGS 1.26 says so.
 
 `inspectNoDecrypt` + `sites`/`both` is different in kind: the schema says it is
 "rejected on 'sites' and 'both' REGARDLESS of the feature", so no tenant can
@@ -865,8 +874,8 @@ func expandHttpsInspectionRules(raw []interface{}) []perimeter81Sdk.HttpsInspect
 
 			It is how the server recognises a rule it already holds
 			(API-FINDINGS 1.17 records that the write model accepts `id`), and
-			sending it is what keeps rule ids stable across a rewrite that left
-			the rule in place -- measured in phase4-verification.
+			sending it is what keeps a rewrite from minting new ids for rules
+			that did not change (API-FINDINGS 1.27, measured).
 
 			`id` is Computed-only, so this value always comes from state, one per
 			index, and can never collide. It does follow POSITION rather than
@@ -957,8 +966,8 @@ blocks, in the server's order.
 This is the function that decides whether the resource works. THE SERVER DOES NOT
 RETURN WHAT IT WAS SENT: an empty `sources` reads back as one typed bucket per
 legal type with an empty value, and an empty `destinations` likewise
-(API-FINDINGS 1.15, and phase4-verification W1 records that this list
-canonicalises the same way). Writing those into state as set attributes would put
+(API-FINDINGS 1.15, which records that this list canonicalises the same way,
+and 1.20 for the vocabulary and order, which are NOT the sibling's). Writing those into state as set attributes would put
 `sources { users = [] groups = [] ... }` in state against a configuration that
 has no `sources` block at all, and every plan from then on would propose a change
 to a resource nobody touched -- with an apply that never converges, because the
