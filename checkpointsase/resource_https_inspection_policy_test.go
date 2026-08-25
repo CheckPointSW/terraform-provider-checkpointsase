@@ -7,20 +7,29 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
 
 /*
-Everything in this file is offline: the servers are httptest.Servers on
-localhost and the client is newTestUserAPIClient, which pre-seeds a bearer token
-so that no test exchanges an API key. No test here makes a network call.
+This file holds BOTH tiers, and the split is by name.
+
+TestHttpsInspection* are offline: the servers are httptest.Servers on localhost
+and the client is newTestUserAPIClient, which pre-seeds a bearer token so that no
+test exchanges an API key. None of them makes a network call.
+
+TestAccCheckpointsaseHttpsInspectionPolicy* at the bottom of the file are
+ACCEPTANCE tests. They run only under TF_ACC, against a real tenant, and they
+replace that tenant's entire HTTPS-inspection policy. Read the header on
+swg_acc_check_helpers_test.go before touching them.
 
 WHERE THE FIXTURE COMES FROM, because the last resource's reviewer had to ask.
 
@@ -1655,4 +1664,364 @@ func TestHttpsInspectionUnknownBucketWarningIgnoresEmptyBuckets(t *testing.T) {
 			t.Errorf("the dropped list does not name %q: %v", fragment, got)
 		}
 	}
+}
+
+/*
+================================================================================
+ACCEPTANCE TESTS -- SHI-01 through SHI-08, SHI-N01(b) and SHI-I01.
+
+Everything above this line is offline. Everything below runs only under TF_ACC
+and REPLACES THE TENANT'S ENTIRE HTTPS-INSPECTION POLICY. The safety argument,
+the pre-check that refuses to run on a tenant with rules to lose, and the ban on
+t.Parallel() are all on swg_acc_check_helpers_test.go.
+
+Every rule these tests create is `status = "inactive"`. It keeps its position in
+the array and its place in every ordering assertion, and it is never evaluated
+against traffic -- so nothing here can change what is or is not decrypted on a
+tenant whose Internet Access happens to be switched on. The access-policy suite
+makes one exception for an unrestricted `allow`; there is no equivalently
+harmless value here, because both `bypass` and `inspect` change how real traffic
+is handled, so this file makes no exception at all.
+
+One thing these tests leave strictly alone: `cleanupBypassRuleDefaultAction`.
+The resource never sends it, so it survives every apply and every destroy. It is
+feature-gated off on the only tenant available (both values answer 422), which is
+why it is out of scope for Phase 4 rather than untested.
+================================================================================
+*/
+
+// testAccHttpsInspectionRule is one `rule` block, in configuration order. The
+// mirror of testAccAccessPolicyRule; kept separate because the two policies'
+// `action` vocabularies are different and a shared struct would invite passing
+// one resource's actions to the other's config builder.
+type testAccHttpsInspectionRule struct {
+	name      string
+	action    string
+	appliedOn string
+	status    string
+}
+
+/*
+testAccHttpsInspectionRules is the four-rule set shared by the tests below, and
+it is THE ACTION/APPLIED_ON MATRIX, measured rather than guessed.
+
+phase4-verification recorded what a tenant WITHOUT the Inspection Policy feature
+accepts:
+
+	bypass           + sites/agents/both  -> 200
+	inspect          + sites              -> 200
+	inspect          + agents             -> 422 VALIDATION_ACTION_INSPECT_NOT_ALLOWED
+	inspect          + both               -> 422 VALIDATION_ACTION_INSPECT_NOT_ALLOWED
+	inspectNoDecrypt + sites/agents/both  -> 422 VALIDATION_ACTION_INSPECT_NOT_ALLOWED
+
+So this set is the four combinations that succeed on such a tenant: `bypass`
+against all three `applied_on` values (SHI-04) plus `inspect` + `sites`
+(SHI-01). The `inspect`/`sites` pairing is here because it is the one
+combination involving `inspect` that works without the feature -- NOT because it
+is the only legal one anywhere, which is the reading SHI-N01 was corrected for.
+
+  - @param suffix string - a per-run random suffix
+
+@return []testAccHttpsInspectionRule
+*/
+func testAccHttpsInspectionRules(suffix string) []testAccHttpsInspectionRule {
+	return []testAccHttpsInspectionRule{
+		{name: "tf-acc-" + suffix + "-1-bypass-agents", action: "bypass", appliedOn: "agents", status: "inactive"},
+		{name: "tf-acc-" + suffix + "-2-bypass-sites", action: "bypass", appliedOn: "sites", status: "inactive"},
+		{name: "tf-acc-" + suffix + "-3-bypass-both", action: "bypass", appliedOn: "both", status: "inactive"},
+		{name: "tf-acc-" + suffix + "-4-inspect-sites", action: "inspect", appliedOn: "sites", status: "inactive"},
+	}
+}
+
+// testAccHttpsInspectionNames projects the rule names in order.
+func testAccHttpsInspectionNames(rules []testAccHttpsInspectionRule) []string {
+	names := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		names = append(names, rule.name)
+	}
+	return names
+}
+
+/*
+testAccHttpsInspectionConfig renders the resource with these rules, in order.
+
+No `sources` or `destinations` block is emitted, for the reason spelled out on
+testAccAccessPolicyConfig: omitting is the only way to spell "any", the server
+answers with one empty bucket per legal type, and the flattener has to drop them
+all or every plan diffs forever. This endpoint's vocabulary is its own -- four
+source types, four destination types, and no `conditions` at all -- so the buckets
+being dropped here are not the ones the access policy drops (§1.20).
+
+  - @param rules ...testAccHttpsInspectionRule - the blocks, in order
+
+@return string - HCL
+*/
+func testAccHttpsInspectionConfig(rules ...testAccHttpsInspectionRule) string {
+	var config strings.Builder
+	config.WriteString("resource \"checkpointsase_https_inspection_policy\" \"test\" {\n")
+	for _, rule := range rules {
+		fmt.Fprintf(&config, `
+  rule {
+    name       = %q
+    action     = %q
+    applied_on = %q
+    status     = %q
+  }
+`, rule.name, rule.action, rule.appliedOn, rule.status)
+	}
+	config.WriteString("}\n")
+	return config.String()
+}
+
+// testAccHttpsInspectionConfigWithDataSource adds the data source reading the
+// same policy back (SHI-07, SHI-08). The depends_on is required for the reason
+// given on testAccAccessPolicyConfigWithDataSource: the data source takes no
+// arguments, so without it Terraform may read the policy before the apply writes
+// it.
+func testAccHttpsInspectionConfigWithDataSource(rules ...testAccHttpsInspectionRule) string {
+	return testAccHttpsInspectionConfig(rules...) + `
+data "checkpointsase_https_inspection_policy" "read_back" {
+  depends_on = [checkpointsase_https_inspection_policy.test]
+}
+`
+}
+
+/*
+TestAccCheckpointsaseHttpsInspectionPolicy_basic covers SHI-01 (the `bypass` and
+`inspect` rules read back as configured, then an EMPTY re-plan), SHI-04 (all
+three `applied_on` values in one POST) and SHI-I01 (import, then no diff).
+
+The empty re-plan carries the same weight it does on the access policy and for
+the same reason (§1.15), with one addition specific to this endpoint: §1.21
+measured that `action` is absent from the read model's `required` list but is
+ALWAYS returned, because the server applies and stores its `bypass` default. A
+Required Terraform attribute reading a possibly-absent field would fold to an
+empty string and propose a change on every plan. PlanOnly is what would catch
+that; there is no offline equivalent, because a fixture is written by whoever
+believes the field is present.
+*/
+func TestAccCheckpointsaseHttpsInspectionPolicy_basic(t *testing.T) {
+	const address = "checkpointsase_https_inspection_policy.test"
+	rules := testAccHttpsInspectionRules(randStringBytesRmndr())
+	config := testAccHttpsInspectionConfig(rules...)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testAccPreCheckHttpsInspectionPolicyEmpty(t)
+		},
+		ProviderFactories: testAccProviderFactories,
+		CheckDestroy:      testAccCheckHttpsInspectionPolicyDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(address, "id", httpsInspectionPolicyResourceID),
+					resource.TestCheckResourceAttr(address, "rule.#", "4"),
+
+					// SHI-04: bypass against all three applied_on values.
+					resource.TestCheckResourceAttr(address, "rule.0.name", rules[0].name),
+					resource.TestCheckResourceAttr(address, "rule.0.action", "bypass"),
+					resource.TestCheckResourceAttr(address, "rule.0.applied_on", "agents"),
+					resource.TestCheckResourceAttr(address, "rule.0.status", "inactive"),
+					resource.TestCheckResourceAttr(address, "rule.1.action", "bypass"),
+					resource.TestCheckResourceAttr(address, "rule.1.applied_on", "sites"),
+					resource.TestCheckResourceAttr(address, "rule.2.action", "bypass"),
+					resource.TestCheckResourceAttr(address, "rule.2.applied_on", "both"),
+
+					// SHI-01: the one inspect combination a tenant without the
+					// Inspection Policy feature accepts.
+					resource.TestCheckResourceAttr(address, "rule.3.name", rules[3].name),
+					resource.TestCheckResourceAttr(address, "rule.3.action", "inspect"),
+					resource.TestCheckResourceAttr(address, "rule.3.applied_on", "sites"),
+
+					// §1.15/§1.20: this endpoint's own empty buckets, all dropped.
+					// There is no `conditions` attribute on this resource at all.
+					resource.TestCheckResourceAttr(address, "rule.0.sources.#", "0"),
+					resource.TestCheckResourceAttr(address, "rule.0.destinations.#", "0"),
+					resource.TestCheckResourceAttr(address, "rule.3.sources.#", "0"),
+					resource.TestCheckResourceAttr(address, "rule.3.destinations.#", "0"),
+
+					resource.TestCheckResourceAttrSet(address, "rule.0.id"),
+					resource.TestCheckResourceAttrSet(address, "rule.3.id"),
+					testAccCheckRulePrioritiesDescend(address),
+				),
+			},
+			// SHI-01's second half.
+			{
+				Config:   config,
+				PlanOnly: true,
+			},
+			// SHI-I01.
+			{
+				ResourceName:      address,
+				ImportState:       true,
+				ImportStateId:     httpsInspectionPolicyResourceID,
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+/*
+TestAccCheckpointsaseHttpsInspectionPolicy_orderIsConfigurationOrder covers
+SHI-08 and SHI-07 -- the mirror of the access policy's ordering row, and the
+reasoning is identical: read the long comment on
+TestAccCheckpointsaseAccessPolicy_orderIsConfigurationOrder.
+
+Both directions are asserted, the resource's own state and an independent read
+through the data source. The data source's rule shape is NOT the access policy
+data source's -- different source and destination vocabularies, no `conditions`,
+and none of `className`/`objectId`/`fromDefault` (§1.20) -- which is why this row
+exists separately rather than being assumed to follow from SAP-08.
+*/
+func TestAccCheckpointsaseHttpsInspectionPolicy_orderIsConfigurationOrder(t *testing.T) {
+	const (
+		address    = "checkpointsase_https_inspection_policy.test"
+		dataSource = "data.checkpointsase_https_inspection_policy.read_back"
+	)
+	rules := testAccHttpsInspectionRules(randStringBytesRmndr())
+	names := testAccHttpsInspectionNames(rules)
+	config := testAccHttpsInspectionConfigWithDataSource(rules...)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testAccPreCheckHttpsInspectionPolicyEmpty(t)
+		},
+		ProviderFactories: testAccProviderFactories,
+		CheckDestroy:      testAccCheckHttpsInspectionPolicyDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckRuleNamesInOrder(address, names...),
+					testAccCheckRulePrioritiesDescend(address),
+
+					testAccCheckRuleNamesInOrder(dataSource, names...),
+					testAccCheckRulePrioritiesDescend(dataSource),
+					resource.TestCheckResourceAttr(dataSource, "id", httpsInspectionPolicyDataSourceID),
+					testAccCheckControlledBySurfaced(dataSource),
+					resource.TestCheckResourceAttr(dataSource, "rule.0.sources.#", "0"),
+					resource.TestCheckResourceAttr(dataSource, "rule.0.destinations.#", "0"),
+				),
+			},
+			{
+				Config:   config,
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+/*
+TestAccCheckpointsaseHttpsInspectionPolicy_serverRefusesInspectOnAgents covers
+SHI-N01 case (b), AND IT IS THE ONLY ROW IN THIS SUITE WHOSE POINT IS THAT THE
+PROVIDER DOES NOT VALIDATE SOMETHING.
+
+`inspect` + `agents` is legal on a tenant with the Inspection Policy feature
+enabled and refused on one without it. The provider cannot see that flag, so
+rejecting the combination at plan time would refuse configuration that works --
+the same mistake as the group-name pattern in Phase 3, where a validator correct
+on the development tenant was wrong everywhere else. The cross-field validator
+therefore refuses only the part that is unconditional (`inspectNoDecrypt` with
+`sites` or `both`, pinned offline by
+TestHttpsInspectionRejectsInspectNoDecryptOnSitesAndBoth) and lets the server
+answer this one.
+
+So the assertion is: the apply reaches the API and comes back with the SERVER'S
+diagnostic. The regexp matches `VALIDATION_ACTION_INSPECT_NOT_ALLOWED`, which is
+the token the server sends and which appendErrorDiags surfaces from the response
+body -- if this test ever fails because the message arrived as a bare
+`422 Unprocessable Entity`, the defect is in the diagnostic plumbing, not here.
+
+THE TOKEN ALONE DOES NOT PROVE THE SERVER ANSWERED, and it is worth being
+explicit about why this test does not try to make it. That same string appears in
+the PLAN-TIME validator's message for the combination that IS unconditionally
+illegal (`inspectNoDecrypt` with `sites`/`both`), so a future validator copying
+that wording could satisfy this regexp without a request ever leaving. What rules
+that out is the offline row next door:
+TestHttpsInspectionAdmitsTheFeatureGatedCombinations asserts `inspect` + `agents`
+PLANS CLEANLY, and it fails the moment anyone adds a validator that would refuse
+it. The two together are the complete assertion -- we do not reject it, and the
+server does -- and neither half is sufficient alone. Matching on the write path's
+diagnostic summary as well was considered and rejected: it would pin this test to
+Terraform's error-rendering layout, which is not what the row is about.
+
+ON A TENANT THAT HAS THE INSPECTION POLICY FEATURE THIS TEST WILL FAIL, because
+the apply will succeed. That is correct and is the point of the row: the failure
+would be telling you the tenant's capabilities changed, not that the provider
+did. The comment is here so whoever sees it does not "fix" it by adding a
+plan-time validator.
+
+IT IS SAFE ON FAILURE EITHER WAY. The configuration holds exactly one rule, so
+there is no partial write to leave behind: the POST replaces the whole array or
+does nothing. If the apply unexpectedly succeeds, the harness still destroys and
+CheckDestroy still asserts the policy is empty.
+*/
+func TestAccCheckpointsaseHttpsInspectionPolicy_serverRefusesInspectOnAgents(t *testing.T) {
+	suffix := randStringBytesRmndr()
+	refused := testAccHttpsInspectionRule{
+		name:      "tf-acc-" + suffix + "-inspect-agents",
+		action:    "inspect",
+		appliedOn: "agents",
+		status:    "inactive",
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testAccPreCheckHttpsInspectionPolicyEmpty(t)
+		},
+		ProviderFactories: testAccProviderFactories,
+		CheckDestroy:      testAccCheckHttpsInspectionPolicyDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config:      testAccHttpsInspectionConfig(refused),
+				ExpectError: regexp.MustCompile(`VALIDATION_ACTION_INSPECT_NOT_ALLOWED`),
+			},
+		},
+	})
+}
+
+/*
+TestAccCheckpointsaseHttpsInspectionPolicy_destroyClearsTheWholePolicy covers
+SHI-05: a policy holding exactly one rule, destroyed.
+
+The §1.18 argument is the access policy's, with this endpoint's error string:
+POST of an empty array is `400 VALIDATION_BYPASS_RULES_REQUIRED`, so DELETE is
+the only route to an empty policy and `rule = []` is refused at plan time
+(SHI-N04). Destroy is the only way to get there, which makes this the suite's
+only live exercise of DELETE /v3/ia/https-inspection/policy.
+
+WHAT IS DELIBERATELY NOT ASSERTED is the consequence for traffic. The API
+documents only the mechanical effect -- "Delete all HTTPS Inspection policy
+rules" -- and says nothing about what happens to traffic those rules were
+excluding from inspection, which is decided by the tenant's own settings
+including the cleanup-rule default action this provider does not manage.
+Reproducing the API's silence is the honest option. The access policy's endpoint
+does state its consequence, and SAP-05 quotes it; this one does not.
+*/
+func TestAccCheckpointsaseHttpsInspectionPolicy_destroyClearsTheWholePolicy(t *testing.T) {
+	const address = "checkpointsase_https_inspection_policy.test"
+	only := testAccHttpsInspectionRules(randStringBytesRmndr())[0]
+
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testAccPreCheckHttpsInspectionPolicyEmpty(t)
+		},
+		ProviderFactories: testAccProviderFactories,
+		CheckDestroy:      testAccCheckHttpsInspectionPolicyDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccHttpsInspectionConfig(only),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(address, "rule.#", "1"),
+					resource.TestCheckResourceAttr(address, "rule.0.name", only.name),
+					resource.TestCheckResourceAttr(address, "rule.0.priority", "0"),
+				),
+			},
+		},
+	})
 }

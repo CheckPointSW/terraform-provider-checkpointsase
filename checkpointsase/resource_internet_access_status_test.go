@@ -3,21 +3,32 @@ package checkpointsase
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
 
 /*
-Everything in this file is offline. The servers are httptest.Servers on
+This file holds BOTH tiers, and the split is by name.
+
+TestInternetAccessStatus* are offline. The servers are httptest.Servers on
 localhost and the client is newTestUserAPIClient, which pre-seeds a bearer token
-so no test exchanges an API key. No test here makes a network call.
+so no test exchanges an API key. None of them makes a network call.
+
+TestAccCheckpointsaseInternetAccessStatus_flipsAndRestores at the bottom of the
+file is an ACCEPTANCE test, and it is the most dangerous test in this provider:
+it switches Internet Access, Threat Prevention and DLP on or off for a whole
+tenant. Read its comment and testAccRestoreInternetAccessStatus in
+swg_acc_check_helpers_test.go before touching it.
 
 The two response fixtures below are the reason this file has more read tests than
 a one-field resource would seem to need. The two authorities available disagree
@@ -514,4 +525,201 @@ func TestInternetAccessStatusImportFailsLoudlyWhenTheReadFails(t *testing.T) {
 		t.Fatal("import succeeded over a failed read; it must report the error rather than " +
 			"adopting a setting it never saw")
 	}
+}
+
+/*
+================================================================================
+ACCEPTANCE TEST -- SIA-01, SIA-02, SIA-05 and the live half of SIA-06.
+
+ONE test, not four, and that is deliberate. Every step below changes the tenant's
+Internet Access, Threat Prevention and DLP enforcement, so the fewer independent
+entry points there are into that, the fewer places a restore can be forgotten.
+
+The rows are covered as steps of a single sequence that starts at the tenant's
+current value, flips it, and comes back -- with a t.Cleanup underneath that puts
+it back however the test ends.
+================================================================================
+*/
+
+// testAccInternetAccessStatusConfig renders the singleton with one value.
+func testAccInternetAccessStatusConfig(status string) string {
+	return fmt.Sprintf(`
+resource "checkpointsase_internet_access_status" "test" {
+  ia_status = %q
+}
+`, status)
+}
+
+/*
+testAccCheckInternetAccessStatusUnchangedByDestroy is SIA-06's live half.
+
+The offline test TestInternetAccessStatusDeleteMakesNoRequest already pins that
+Delete issues zero requests, by counting them against an httptest server. What it
+cannot show is the consequence: that the tenant's value is still whatever was
+last applied once Terraform has stopped managing it. This does, and it does it
+without hardcoding a value.
+
+It compares the LIVE value against the value Terraform held in state immediately
+before the destroy -- CheckDestroy receives the pre-destroy state
+(testing_new.go:32), so `ia_status` there is exactly what the last successful
+apply wrote. Comparing against that rather than against the test's `original`
+keeps this assertion about Delete's behaviour even when an earlier step failed
+and left the tenant flipped; restoring in that case is t.Cleanup's job, not this
+function's, and having both try would produce two confusing failures for one
+cause.
+
+  - @param s *terraform.State - the pre-destroy state
+
+@return error
+*/
+func testAccCheckInternetAccessStatusUnchangedByDestroy(s *terraform.State) error {
+	for _, rs := range s.RootModule().Resources {
+		if rs.Type != "checkpointsase_internet_access_status" {
+			continue
+		}
+		want := rs.Primary.Attributes["ia_status"]
+		if want == "" {
+			return fmt.Errorf("the pre-destroy state holds no ia_status, so there is nothing " +
+				"to compare the tenant against")
+		}
+		got, err := readInternetAccessStatus(context.Background(), testAccEnvClient())
+		if err != nil {
+			return fmt.Errorf("reading the tenant's Internet Access status after destroy: %w", err)
+		}
+		if got != want {
+			return fmt.Errorf("the tenant's ia_status is %q after destroy but was %q before it: "+
+				"destroying this resource CHANGED the tenant's %s enforcement. Delete must make "+
+				"no API call at all",
+				got, want, internetAccessStatusScope)
+		}
+	}
+	return nil
+}
+
+/*
+TestAccCheckpointsaseInternetAccessStatus_flipsAndRestores covers SIA-01
+(apply the current value, then an empty re-plan), SIA-02 (flip to the opposite
+value, in place), SIA-05 (import with the constant id, then an empty plan) and
+the live half of SIA-06 (destroy changes nothing).
+
+WHAT THIS TEST DOES TO THE TENANT, stated plainly, because no other test in this
+provider does anything comparable: step 3 flips `ia_status`. If the tenant is
+`inactive` that ENABLES Internet Access, Threat Prevention and DLP; if it is
+`active` that DISABLES all three. Step 5 flips it back, and the t.Cleanup
+registered before the first step flips it back again if any step fails before
+step 5 runs.
+
+FOUR THINGS MAKE THAT SAFE, and all four matter:
+
+ 1. THE ORIGINAL VALUE IS READ, NEVER ASSUMED. The tenant this was written
+    against is `inactive`, but nothing here hardcodes that; the restore target is
+    whatever the tenant actually reported before the first apply. A test that
+    assumed `inactive` would switch off three security features on a tenant that
+    had them on, and would report a pass for doing it.
+
+ 2. THE RESTORE IS A t.Cleanup, NOT A FINAL STEP. Cleanups run when the test
+    fails, when it calls t.Fatal, and while a panic is unwinding -- which is
+    precisely the set of cases where a final step does not. Destroy cannot serve
+    as the restore either: this resource's Delete deliberately makes NO API call
+    (SIA-06), so `terraform destroy` leaves the flipped value in force.
+
+ 3. THE RESTORE VERIFIES ITSELF and calls t.Errorf naming the value to set by
+    hand if it cannot. A silently failed restore is worse than none, because
+    nobody would have a reason to look.
+
+ 4. THE TEST FLIPS BACK ON THE HAPPY PATH TOO (step 5), so the cleanup is a
+    safety net rather than the mechanism. That keeps the tenant correct even in
+    the one case a cleanup cannot cover -- the process being killed between the
+    last step and the cleanup.
+
+Step 2 and step 4 are the pair that earns the whole test. Both are PlanOnly, and
+they are the only live evidence that Read decodes the response at all: §1.22
+measured GET /v3/ia/status as ENVELOPED while the OpenAPI document declares it
+flat, so a reader trusting the document gets an empty string from a healthy 200
+and writes it into a Required attribute -- which plans a change to the tenant's
+security posture on every run. That failure is invisible to a fixture-driven
+test, because the fixture is written by whoever chose the shape. It is visible
+here as a non-empty plan.
+
+Step 4 exists separately from step 2 because they check different things: step 2
+proves the read decodes the value the tenant already had, step 4 proves it
+decodes the value this test just wrote.
+*/
+func TestAccCheckpointsaseInternetAccessStatus_flipsAndRestores(t *testing.T) {
+	const address = "checkpointsase_internet_access_status.test"
+
+	/*
+		resource.Test does the TF_ACC skip itself, but not until after this
+		function has built its TestCase -- and this test has to READ the tenant
+		before it can say what its configuration is, because the first step
+		applies the tenant's CURRENT value. So the skip is duplicated here,
+		ahead of the read, and it must stay ahead of it: without it the offline
+		suite would make a network call from a file whose other tests are all
+		httptest.
+	*/
+	if os.Getenv(resource.EnvTfAcc) == "" {
+		t.Skipf("Acceptance tests skipped unless %s set. This one switches %s on or off for "+
+			"the whole tenant.", resource.EnvTfAcc, internetAccessStatusScope)
+	}
+	testAccPreCheck(t)
+
+	original := testAccReadInternetAccessStatus(t)
+	opposite := testAccOppositeInternetAccessStatus(t, original)
+
+	// Registered BEFORE the first apply, so it covers every failure from here on.
+	t.Cleanup(func() { testAccRestoreInternetAccessStatus(t, original) })
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviderFactories,
+		CheckDestroy:      testAccCheckInternetAccessStatusUnchangedByDestroy,
+		Steps: []resource.TestStep{
+			// SIA-01: adopt the tenant's current value. This step changes
+			// nothing on the tenant -- it writes back what is already there.
+			{
+				Config: testAccInternetAccessStatusConfig(original),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(address, "id", internetAccessStatusResourceID),
+					resource.TestCheckResourceAttr(address, "ia_status", original),
+				),
+			},
+			// SIA-01's second half, and the §1.22 assertion.
+			{
+				Config:   testAccInternetAccessStatusConfig(original),
+				PlanOnly: true,
+			},
+			// SIA-02: the flip. In place via POST -- nothing here is ForceNew,
+			// and Create and Update are the same function.
+			{
+				Config: testAccInternetAccessStatusConfig(opposite),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(address, "id", internetAccessStatusResourceID),
+					resource.TestCheckResourceAttr(address, "ia_status", opposite),
+				),
+			},
+			// The flipped value survives a refresh, which is what proves the
+			// POST persisted rather than only updating state.
+			{
+				Config:   testAccInternetAccessStatusConfig(opposite),
+				PlanOnly: true,
+			},
+			// Back to where the tenant started, on the happy path. The cleanup
+			// is the net; this is the mechanism.
+			{
+				Config: testAccInternetAccessStatusConfig(original),
+				Check:  resource.TestCheckResourceAttr(address, "ia_status", original),
+			},
+			// SIA-05: import with the constant id. Import only READS, so it
+			// cannot change the tenant's enforcement -- but the first apply
+			// after one can, which is why the resource description says to read
+			// the plan. ImportStateId is given explicitly to pin the documented
+			// command rather than defaulting to the resource's own id.
+			{
+				ResourceName:      address,
+				ImportState:       true,
+				ImportStateId:     internetAccessStatusResourceID,
+				ImportStateVerify: true,
+			},
+		},
+	})
 }

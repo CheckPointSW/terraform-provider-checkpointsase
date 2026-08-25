@@ -18,18 +18,31 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
 
 /*
-Everything in this file is offline: the servers are httptest.Servers on
-localhost and the client is newTestUserAPIClient, which pre-seeds a bearer token
-so that no test exchanges an API key. No test here makes a network call.
+This file holds BOTH tiers, and the split is by name.
 
-The fixture below is the one thing worth reading before the tests. It is the
-CANONICALISED form -- what the server returns, not what a client sends -- because
-that difference is the whole design problem this resource has.
+TestSwgAccessPolicy* are offline: the servers are httptest.Servers on localhost
+and the client is newTestUserAPIClient, which pre-seeds a bearer token so that no
+test exchanges an API key. None of them makes a network call.
+
+TestAccCheckpointsaseAccessPolicy* at the bottom of the file are ACCEPTANCE
+tests. They run only under TF_ACC, against a real tenant, and they replace that
+tenant's entire web access policy. Read the header on
+swg_acc_check_helpers_test.go before touching them.
+
+The offline prefix used to be TestAccessPolicy*, which `go test -run TestAcc`
+matches. Twenty-one tests that never touch the API answered a filter meaning
+"show me the acceptance coverage", and that is precisely why nobody noticed there
+was none. The prefix now means what it says.
+
+The fixture below is the one thing worth reading before the offline tests. It is
+the CANONICALISED form -- what the server returns, not what a client sends --
+because that difference is the whole design problem this resource has.
 */
 
 /*
@@ -177,7 +190,7 @@ func accessPolicyRulesFromBody(t *testing.T, body string) []interface{} {
 // ---------------------------------------------------------------------------
 
 /*
-TestAccessPolicyRuleListIsOrderedNotASet is the smallest test in this file and
+TestSwgAccessPolicyRuleListIsOrderedNotASet is the smallest test in this file and
 guards the largest mistake.
 
 `rule` must be a TypeList. A TypeSet stores elements by hash, so the order the
@@ -188,9 +201,9 @@ precedence, so that is not a cosmetic difference; it is which rule wins.
 
 Asserted directly on the schema rather than only through behaviour, because a
 behavioural test can pass by luck when a set's iteration order happens to match.
-TestAccessPolicyWritePreservesConfigurationOrder is the behavioural half.
+TestSwgAccessPolicyWritePreservesConfigurationOrder is the behavioural half.
 */
-func TestAccessPolicyRuleListIsOrderedNotASet(t *testing.T) {
+func TestSwgAccessPolicyRuleListIsOrderedNotASet(t *testing.T) {
 	rule := resourceAccessPolicy().Schema["rule"]
 
 	if rule.Type != schema.TypeList {
@@ -205,7 +218,7 @@ func TestAccessPolicyRuleListIsOrderedNotASet(t *testing.T) {
 }
 
 /*
-TestAccessPolicyWritePreservesConfigurationOrder is the behavioural half: it
+TestSwgAccessPolicyWritePreservesConfigurationOrder is the behavioural half: it
 drives the real write path and reads the array that actually went out.
 
 Three things are asserted on one request, because they are one property seen from
@@ -218,7 +231,7 @@ three angles:
   - exactly one POST is issued, followed by exactly one GET. An extra call on
     this endpoint family is how a tenant's policy gets deleted.
 */
-func TestAccessPolicyWritePreservesConfigurationOrder(t *testing.T) {
+func TestSwgAccessPolicyWritePreservesConfigurationOrder(t *testing.T) {
 	log := &requestLog{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.record(r)
@@ -272,7 +285,7 @@ func TestAccessPolicyWritePreservesConfigurationOrder(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 /*
-TestAccessPolicyFlattenDropsTheServerEmptyBuckets covers the single most likely
+TestSwgAccessPolicyFlattenDropsTheServerEmptyBuckets covers the single most likely
 defect in this resource, at the level where the cause is legible.
 
 The server answers an empty sources/destinations/conditions by EXPANDING it into
@@ -282,10 +295,10 @@ in state against a configuration with no sources block at all -- and then every
 plan proposes a change to a resource nobody touched, forever, with an apply that
 cannot converge because the next read produces the same thing again.
 
-TestAccessPolicyReadProducesNoPermanentDiff proves the consequence; this proves
+TestSwgAccessPolicyReadProducesNoPermanentDiff proves the consequence; this proves
 the mechanism, so a failure says which of the three flatteners is wrong.
 */
-func TestAccessPolicyFlattenDropsTheServerEmptyBuckets(t *testing.T) {
+func TestSwgAccessPolicyFlattenDropsTheServerEmptyBuckets(t *testing.T) {
 	rules := accessPolicyRulesFromBody(t, accessPolicyProbeBody)
 	if len(rules) != 3 {
 		t.Fatalf("flattened %d rules, want 3", len(rules))
@@ -376,7 +389,7 @@ func destinationBlock(t *testing.T, rule map[string]interface{}) map[string]inte
 }
 
 /*
-TestAccessPolicyReadProducesNoPermanentDiff reproduces a whole refresh and then
+TestSwgAccessPolicyReadProducesNoPermanentDiff reproduces a whole refresh and then
 plans the original configuration against the state it produced.
 
 This is the test that matters most in practice. It takes the body the probe
@@ -386,7 +399,7 @@ resource that does not read back what it writes shows a diff here -- which in a
 real run is a diff on every plan, for every rule, with an apply that never
 converges.
 */
-func TestAccessPolicyReadProducesNoPermanentDiff(t *testing.T) {
+func TestSwgAccessPolicyReadProducesNoPermanentDiff(t *testing.T) {
 	r := resourceAccessPolicy()
 	d := schema.TestResourceDataRaw(t, r.Schema, map[string]interface{}{})
 	d.SetId(accessPolicyResourceID)
@@ -427,7 +440,7 @@ func TestAccessPolicyReadProducesNoPermanentDiff(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 /*
-TestAccessPolicyWriteSendsNeitherRefusedFieldsNorNullArrays pins the two ways a
+TestSwgAccessPolicyWriteSendsNeitherRefusedFieldsNorNullArrays pins the two ways a
 POST built from a previous read gets rejected.
 
 className, fromDefault and objectId are returned on a read and refused on a
@@ -440,7 +453,7 @@ down, and misread as exactly that when it was first measured.
 The assertion is on the serialised bytes because both problems only exist on the
 wire.
 */
-func TestAccessPolicyWriteSendsNeitherRefusedFieldsNorNullArrays(t *testing.T) {
+func TestSwgAccessPolicyWriteSendsNeitherRefusedFieldsNorNullArrays(t *testing.T) {
 	log := &requestLog{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.record(r)
@@ -473,7 +486,7 @@ func TestAccessPolicyWriteSendsNeitherRefusedFieldsNorNullArrays(t *testing.T) {
 }
 
 /*
-TestAccessPolicyExpandOmitsEmptyBuckets covers the write side of the same
+TestSwgAccessPolicyExpandOmitsEmptyBuckets covers the write side of the same
 normalisation the flattener does on the read side.
 
 A bucket with no members is omitted rather than sent with an empty value: both
@@ -486,7 +499,7 @@ keeps the two halves symmetrical.
 A rule that restricts nothing therefore sends empty arrays, which API-FINDINGS
 1.15 measured as accepted and is the form the server canonicalises FROM.
 */
-func TestAccessPolicyExpandOmitsEmptyBuckets(t *testing.T) {
+func TestSwgAccessPolicyExpandOmitsEmptyBuckets(t *testing.T) {
 	d := schema.TestResourceDataRaw(t, resourceAccessPolicy().Schema, accessPolicyProbeConfig())
 	rules := expandAccessPolicyRules(d.Get("rule").([]interface{}))
 
@@ -549,7 +562,7 @@ func TestAccessPolicyExpandOmitsEmptyBuckets(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 /*
-TestAccessPolicyEmptyRuleListIsRejectedAtPlanTime pins MinItems on `rule`.
+TestSwgAccessPolicyEmptyRuleListIsRejectedAtPlanTime pins MinItems on `rule`.
 
 POST with an empty array answers 400 VALIDATION_WEB_RULES_REQUIRED
 (API-FINDINGS 1.18), so an empty list can never succeed and there is no reason to
@@ -563,7 +576,7 @@ Terraform's config shim drops an empty list before validation sees it. The
 resource needs both, and this test would pass with only one of them if it checked
 only one.
 */
-func TestAccessPolicyEmptyRuleListIsRejectedAtPlanTime(t *testing.T) {
+func TestSwgAccessPolicyEmptyRuleListIsRejectedAtPlanTime(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		config map[string]interface{}
@@ -590,7 +603,7 @@ func TestAccessPolicyEmptyRuleListIsRejectedAtPlanTime(t *testing.T) {
 }
 
 /*
-TestAccessPolicyRejectsValuesTheServerRejects covers the enum and format checks
+TestSwgAccessPolicyRejectsValuesTheServerRejects covers the enum and format checks
 that are safe to make at plan time -- meaning the ones where the API contract and
 the stored-document schema agree, so the answer cannot be tenant-dependent.
 
@@ -599,7 +612,7 @@ Deliberately NOT covered, and this is the point of naming the test this way: the
 p81-mongo-validation-schemas' shared SWGAction enum has four. See
 accessPolicyActionValues for that argument.
 */
-func TestAccessPolicyRejectsValuesTheServerRejects(t *testing.T) {
+func TestSwgAccessPolicyRejectsValuesTheServerRejects(t *testing.T) {
 	valid := func(overrides map[string]interface{}) map[string]interface{} {
 		rule := map[string]interface{}{
 			"name": "ok", "applied_on": "both", "action": "block", "status": "active",
@@ -653,7 +666,7 @@ func TestAccessPolicyRejectsValuesTheServerRejects(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 /*
-TestAccessPolicyCreateAndUpdateAreOneFunction pins that there is no second write
+TestSwgAccessPolicyCreateAndUpdateAreOneFunction pins that there is no second write
 path.
 
 The endpoint has no partial update: POST replaces the whole array, so creating
@@ -662,7 +675,7 @@ would be two copies of one call, and the only thing that could ever differ
 between them is a bug -- most likely one that appends instead of replacing, which
 on this endpoint doubles the tenant's policy.
 */
-func TestAccessPolicyCreateAndUpdateAreOneFunction(t *testing.T) {
+func TestSwgAccessPolicyCreateAndUpdateAreOneFunction(t *testing.T) {
 	r := resourceAccessPolicy()
 	if r.CreateContext == nil || r.UpdateContext == nil {
 		t.Fatal("the resource must have both a CreateContext and an UpdateContext")
@@ -677,7 +690,7 @@ func TestAccessPolicyCreateAndUpdateAreOneFunction(t *testing.T) {
 }
 
 /*
-TestAccessPolicyIDAndPriorityAreComputedOnly pins that neither server-assigned
+TestSwgAccessPolicyIDAndPriorityAreComputedOnly pins that neither server-assigned
 field can be written.
 
 Both are assigned by the server, and `priority` is not merely overwritten but
@@ -686,7 +699,7 @@ DISCARDED: a rule created with priority 1 reads back as priority 0
 HCL, see it accepted at plan time, and get something else -- with no error and no
 diff, because the read overwrites it.
 */
-func TestAccessPolicyIDAndPriorityAreComputedOnly(t *testing.T) {
+func TestSwgAccessPolicyIDAndPriorityAreComputedOnly(t *testing.T) {
 	rule := resourceAccessPolicy().Schema["rule"].Elem.(*schema.Resource)
 	for _, name := range []string{"id", "priority"} {
 		attr := rule.Schema[name]
@@ -702,7 +715,7 @@ func TestAccessPolicyIDAndPriorityAreComputedOnly(t *testing.T) {
 }
 
 /*
-TestAccessPolicyDescriptionStatesWhatDestroyAndApplyDo is a documentation test,
+TestSwgAccessPolicyDescriptionStatesWhatDestroyAndApplyDo is a documentation test,
 and it is here because the two facts it checks are the two that surprise people,
 and neither is visible from the configuration.
 
@@ -717,7 +730,7 @@ an evaluation order. Which end of the list wins has not been measured, and a
 resource that guesses would be telling users their new rule is safe when it might
 pre-empt everything.
 */
-func TestAccessPolicyDescriptionStatesWhatDestroyAndApplyDo(t *testing.T) {
+func TestSwgAccessPolicyDescriptionStatesWhatDestroyAndApplyDo(t *testing.T) {
 	description := resourceAccessPolicy().Description
 
 	for _, fragment := range []string{
@@ -783,7 +796,7 @@ func TestAccessPolicyDescriptionStatesWhatDestroyAndApplyDo(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 /*
-TestAccessPolicyDeleteIssuesTheEndpointDeleteAndNothingElse pins the one
+TestSwgAccessPolicyDeleteIssuesTheEndpointDeleteAndNothingElse pins the one
 destructive call in this resource.
 
 It is unguarded on purpose: this resource owns the whole policy, so destroying it
@@ -793,7 +806,7 @@ assertion is on the whole request list rather than the last request, because a
 guard that inspects only the final call cannot see an extra one, and an extra
 call on this endpoint is a deleted tenant policy.
 */
-func TestAccessPolicyDeleteIssuesTheEndpointDeleteAndNothingElse(t *testing.T) {
+func TestSwgAccessPolicyDeleteIssuesTheEndpointDeleteAndNothingElse(t *testing.T) {
 	log := &requestLog{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.record(r)
@@ -821,12 +834,12 @@ func TestAccessPolicyDeleteIssuesTheEndpointDeleteAndNothingElse(t *testing.T) {
 }
 
 /*
-TestAccessPolicyDeleteKeepsTheIDWhenTheServerRefuses is the other half. A failed
+TestSwgAccessPolicyDeleteKeepsTheIDWhenTheServerRefuses is the other half. A failed
 DELETE must leave the resource in state: clearing the id would tell Terraform the
 policy is gone while the tenant is still enforcing every rule in it, and nothing
 would then be tracking them.
 */
-func TestAccessPolicyDeleteKeepsTheIDWhenTheServerRefuses(t *testing.T) {
+func TestSwgAccessPolicyDeleteKeepsTheIDWhenTheServerRefuses(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
@@ -848,7 +861,7 @@ func TestAccessPolicyDeleteKeepsTheIDWhenTheServerRefuses(t *testing.T) {
 }
 
 /*
-TestAccessPolicyReadReportsAnErrorRatherThanAnEmptyPolicy is the Phase 3 lesson
+TestSwgAccessPolicyReadReportsAnErrorRatherThanAnEmptyPolicy is the Phase 3 lesson
 applied at the resource level.
 
 policy_list_test.go pins it on the read closure; this pins it on the function
@@ -863,7 +876,7 @@ The empty-but-real case is asserted in the same test, because the two must be
 distinguishable and a resource that errors on both would be just as wrong in the
 other direction: an empty policy is a legitimate state.
 */
-func TestAccessPolicyReadReportsAnErrorRatherThanAnEmptyPolicy(t *testing.T) {
+func TestSwgAccessPolicyReadReportsAnErrorRatherThanAnEmptyPolicy(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		status    int
@@ -920,12 +933,12 @@ func TestAccessPolicyReadReportsAnErrorRatherThanAnEmptyPolicy(t *testing.T) {
 }
 
 /*
-TestAccessPolicyImportAdoptsTheTenantPolicy covers the import path, including the
+TestSwgAccessPolicyImportAdoptsTheTenantPolicy covers the import path, including the
 part that is easy to get wrong: the id a user types is ignored, and the stored id
 is the constant, so an imported resource is byte-identical in state to a created
 one.
 */
-func TestAccessPolicyImportAdoptsTheTenantPolicy(t *testing.T) {
+func TestSwgAccessPolicyImportAdoptsTheTenantPolicy(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(accessPolicyProbeBody))
@@ -953,12 +966,12 @@ func TestAccessPolicyImportAdoptsTheTenantPolicy(t *testing.T) {
 }
 
 /*
-TestAccessPolicyImportFailsLoudlyWhenTheReadFails pins that a failed import is an
+TestSwgAccessPolicyImportFailsLoudlyWhenTheReadFails pins that a failed import is an
 error rather than an empty resource. Importing a policy as "no rules" and then
 applying would replace the tenant's real policy with whatever the configuration
 happened to say, without anyone having seen the real one.
 */
-func TestAccessPolicyImportFailsLoudlyWhenTheReadFails(t *testing.T) {
+func TestSwgAccessPolicyImportFailsLoudlyWhenTheReadFails(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
@@ -979,7 +992,7 @@ func TestAccessPolicyImportFailsLoudlyWhenTheReadFails(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 /*
-TestAccessPolicyEmptyEndpointBlockIsRefusedAtPlanTime covers the trap the schema
+TestSwgAccessPolicyEmptyEndpointBlockIsRefusedAtPlanTime covers the trap the schema
 descriptions used to recommend.
 
 An unrestricted rule comes back from the server as empty buckets, which the
@@ -999,7 +1012,7 @@ The guard turns it into a plan-time error naming the block. When the guard is
 removed this test does not merely fail -- it PRINTS the perpetual diff, so the
 failure output is the evidence rather than a claim about it.
 */
-func TestAccessPolicyEmptyEndpointBlockIsRefusedAtPlanTime(t *testing.T) {
+func TestSwgAccessPolicyEmptyEndpointBlockIsRefusedAtPlanTime(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		rule   map[string]interface{}
@@ -1079,7 +1092,7 @@ func TestAccessPolicyEmptyEndpointBlockIsRefusedAtPlanTime(t *testing.T) {
 }
 
 /*
-TestAccessPolicyPopulatedEndpointBlockStillPlans is the control for the guard
+TestSwgAccessPolicyPopulatedEndpointBlockStillPlans is the control for the guard
 above, and it is the half that matters more.
 
 A guard that refuses empty blocks is trivial to write in a form that also refuses
@@ -1093,7 +1106,7 @@ reads as an empty set during plan, indistinguishable from an empty block. A guar
 without the NewValueKnown check refuses every rule that references a resource
 created in the same apply.
 */
-func TestAccessPolicyPopulatedEndpointBlockStillPlans(t *testing.T) {
+func TestSwgAccessPolicyPopulatedEndpointBlockStillPlans(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		rule map[string]interface{}
@@ -1140,7 +1153,7 @@ const hcl2ValueNotYetKnown = "74D93920-ED26-11E3-AC10-0800200C9A66"
 // ---------------------------------------------------------------------------
 
 /*
-TestAccessPolicyReadIsInsensitiveToCollectionOrder is the answer to the one
+TestSwgAccessPolicyReadIsInsensitiveToCollectionOrder is the answer to the one
 assumption the first version of this resource made and never checked.
 
 `rule` is ordered, because array position IS rule precedence (API-FINDINGS 1.16).
@@ -1158,7 +1171,7 @@ This test hands the flattener a response whose every collection is in a DIFFEREN
 order from the configuration, and asks for a plan. Sets make it empty. Lists make
 every element a diff.
 */
-func TestAccessPolicyReadIsInsensitiveToCollectionOrder(t *testing.T) {
+func TestSwgAccessPolicyReadIsInsensitiveToCollectionOrder(t *testing.T) {
 	// The server's answer, with every collection deliberately shuffled relative
 	// to the configuration below: users reversed, categories reversed, weekdays
 	// out of calendar order, and the two time windows swapped.
@@ -1300,7 +1313,7 @@ func openAPITypeEnum(t *testing.T, doc map[string]interface{}, schemaName string
 }
 
 /*
-TestAccessPolicyBucketTablesCoverTheAPIEnums fails when the API grows a bucket
+TestSwgAccessPolicyBucketTablesCoverTheAPIEnums fails when the API grows a bucket
 type this provider has no attribute for.
 
 Without it, a new type is invisible and the invisibility is the damage. Trace it:
@@ -1320,7 +1333,7 @@ The condition type is checked in the same place and for the same reason: the
 resource does not expose `conditions[].type` at all, on the grounds that
 `datetime` is the only legal value. That is only safe while it stays true.
 */
-func TestAccessPolicyBucketTablesCoverTheAPIEnums(t *testing.T) {
+func TestSwgAccessPolicyBucketTablesCoverTheAPIEnums(t *testing.T) {
 	doc := findOpenAPIDocument(t)
 
 	for _, tc := range []struct {
@@ -1380,7 +1393,7 @@ func TestAccessPolicyBucketTablesCoverTheAPIEnums(t *testing.T) {
 }
 
 /*
-TestAccessPolicyReadWarnsAboutBucketTypesItDropped is the runtime half of the
+TestSwgAccessPolicyReadWarnsAboutBucketTypesItDropped is the runtime half of the
 same problem, for the case the build-time test cannot reach: a server that
 returns a type its own published spec does not declare.
 
@@ -1389,7 +1402,7 @@ because the configuration is the policy -- but it converts an empty plan that
 silently widens a tenant's rules into something the operator is shown on the
 refresh before it happens.
 */
-func TestAccessPolicyReadWarnsAboutBucketTypesItDropped(t *testing.T) {
+func TestSwgAccessPolicyReadWarnsAboutBucketTypesItDropped(t *testing.T) {
 	body := accessPolicyGetBody(accessPolicyCanonicalRuleJSON("rule-new", "future-type", 0,
 		`{"type":"serviceAccounts","value":["sa-1"]}`, "", ""))
 
@@ -1463,4 +1476,417 @@ func TestUnknownBucketWarningIgnoresEmptyBuckets(t *testing.T) {
 		t.Fatalf("a POPULATED bucket of an unknown type must warn; got %v. Silence here is "+
 			"the silent policy-widening this function exists to prevent", got)
 	}
+}
+
+/*
+================================================================================
+ACCEPTANCE TESTS -- SAP-01 through SAP-08 and SAP-I01.
+
+Everything above this line is offline. Everything below runs only under TF_ACC
+and REPLACES THE TENANT'S ENTIRE WEB ACCESS POLICY. Read the header on
+swg_acc_check_helpers_test.go first; the short version is:
+
+  - PreCheck refuses to run unless the tenant's policy is already empty, so the
+    suite cannot delete rules it did not create.
+  - CheckDestroy asserts the policy reads back EMPTY, which is the tenant state
+    these tests start from and the one they must leave behind.
+  - No test here calls t.Parallel(). Two of them at once would be two writers of
+    one tenant-wide array and the loser's rules would vanish silently.
+
+The rules these tests create are shaped for safety as well as for coverage. The
+only rule ever created with status = "active" is an unrestricted `allow`, which
+is what an EMPTY policy already means -- the API documents DELETE as "all
+internet traffic will be allowed after deletion" -- so it cannot tighten or widen
+anything even on a tenant whose Internet Access is switched on. Every `block` and
+`warning` rule is created `inactive`: it keeps its position in the array and its
+place in these assertions, and is never evaluated against traffic.
+================================================================================
+*/
+
+// testAccAccessPolicyRule is one `rule` block, in configuration order. A struct
+// rather than a formatted string so that SAP-03 can express "the same rules
+// minus the middle one" as a slice operation instead of as a second literal that
+// has to be kept in step with the first by eye.
+type testAccAccessPolicyRule struct {
+	name      string
+	action    string
+	appliedOn string
+	status    string
+}
+
+/*
+testAccAccessPolicyRules is the three-rule set shared by the tests below.
+
+It covers both matrices SAP-01 and SAP-04 ask for in ONE apply, which is also one
+POST: three `action` values (allow, block, warning -- the OpenAPI document's
+three, deliberately not the backend enum's four), three `applied_on` values
+(agents, sites, both), and both `status` values.
+
+The names carry their array position, because SAP-08's assertion is about order
+and a failure that prints `[rule-b rule-a rule-c]` should be readable without
+cross-referencing anything.
+
+  - @param suffix string - a per-run random suffix, so a leftover from an aborted run is identifiable
+
+@return []testAccAccessPolicyRule
+*/
+func testAccAccessPolicyRules(suffix string) []testAccAccessPolicyRule {
+	return []testAccAccessPolicyRule{
+		{name: "tf-acc-" + suffix + "-1-allow", action: "allow", appliedOn: "agents", status: "active"},
+		{name: "tf-acc-" + suffix + "-2-block", action: "block", appliedOn: "sites", status: "inactive"},
+		{name: "tf-acc-" + suffix + "-3-warning", action: "warning", appliedOn: "both", status: "inactive"},
+	}
+}
+
+// testAccAccessPolicyNames projects the rule names in order, for
+// testAccCheckRuleNamesInOrder.
+func testAccAccessPolicyNames(rules []testAccAccessPolicyRule) []string {
+	names := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		names = append(names, rule.name)
+	}
+	return names
+}
+
+/*
+testAccAccessPolicyConfig renders the resource with these rules, in this order.
+
+NO `sources` OR `destinations` BLOCK IS EMITTED, and that is a test of §1.15
+rather than a shortcut. Omitting the block is the only way to spell "any source"
+(SAP-N04: a present-but-empty block is refused at plan time), and the server
+answers such a rule with one EMPTY BUCKET PER LEGAL TYPE -- three for sources,
+four for destinations, one for conditions. The flattener has to drop all eight,
+or state disagrees with configuration and every plan diffs forever. The
+`sources.# = 0` assertions and the PlanOnly step are the two halves of checking
+that it does, against the real server rather than against a fixture.
+
+  - @param rules ...testAccAccessPolicyRule - the blocks, in order
+
+@return string - HCL
+*/
+func testAccAccessPolicyConfig(rules ...testAccAccessPolicyRule) string {
+	var config strings.Builder
+	config.WriteString("resource \"checkpointsase_access_policy\" \"test\" {\n")
+	for _, rule := range rules {
+		fmt.Fprintf(&config, `
+  rule {
+    name       = %q
+    action     = %q
+    applied_on = %q
+    status     = %q
+  }
+`, rule.name, rule.action, rule.appliedOn, rule.status)
+	}
+	config.WriteString("}\n")
+	return config.String()
+}
+
+/*
+testAccAccessPolicyConfigWithDataSource adds the data source reading the same
+policy back, which is SAP-07 and the second half of SAP-08.
+
+The `depends_on` is required and is not a stylistic choice. The data source takes
+no arguments, so nothing in it references the resource, and without an explicit
+dependency Terraform is free to read the policy BEFORE the apply writes it --
+which on a tenant that starts empty means asserting the ordering of an empty
+list. The same pattern, for the same reason, is on
+checkpointsase_standard_networks in testAccDataSourceStandardNetworkScopedConfig.
+
+  - @param rules ...testAccAccessPolicyRule - the blocks, in order
+
+@return string - HCL
+*/
+func testAccAccessPolicyConfigWithDataSource(rules ...testAccAccessPolicyRule) string {
+	return testAccAccessPolicyConfig(rules...) + `
+data "checkpointsase_access_policy" "read_back" {
+  depends_on = [checkpointsase_access_policy.test]
+}
+`
+}
+
+/*
+TestAccCheckpointsaseAccessPolicy_basic covers SAP-01 (three actions, explicit
+applied_on, everything read back as configured, then an EMPTY re-plan), SAP-04
+(all three applied_on values in one POST) and SAP-I01 (import, then no diff).
+
+The empty re-plan is the assertion that matters most and the one most likely to
+break. §1.15 is invisible from the OpenAPI document: the server rewrites
+`sources: []` into three typed buckets, `destinations: []` into four and
+`conditions: []` into one, so what a client sends is never what it reads back. A
+flattener that carried those buckets into state would produce a resource that
+applies cleanly and then proposes the same change on every plan for the rest of
+its life. PlanOnly is what catches that; the `.# = 0` checks say which of the
+three buckets went wrong when it does.
+*/
+func TestAccCheckpointsaseAccessPolicy_basic(t *testing.T) {
+	const address = "checkpointsase_access_policy.test"
+	rules := testAccAccessPolicyRules(randStringBytesRmndr())
+	config := testAccAccessPolicyConfig(rules...)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t); testAccPreCheckAccessPolicyEmpty(t) },
+		ProviderFactories: testAccProviderFactories,
+		CheckDestroy:      testAccCheckAccessPolicyDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeTestCheckFunc(
+					// The resource id is the policy itself and is a constant. A
+					// timestamp here would change on every read and break every
+					// depends_on and output pointing at it (L16c).
+					resource.TestCheckResourceAttr(address, "id", accessPolicyResourceID),
+					resource.TestCheckResourceAttr(address, "rule.#", "3"),
+
+					// SAP-01 and SAP-04: every configured field, read back.
+					resource.TestCheckResourceAttr(address, "rule.0.name", rules[0].name),
+					resource.TestCheckResourceAttr(address, "rule.0.action", "allow"),
+					resource.TestCheckResourceAttr(address, "rule.0.applied_on", "agents"),
+					resource.TestCheckResourceAttr(address, "rule.0.status", "active"),
+					resource.TestCheckResourceAttr(address, "rule.1.name", rules[1].name),
+					resource.TestCheckResourceAttr(address, "rule.1.action", "block"),
+					resource.TestCheckResourceAttr(address, "rule.1.applied_on", "sites"),
+					resource.TestCheckResourceAttr(address, "rule.1.status", "inactive"),
+					resource.TestCheckResourceAttr(address, "rule.2.name", rules[2].name),
+					resource.TestCheckResourceAttr(address, "rule.2.action", "warning"),
+					resource.TestCheckResourceAttr(address, "rule.2.applied_on", "both"),
+					resource.TestCheckResourceAttr(address, "rule.2.status", "inactive"),
+
+					// §1.15: the server expanded each empty collection into one
+					// bucket per legal type. State must hold ZERO blocks, not one
+					// block of empty lists.
+					resource.TestCheckResourceAttr(address, "rule.0.sources.#", "0"),
+					resource.TestCheckResourceAttr(address, "rule.0.destinations.#", "0"),
+					resource.TestCheckResourceAttr(address, "rule.0.conditions.#", "0"),
+					resource.TestCheckResourceAttr(address, "rule.2.sources.#", "0"),
+					resource.TestCheckResourceAttr(address, "rule.2.destinations.#", "0"),
+					resource.TestCheckResourceAttr(address, "rule.2.conditions.#", "0"),
+
+					// The server minted an id for every rule, and a priority the
+					// configuration never mentions (§1.16).
+					resource.TestCheckResourceAttrSet(address, "rule.0.id"),
+					resource.TestCheckResourceAttrSet(address, "rule.1.id"),
+					resource.TestCheckResourceAttrSet(address, "rule.2.id"),
+					testAccCheckRulePrioritiesDescend(address),
+				),
+			},
+			// SAP-01's second half: the same configuration, no diff.
+			{
+				Config:   config,
+				PlanOnly: true,
+			},
+			// SAP-I01. ImportStateId is set explicitly rather than defaulting to
+			// the resource's own id, so this also pins the documented import
+			// command. No ImportStateVerifyIgnore: every attribute is either
+			// configured or server-reported and nothing here is write-only.
+			{
+				ResourceName:      address,
+				ImportState:       true,
+				ImportStateId:     accessPolicyResourceID,
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+/*
+TestAccCheckpointsaseAccessPolicy_orderIsConfigurationOrder covers SAP-08 and
+SAP-07.
+
+THIS IS THE ROW THE WHOLE PHASE 4 DESIGN EXISTS TO DELIVER, and until now it had
+no live evidence at all. The API has no per-rule endpoint, so a rule's precedence
+is its position in the array and nothing else. Under a per-rule resource the
+array would be composed by Terraform's scheduler -- independent resources,
+arbitrary order, in parallel -- so the same configuration applied twice could
+produce two different policies, with no error and no diff to notice. Under the
+shipped whole-policy resource the composer is the configuration. This test is the
+proof, and a fixture cannot supply it: the claim is about what the SERVER stored
+and hands back.
+
+It asserts the order twice, from two directions. The resource's own state is what
+Terraform read back after its write; the data source is an independent GET of the
+same policy, which is what SAP-07 asks for and is the only one of the two that
+could not have been fabricated by the resource's own flattener.
+
+The priority assertion is the third leg. `priority` is Computed-only, so nothing
+in this configuration mentions one; every number checked descends with array
+position exactly as §1.16 measured. NOTHING is asserted about which end is
+evaluated first -- that is unmeasured, it is the overclaim §1.16 was corrected
+for, and it is tracked as LEFTOVERS L24.
+*/
+func TestAccCheckpointsaseAccessPolicy_orderIsConfigurationOrder(t *testing.T) {
+	const (
+		address    = "checkpointsase_access_policy.test"
+		dataSource = "data.checkpointsase_access_policy.read_back"
+	)
+	rules := testAccAccessPolicyRules(randStringBytesRmndr())
+	names := testAccAccessPolicyNames(rules)
+	config := testAccAccessPolicyConfigWithDataSource(rules...)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t); testAccPreCheckAccessPolicyEmpty(t) },
+		ProviderFactories: testAccProviderFactories,
+		CheckDestroy:      testAccCheckAccessPolicyDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeTestCheckFunc(
+					// Configuration order is array order, seen from the resource.
+					testAccCheckRuleNamesInOrder(address, names...),
+					testAccCheckRulePrioritiesDescend(address),
+
+					// SAP-07/SAP-08: the same policy, read back independently.
+					testAccCheckRuleNamesInOrder(dataSource, names...),
+					testAccCheckRulePrioritiesDescend(dataSource),
+					resource.TestCheckResourceAttr(dataSource, "id", accessPolicyDataSourceID),
+					testAccCheckControlledBySurfaced(dataSource),
+
+					// The data source drops the server's empty buckets too. It
+					// shares the resource's flattener, so this is a check that
+					// the sharing is real rather than two copies that drifted.
+					resource.TestCheckResourceAttr(dataSource, "rule.0.sources.#", "0"),
+					resource.TestCheckResourceAttr(dataSource, "rule.0.destinations.#", "0"),
+					resource.TestCheckResourceAttr(dataSource, "rule.0.conditions.#", "0"),
+				),
+			},
+			{
+				Config:   config,
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+/*
+TestAccCheckpointsaseAccessPolicy_removingTheMiddleRuleRenumbersPriority covers
+SAP-03, and with it the half of SAP-02 that can be asserted live.
+
+It is the strongest available evidence that `priority` is server-assigned rather
+than round-tripped: the surviving rules' configurations do not change at all
+between the two steps, and their priorities change anyway, because priority is
+positional and the server renumbers the whole array on every write (§1.16). A
+provider that stored a sent priority would show the old numbers here and the
+re-plan would then be non-empty forever.
+
+SAP-02's "in-place, never a replace" is asserted through the FIRST rule's
+server-assigned id surviving the rewrite -- measured in phase4-verification,
+where re-POSTing a list preserved the existing rule's id. It cannot be asserted
+through the resource id, which is the constant `access-policy` whether the
+resource was updated or recreated.
+
+WHAT IS DELIBERATELY NOT ASSERTED is the id at index 1 after the removal. The
+expander sends each rule the id state holds AT THAT POSITION, which the resource
+documents at expandAccessPolicyRules: remove the middle block and the third
+rule's block inherits the second rule's id. So the id at index 1 is expected to
+be the MIDDLE rule's old id, not the third's -- harmless, because the whole array
+is replaced and the content at every position is exactly what the configuration
+says, but not something to write an equality against as though rules carried
+their ids with them. What is checked instead is that no id at all is NEW: a
+rewrite that minted fresh ids would mean the server deleted and recreated
+everything, which is the defect this row is really about.
+*/
+func TestAccCheckpointsaseAccessPolicy_removingTheMiddleRuleRenumbersPriority(t *testing.T) {
+	const address = "checkpointsase_access_policy.test"
+	rules := testAccAccessPolicyRules(randStringBytesRmndr())
+	survivors := []testAccAccessPolicyRule{rules[0], rules[2]}
+
+	var idsBefore [3]string
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t); testAccPreCheckAccessPolicyEmpty(t) },
+		ProviderFactories: testAccProviderFactories,
+		CheckDestroy:      testAccCheckAccessPolicyDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccAccessPolicyConfig(rules...),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(address, "rule.#", "3"),
+					testAccCaptureResourceAttr(address, "rule.0.id", &idsBefore[0]),
+					testAccCaptureResourceAttr(address, "rule.1.id", &idsBefore[1]),
+					testAccCaptureResourceAttr(address, "rule.2.id", &idsBefore[2]),
+					// 2, 1, 0 before the removal.
+					testAccCheckRulePrioritiesDescend(address),
+				),
+			},
+			{
+				Config: testAccAccessPolicyConfig(survivors...),
+				Check: resource.ComposeTestCheckFunc(
+					// Only the middle rule went; the survivors kept their
+					// relative order.
+					testAccCheckRuleNamesInOrder(address, rules[0].name, rules[2].name),
+					// Renumbered to 1, 0. Neither survivor's configuration
+					// changed, so this is the server reassigning, not drift.
+					testAccCheckRulePrioritiesDescend(address),
+					// SAP-02: the untouched first rule kept its server id, so
+					// this was an in-place rewrite and not a recreate.
+					testAccCheckResourceAttrMatchesCaptured(address, "rule.0.id", &idsBefore[0]),
+					// And nothing was minted fresh.
+					func(s *terraform.State) error {
+						attrs, err := dataSourceAttrs(s, address)
+						if err != nil {
+							return err
+						}
+						for index := 0; index < 2; index++ {
+							got := attrs[fmt.Sprintf("rule.%d.id", index)]
+							if got != idsBefore[0] && got != idsBefore[1] && got != idsBefore[2] {
+								return fmt.Errorf(
+									"rule.%d.id is %q, which is none of the three ids the server "+
+										"had already assigned (%v): removing one rule from the list "+
+										"minted new ids for the survivors, so the server deleted and "+
+										"recreated them rather than rewriting the array",
+									index, got, idsBefore)
+							}
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config:   testAccAccessPolicyConfig(survivors...),
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+/*
+TestAccCheckpointsaseAccessPolicy_destroyClearsTheWholePolicy covers SAP-05, and
+it is the §1.18 case specifically: a policy holding exactly ONE rule.
+
+That case is the whole reason the milestone spec's "never call the raw DELETE"
+could not be implemented. Removing a rule from a list of several is a POST of the
+remainder; removing the LAST one cannot be, because POST of an empty array is
+answered `400 VALIDATION_WEB_RULES_REQUIRED`. DELETE is the only route to an
+empty policy, and under this design it is exactly correct -- the resource owns
+the whole policy, so destroying it means the policy is gone.
+
+CheckDestroy is a GET returning an EMPTY list, not a 404. The policy endpoint
+always exists; a tenant that never had a rule and a tenant whose policy was just
+deleted answer identically, and a failed read is neither (see
+testAccCheckPolicyDestroyed).
+
+Note what a user CANNOT do and why this test is the row: `rule = []` is refused
+at plan time by MinItems (SAP-N03), so there is no configuration that empties the
+policy. Destroy is the only way, which makes this the only live exercise of
+DELETE /v3/ia/access/policy in the suite.
+*/
+func TestAccCheckpointsaseAccessPolicy_destroyClearsTheWholePolicy(t *testing.T) {
+	const address = "checkpointsase_access_policy.test"
+	only := testAccAccessPolicyRules(randStringBytesRmndr())[0]
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t); testAccPreCheckAccessPolicyEmpty(t) },
+		ProviderFactories: testAccProviderFactories,
+		CheckDestroy:      testAccCheckAccessPolicyDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccAccessPolicyConfig(only),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(address, "rule.#", "1"),
+					resource.TestCheckResourceAttr(address, "rule.0.name", only.name),
+					// One rule, so the server's only priority is 0.
+					resource.TestCheckResourceAttr(address, "rule.0.priority", "0"),
+				),
+			},
+		},
+	})
 }

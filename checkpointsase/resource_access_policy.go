@@ -210,7 +210,7 @@ func resourceAccessPolicy() *schema.Resource {
 					test that only checked contents would fail, and the tenant's
 					policy would come out in an order nobody chose. For a policy
 					engine that is not a cosmetic difference; it is which rule
-					wins. TestAccessPolicyRuleListIsOrderedNotASet pins it.
+					wins. TestSwgAccessPolicyRuleListIsOrderedNotASet pins it.
 				*/
 				Type:     schema.TypeList,
 				Required: true,
@@ -388,9 +388,9 @@ untouched.
 
 That is measured, not argued. expandAccessPolicySources has ALWAYS omitted an
 empty bucket -- it is the write-side half of the same normalisation, and
-TestAccessPolicyExpandOmitsEmptyBuckets pins it -- and the diff was still
+TestSwgAccessPolicyExpandOmitsEmptyBuckets pins it -- and the diff was still
 `rule.0.sources.#: "0" -> "1"` on every plan. Delete this function and
-TestAccessPolicyEmptyEndpointBlockIsRefusedAtPlanTime prints exactly that, with
+TestSwgAccessPolicyEmptyEndpointBlockIsRefusedAtPlanTime prints exactly that, with
 the expander's normalisation fully in place. So the expander-side fix has been
 in the code the whole time and never helped.
 
@@ -409,7 +409,7 @@ the id is not yet known reads as an EMPTY SET during plan, which is
 indistinguishable here from a genuinely empty block -- so a guard without that
 check refuses a correct configuration whenever a rule references a resource
 created in the same apply, which is the normal case. It was written without it
-first and TestAccessPolicyPopulatedEndpointBlockStillPlans caught it.
+first and TestSwgAccessPolicyPopulatedEndpointBlockStillPlans caught it.
 
   - @param d *schema.ResourceDiff - the planned diff
 
@@ -997,7 +997,7 @@ would propose a change to a resource nobody touched -- with an apply that never
 converges, because the next read produces the same thing again.
 
 So an empty bucket is dropped, and a block whose every bucket was empty is not
-emitted at all. TestAccessPolicyReadProducesNoPermanentDiff drives exactly the
+emitted at all. TestSwgAccessPolicyReadProducesNoPermanentDiff drives exactly the
 body the live probe recorded through this function and then plans against it.
 
   - @param rules []perimeter81Sdk.AccessPolicyRule - the list as returned by a GET
@@ -1038,7 +1038,7 @@ reason POSTs the whole array without the restriction. That is a policy widening
 with no plan output, which is the one thing a declarative tool exists to prevent.
 
 A warning does not stop it, but it makes it visible on the refresh that precedes
-every plan. TestAccessPolicyBucketTablesCoverTheAPIEnums is the other half and
+every plan. TestSwgAccessPolicyBucketTablesCoverTheAPIEnums is the other half and
 the better half: it fails at build time when the spec grows a type, so the
 warning is the backstop for a server that is ahead of the spec rather than the
 primary defence.
