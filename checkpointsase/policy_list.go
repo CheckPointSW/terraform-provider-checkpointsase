@@ -375,10 +375,11 @@ the tenant.
 
 It deliberately does NOT say "re-applying will duplicate it". That was the
 per-rule model's hazard, where a lost rule id meant the next apply appended a
-second copy. A whole-list write replaces the array, so re-applying is safe and is
-in fact the fix. What is not safe is deciding the apply failed and removing the
-resource from the configuration, because the rules are live on the server and
-nothing would then be tracking them.
+second copy. A whole-list write replaces the array, so nothing can be duplicated.
+What is not safe is deciding the apply failed and removing the resource from the
+configuration, because the rules are live on the server and nothing would then be
+tracking them -- nor, on the create path, running a plain `terraform apply`. See
+reapplyToResync.
 */
 func policyWrittenNotReadBack(policyName string) string {
 	return fmt.Sprintf("the %s WAS written and the tenant is now enforcing it, but "+
@@ -386,11 +387,34 @@ func policyWrittenNotReadBack(policyName string) string {
 		"canonicalised form of it", policyName)
 }
 
-// reapplyToResync is the second half of the same sentence: what to do.
-const reapplyToResync = "Re-applying is safe and is the fix: the write replaces the whole " +
-	"list, so it cannot duplicate anything. Do NOT remove the resource from the " +
-	"configuration instead -- the rules are live on the server and nothing would be " +
-	"tracking them."
+/*
+reapplyToResync is the second half of the same sentence: what to do.
+
+IT HAS TO BE PATH-AWARE, and the first version of it was not. "Re-applying is
+safe and is the fix" is true when the re-read fails during an UPDATE. It is false
+during a CREATE, which is the case the comment on rereadAfterWrite identifies as
+the dangerous one. Both write functions call d.SetId BEFORE this re-read
+(resource_access_policy.go and resource_https_inspection_policy.go), so a
+CreateContext that returns an error diagnostic with a non-empty id leaves the
+object ObjectTainted; the next `terraform apply` plans a REPLACE; and replace on
+a whole-policy resource BEGINS with its Delete, which issues the endpoint's
+DELETE -- "all internet traffic will be allowed after deletion". An operator told
+only that re-applying is safe, doing exactly that, empties the tenant's policy
+before re-POSTing it, and is left with no policy at all if that second POST
+fails.
+
+So the advice leads with the read-only action that is unconditionally safe
+(`terraform refresh`), and names `terraform untaint` for the path where it is
+not. TestPolicyReReadRetriesAndNeverFailsSilently pins both fragments.
+*/
+const reapplyToResync = "The tenant's policy is already correct; only Terraform's record of " +
+	"it is missing, so run `terraform refresh` (or `terraform plan`) first -- that alone " +
+	"reconciles state, and because the write replaces the whole list it cannot duplicate " +
+	"anything. IF THE RESOURCE WAS BEING CREATED, Terraform has marked it tainted and a " +
+	"plain `terraform apply` will DESTROY it first, which issues the DELETE that empties " +
+	"the policy: run `terraform untaint <address>` before applying. Do NOT remove the " +
+	"resource from the configuration instead -- the rules are live on the server and " +
+	"nothing would be tracking them."
 
 /*
 policySingleBlock unwraps a MaxItems-1 nested block, returning nil when it is

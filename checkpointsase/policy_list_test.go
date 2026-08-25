@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
 /*
@@ -347,6 +349,104 @@ func TestWritePolicyRulesRefusesAnEmptyList(t *testing.T) {
 }
 
 /*
+TestSwgPolicyWriteDiagnosticCarriesTheAdviceAndNotJustTheServerBody is the row
+TestPolicyReReadRetriesAndNeverFailsSilently could not make, because it asserts
+on what the OPERATOR sees rather than on what rereadAfterWrite returns.
+
+The two are not the same, and the gap between them silently discarded the entire
+"what to do about it" half of the message. rereadAfterWrite wraps the SDK's error
+with %w. appendErrorDiags then unwraps it with errors.As, finds the
+GenericOpenAPIError and sets Detail to the SERVER'S BODY -- correctly, because
+that body is usually the only useful part -- which throws away every word of the
+wrapper. Measured before this test existed, the whole diagnostic for a failed
+re-read was:
+
+	The web access policy was written but could not be read back
+	{"message":"re-read failed"}
+
+policyWrittenNotReadBack's "the tenant is now enforcing it" and all of
+reapplyToResync, including the `terraform untaint` warning that keeps an operator
+from destroying the tenant's policy, reached nobody.
+
+So the assertion has to go through the resource's own write function and read the
+Summary and Detail Terraform will print.
+*/
+func TestSwgPolicyWriteDiagnosticCarriesTheAdviceAndNotJustTheServerBody(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		write  schema.CreateContextFunc
+		config map[string]interface{}
+		policy string
+	}{
+		{
+			"access policy", resourceAccessPolicyWrite,
+			map[string]interface{}{"rule": []interface{}{map[string]interface{}{
+				"name": "allow everything", "applied_on": "both",
+				"action": "allow", "status": "active",
+			}}},
+			"access policy",
+		},
+		{
+			"https inspection", resourceHttpsInspectionPolicyWrite,
+			map[string]interface{}{"rule": []interface{}{map[string]interface{}{
+				"name": "bypass the payroll portal", "applied_on": "sites",
+				"action": "bypass", "status": "active",
+			}}},
+			"HTTPS inspection policy",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodGet {
+					// A permanent refusal, so the retry budget is not spent and
+					// the test is fast. The body is what appendErrorDiags will
+					// promote into Detail.
+					w.WriteHeader(http.StatusUnprocessableEntity)
+					_, _ = w.Write([]byte(`{"message":"re-read failed"}`))
+					return
+				}
+				// The POST always succeeds: the tenant IS enforcing the new list.
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer srv.Close()
+
+			resourceSchema := resourceAccessPolicy().Schema
+			if tc.name == "https inspection" {
+				resourceSchema = resourceHttpsInspectionPolicy().Schema
+			}
+			d := schema.TestResourceDataRaw(t, resourceSchema, tc.config)
+			diags := tc.write(context.Background(), d, newTestUserAPIClient(srv.URL))
+			if !diags.HasError() {
+				t.Fatal("the write reported success although the re-read failed")
+			}
+
+			var printed string
+			for _, reported := range diags {
+				printed += reported.Summary + " " + reported.Detail + " "
+			}
+			for _, fragment := range []string{
+				// The tenant changed, and that has to come before anything else.
+				"WAS written",
+				// The server's own words are still the most useful detail.
+				"re-read failed",
+				// The safe action.
+				"terraform refresh",
+				// And the one that stops an operator emptying the policy: on the
+				// create path the object is tainted, so a plain re-apply
+				// DESTROYS it first, and Delete here is the endpoint's DELETE.
+				"terraform untaint",
+			} {
+				if !strings.Contains(printed, fragment) {
+					t.Errorf("the diagnostic Terraform prints does not contain %q:\n%s",
+						fragment, printed)
+				}
+			}
+		})
+	}
+}
+
+/*
 TestPolicyReReadRetriesAndNeverFailsSilently covers the window on the far side of
 a successful POST.
 
@@ -364,8 +464,14 @@ written before it says what went wrong.
 
 It also pins what the message must NOT say. The per-rule version told the
 operator that re-applying would create a SECOND copy and that they should import
-or hand-remove first. Under a whole-list write that is false and actively
-harmful: re-applying replaces the array and is the fix.
+or hand-remove first. Under a whole-list write that is false: the write replaces
+the array, so nothing can be duplicated.
+
+And it pins what the message must say INSTEAD, which the first correction of it
+got wrong in the other direction. "Re-applying is safe and is the fix" holds
+after a failed UPDATE and not after a failed CREATE -- see reapplyToResync for
+the mechanism -- so the advice has to lead with `terraform refresh` and name
+`terraform untaint`.
 */
 func TestPolicyReReadRetriesAndNeverFailsSilently(t *testing.T) {
 	for _, tc := range []struct {
@@ -422,12 +528,28 @@ func TestPolicyReReadRetriesAndNeverFailsSilently(t *testing.T) {
 			if tc.wantErr {
 				// It has to lead with the fact that the tenant is already
 				// enforcing the new policy, then say what to do about it.
-				for _, fragment := range []string{"WAS written", "Re-applying is safe",
+				for _, fragment := range []string{"WAS written", "terraform refresh",
 					"access policy"} {
 					if !strings.Contains(err.Error(), fragment) {
 						t.Errorf("the error does not contain %q, so it does not tell the "+
 							"operator the policy was written but not recorded: %v", fragment, err)
 					}
+				}
+				// And it has to be PATH-AWARE. "Re-apply" is safe advice after a
+				// failed UPDATE and dangerous after a failed CREATE: both write
+				// functions call d.SetId BEFORE this re-read, so a Create that
+				// returns an error diagnostic with a non-empty id leaves the
+				// object ObjectTainted, the next apply plans a REPLACE, and
+				// replace on a whole-policy resource BEGINS with
+				// DELETE /v3/ia/access/policy -- "all internet traffic will be
+				// allowed after deletion". An operator who is told only
+				// "re-applying is safe" and does exactly that empties the
+				// tenant's policy. The message must name `terraform untaint`.
+				if !strings.Contains(err.Error(), "terraform untaint") {
+					t.Errorf("the error does not mention `terraform untaint`, so an operator "+
+						"who follows it after a failed CREATE destroys the resource -- which "+
+						"issues the DELETE that empties the tenant's policy -- before "+
+						"recreating it: %v", err)
 				}
 				// And it must not carry the per-rule model's advice, which is
 				// now wrong in both halves.

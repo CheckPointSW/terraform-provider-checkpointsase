@@ -1249,6 +1249,48 @@ func appendErrorDiags(diags diag.Diagnostics, summary string, err error) diag.Di
 }
 
 /*
+appendErrorDiagsWithGuidance is appendErrorDiags for the errors that have to
+carry an INSTRUCTION as well as a cause.
+
+WHY IT EXISTS. appendErrorDiags promotes the server's response body into Detail
+whenever errors.As finds a GenericOpenAPIError, and that is right: the body
+(`VALIDATION_WEB_RULES_REQUIRED`, `"fromDefault" is not allowed`) is normally the
+only useful part. The cost is that everything the caller wrapped the error with
+is discarded. For an ordinary failure that costs nothing. Measured on the SWG
+policies, where the wrapper is the entire "what to do about it" half of the
+message, the whole diagnostic an operator saw for a failed read-back was:
+
+	The web access policy was written but could not be read back
+	{"message":"re-read failed"}
+
+-- with policyWrittenNotReadBack's "the tenant is now enforcing it" and all of
+reapplyToResync, including the `terraform untaint` warning that stops an operator
+DESTROYING a whole-policy resource and emptying the tenant's policy with it,
+reaching nobody.
+
+The guidance goes in Detail rather than Summary because Terraform prints Summary
+as a one-line heading, and it is skipped when the Detail already contains it --
+which is the non-API-error branch, where err.Error() carries the wrapper
+verbatim and appending it again would print the same paragraph twice.
+
+  - @param diags diag.Diagnostics - the diagnostics
+  - @param summary string - the one-line heading
+  - @param guidance string - the instruction, which must survive whichever branch appendErrorDiags takes
+  - @param err error - the error
+
+@return diag.Diagnostics - the diagnostics
+*/
+func appendErrorDiagsWithGuidance(diags diag.Diagnostics, summary, guidance string,
+	err error) diag.Diagnostics {
+	diags = appendErrorDiags(diags, summary, err)
+	last := &diags[len(diags)-1]
+	if !strings.Contains(last.Detail, guidance) {
+		last.Detail = strings.TrimSpace(last.Detail) + "\n\n" + guidance
+	}
+	return diags
+}
+
+/*
 appendWarningDiags append a warning diagnostic
   - @param diags diag.Diagnostics - the diagnostics
   - @param summary string - the summary

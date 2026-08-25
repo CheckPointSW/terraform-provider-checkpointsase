@@ -637,8 +637,12 @@ func resourceHttpsInspectionPolicyWrite(ctx context.Context, d *schema.ResourceD
 	stored, err := rereadAfterWrite(ctx, ops)
 	if err != nil {
 		d.Partial(true)
-		return appendErrorDiags(diags,
-			"The HTTPS inspection policy was written but could not be read back", err)
+		// appendErrorDiagsWithGuidance, not appendErrorDiags: the latter replaces
+		// Detail with the server's body whenever the cause is an API error, which
+		// discarded reapplyToResync entirely. See its doc comment.
+		return appendErrorDiagsWithGuidance(diags,
+			"The HTTPS inspection policy WAS written and could not be read back",
+			reapplyToResync, err)
 	}
 
 	if err := d.Set("rule", flattenHttpsInspectionRules(stored)); err != nil {
