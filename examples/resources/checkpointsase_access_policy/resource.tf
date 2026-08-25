@@ -23,7 +23,10 @@ resource "checkpointsase_group" "contractors" {
 resource "checkpointsase_access_policy" "example" {
   # A rule that restricts nothing matches all traffic from every source to
   # every destination. Omit `sources`, `destinations` and `conditions` rather
-  # than writing empty blocks: an absent block is how the API spells "any".
+  # than writing empty blocks: an absent block is how the API spells "any", and
+  # `sources {}` is refused at plan time because it could never converge -- the
+  # server returns an unrestricted rule as empty buckets, which read back as no
+  # block at all.
   rule {
     name       = "allow-everything-by-default"
     applied_on = "both"
@@ -31,7 +34,9 @@ resource "checkpointsase_access_policy" "example" {
     status     = "active"
   }
 
-  # sources and destinations take object IDs, never names, URLs or CIDRs.
+  # sources and destinations take object IDs, never names, URLs or CIDRs. Every
+  # id attribute is a SET: order is not significant and Terraform will not
+  # propose a change just because the server returned them in another order.
   rule {
     name       = "block-gambling-for-contractors"
     applied_on = "both"

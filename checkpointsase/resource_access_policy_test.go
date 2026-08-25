@@ -6,10 +6,16 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
@@ -137,6 +143,14 @@ func accessPolicyProbeConfig() map[string]interface{} {
 			},
 		},
 	}
+}
+
+// sortedCopy sorts a copy, so that an assertion on a set-valued attribute compares
+// membership without depending on an order neither the API nor Terraform promises.
+func sortedCopy(values []string) []string {
+	out := append([]string(nil), values...)
+	sort.Strings(out)
+	return out
 }
 
 // accessPolicyRulesFromBody decodes a GET body the way the read closure does, so
@@ -295,8 +309,9 @@ func TestAccessPolicyFlattenDropsTheServerEmptyBuckets(t *testing.T) {
 		t.Fatalf("a rule with users flattened sources to %v, want one block", sources)
 	}
 	source := sources[0].(map[string]interface{})
-	if got, ok := source["users"].([]string); !ok || !testComparableArraiesEq(got, []string{"user-1", "user-2"}) {
-		t.Errorf("sources.users = %v, want [user-1 user-2]", source["users"])
+	if got, ok := source["users"].([]string); !ok || !testComparableArraiesEq(
+		sortedCopy(got), []string{"user-1", "user-2"}) {
+		t.Errorf("sources.users = %v, want the members user-1 and user-2", source["users"])
 	}
 	for _, empty := range []string{"groups", "addresses"} {
 		if _, present := source[empty]; present {
@@ -328,8 +343,9 @@ func TestAccessPolicyFlattenDropsTheServerEmptyBuckets(t *testing.T) {
 			t.Errorf("conditions.0.%s = %d, want %d", attr, got, want)
 		}
 	}
-	if got, ok := window["weekdays"].([]string); !ok || !testComparableArraiesEq(got, []string{"Mon", "Tue"}) {
-		t.Errorf("conditions.0.weekdays = %v, want [Mon Tue]", window["weekdays"])
+	if got, ok := window["weekdays"].([]string); !ok || !testComparableArraiesEq(
+		sortedCopy(got), []string{"Mon", "Tue"}) {
+		t.Errorf("conditions.0.weekdays = %v, want the members Mon and Tue", window["weekdays"])
 	}
 
 	// And the identity the server assigned, in the server's order.
@@ -455,8 +471,8 @@ func TestAccessPolicyWriteSendsNeitherRefusedFieldsNorNullArrays(t *testing.T) {
 }
 
 /*
-TestAccessPolicyExpandOmitsEmptyBucketsAndKeepsOrder covers the write side of the
-same normalisation the flattener does on the read side.
+TestAccessPolicyExpandOmitsEmptyBuckets covers the write side of the same
+normalisation the flattener does on the read side.
 
 A bucket with no members is omitted rather than sent with an empty value: both
 mean "unrestricted" to the server -- molecules.types.json gives every one of
@@ -468,7 +484,7 @@ keeps the two halves symmetrical.
 A rule that restricts nothing therefore sends empty arrays, which API-FINDINGS
 1.15 measured as accepted and is the form the server canonicalises FROM.
 */
-func TestAccessPolicyExpandOmitsEmptyBucketsAndKeepsOrder(t *testing.T) {
+func TestAccessPolicyExpandOmitsEmptyBuckets(t *testing.T) {
 	d := schema.TestResourceDataRaw(t, resourceAccessPolicy().Schema, accessPolicyProbeConfig())
 	rules := expandAccessPolicyRules(d.Get("rule").([]interface{}))
 
@@ -488,8 +504,17 @@ func TestAccessPolicyExpandOmitsEmptyBucketsAndKeepsOrder(t *testing.T) {
 			"addresses bucket alongside it is noise the server would only echo back",
 			restricted.Sources)
 	}
-	if !testComparableArraiesEq(restricted.Sources[0].Value, []string{"user-1", "user-2"}) {
-		t.Errorf("sources.users expanded to %v, want [user-1 user-2] IN THAT ORDER",
+	/*
+		MEMBERSHIP, not order. `users` is a TypeSet: nothing in the API assigns an
+		order to a bucket's ids and nothing was measured preserving one, so the
+		provider must not depend on either. This assertion used to say "IN THAT
+		ORDER" and failed the moment the attribute became a set -- which is the
+		evidence that the conversion took effect rather than being cosmetic.
+	*/
+	got := append([]string(nil), restricted.Sources[0].Value...)
+	sort.Strings(got)
+	if !testComparableArraiesEq(got, []string{"user-1", "user-2"}) {
+		t.Errorf("sources.users expanded to %v, want the members user-1 and user-2",
 			restricted.Sources[0].Value)
 	}
 	if len(restricted.Destinations) != 1 || restricted.Destinations[0].Type != "categories" {
@@ -510,8 +535,10 @@ func TestAccessPolicyExpandOmitsEmptyBucketsAndKeepsOrder(t *testing.T) {
 		t.Errorf("the time window expanded to %v-%v, want 09:00-17:30",
 			window[0].StartTime, window[0].EndTime)
 	}
-	if !testComparableArraiesEq(window[0].Weekdays, []string{"Mon", "Tue"}) {
-		t.Errorf("weekdays expanded to %v, want [Mon Tue]", window[0].Weekdays)
+	weekdays := append([]string(nil), window[0].Weekdays...)
+	sort.Strings(weekdays)
+	if !testComparableArraiesEq(weekdays, []string{"Mon", "Tue"}) {
+		t.Errorf("weekdays expanded to %v, want the members Mon and Tue", window[0].Weekdays)
 	}
 }
 
@@ -702,7 +729,30 @@ func TestAccessPolicyDescriptionStatesWhatDestroyAndApplyDo(t *testing.T) {
 		}
 	}
 
-	priority := resourceAccessPolicy().Schema["rule"].Elem.(*schema.Resource).Schema["priority"].Description
+	/*
+		The two endpoint blocks must say that OMITTING is the only spelling of
+		"any". They said "omit the block, or leave every attribute in it empty"
+		once, and the second half was a trap: an empty block is a permanent diff,
+		so the description was recommending a configuration that cannot converge.
+		checkpointsase_firewall_policy has said "the only way" since it shipped;
+		this pins that the two resources agree, and that the description agrees
+		with resourceAccessPolicyCustomizeDiff, which now refuses the other
+		spelling outright.
+	*/
+	rule := resourceAccessPolicy().Schema["rule"].Elem.(*schema.Resource)
+	for _, attr := range []string{"sources", "destinations"} {
+		block := rule.Schema[attr].Description
+		if !strings.Contains(block, "only way") {
+			t.Errorf("the %s description does not say that omitting the block is the ONLY way "+
+				"to express \"any\":\n%s", attr, block)
+		}
+		if strings.Contains(block, "leave every attribute in it empty") {
+			t.Errorf("the %s description still recommends an empty block, which is a permanent "+
+				"diff and is now refused at plan time:\n%s", attr, block)
+		}
+	}
+
+	priority := rule.Schema["priority"].Description
 	if !strings.Contains(priority, "not established") {
 		t.Errorf("the priority description does not say that the evaluation order is not "+
 			"established. It is not: API-FINDINGS 1.16 measured the NUMBERING and explicitly "+
@@ -919,5 +969,462 @@ func TestAccessPolicyImportFailsLoudlyWhenTheReadFails(t *testing.T) {
 		newTestUserAPIClient(srv.URL)); err == nil {
 		t.Fatal("import succeeded over a failed read; it must report the error instead of " +
 			"adopting a policy it never saw")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The empty endpoint block, which used to be a permanent diff
+// ---------------------------------------------------------------------------
+
+/*
+TestAccessPolicyEmptyEndpointBlockIsRefusedAtPlanTime covers the trap the schema
+descriptions used to recommend.
+
+An unrestricted rule comes back from the server as empty buckets, which the
+flatteners correctly drop, so it always reads back as ZERO `sources` blocks. A
+configuration that spells "any source" as `sources {}` or `sources { users = [] }`
+holds ONE. Those two can never meet. Measured on this resource's own probe
+fixture, through the real Diff path, before the guard existed:
+
+	config: sources { users = [] }   ->  rule.0.sources.#: "0" -> "1"
+	config: sources {}               ->  rule.0.sources.#: "0" -> "1"
+
+non-empty on every plan, forever, with an apply that "succeeds" each time and
+changes nothing. That is the failure Step 2 of the brief exists to prevent,
+arriving from the configuration side rather than the response side.
+
+The guard turns it into a plan-time error naming the block. When the guard is
+removed this test does not merely fail -- it PRINTS the perpetual diff, so the
+failure output is the evidence rather than a claim about it.
+*/
+func TestAccessPolicyEmptyEndpointBlockIsRefusedAtPlanTime(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		rule   map[string]interface{}
+		wantIn string
+	}{
+		{
+			name: "a sources block with no attributes at all",
+			rule: map[string]interface{}{
+				"sources": []interface{}{map[string]interface{}{}},
+			},
+			wantIn: "rule.0.sources",
+		},
+		{
+			name: "a sources block whose only attribute is empty",
+			rule: map[string]interface{}{
+				"sources": []interface{}{map[string]interface{}{"users": []interface{}{}}},
+			},
+			wantIn: "rule.0.sources",
+		},
+		{
+			name: "a sources block with every attribute empty",
+			rule: map[string]interface{}{
+				"sources": []interface{}{map[string]interface{}{
+					"users": []interface{}{}, "groups": []interface{}{},
+					"addresses": []interface{}{},
+				}},
+			},
+			wantIn: "rule.0.sources",
+		},
+		{
+			name: "an empty destinations block",
+			rule: map[string]interface{}{
+				"destinations": []interface{}{map[string]interface{}{}},
+			},
+			wantIn: "rule.0.destinations",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rule := map[string]interface{}{
+				"name": "unrestricted", "applied_on": "both",
+				"action": "block", "status": "active",
+			}
+			for k, v := range tc.rule {
+				rule[k] = v
+			}
+			config := map[string]interface{}{"rule": []interface{}{rule}}
+
+			r := resourceAccessPolicy()
+			diff, err := r.Diff(context.Background(), nil,
+				terraform.NewResourceConfigRaw(config), nil)
+
+			if err == nil {
+				var report string
+				if diff != nil {
+					for key, attr := range diff.Attributes {
+						report += fmt.Sprintf("  %s: %q -> %q\n", key, attr.Old, attr.New)
+					}
+				}
+				t.Fatalf("this configuration planned cleanly. An empty block can never "+
+					"converge: the server returns an unrestricted rule as empty buckets, "+
+					"which read back as no block at all, so this plan repeats forever. "+
+					"The plan it produced:\n%s", report)
+			}
+			if !strings.Contains(err.Error(), tc.wantIn) {
+				t.Errorf("the plan error does not name %s, so it cannot be acted on: %v",
+					tc.wantIn, err)
+			}
+			// It has to say what to DO, not only that something is wrong.
+			for _, fragment := range []string{"Remove the block", "only way"} {
+				if !strings.Contains(err.Error(), fragment) {
+					t.Errorf("the plan error does not contain %q, so it diagnoses without "+
+						"prescribing: %v", fragment, err)
+				}
+			}
+		})
+	}
+}
+
+/*
+TestAccessPolicyPopulatedEndpointBlockStillPlans is the control for the guard
+above, and it is the half that matters more.
+
+A guard that refuses empty blocks is trivial to write in a form that also refuses
+a block with one populated attribute among several empty ones -- which is the
+COMMON configuration, and refusing it would be a worse bug than the one being
+fixed. This pins that the guard is narrow.
+
+The unknown-value row is the specific case that would break real configurations:
+`sources { users = [checkpointsase_user.x.id] }` where the id does not exist yet
+reads as an empty set during plan, indistinguishable from an empty block. A guard
+without the NewValueKnown check refuses every rule that references a resource
+created in the same apply.
+*/
+func TestAccessPolicyPopulatedEndpointBlockStillPlans(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rule map[string]interface{}
+	}{
+		{"one populated attribute among empties", map[string]interface{}{
+			"sources": []interface{}{map[string]interface{}{
+				"users": []interface{}{"user-1"}, "groups": []interface{}{},
+			}},
+		}},
+		{"no block at all, which is how any source is spelled", map[string]interface{}{}},
+		{"a value that is not known until apply", map[string]interface{}{
+			"sources": []interface{}{map[string]interface{}{
+				"users": []interface{}{hcl2ValueNotYetKnown},
+			}},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rule := map[string]interface{}{
+				"name": "restricted", "applied_on": "both",
+				"action": "block", "status": "active",
+			}
+			for k, v := range tc.rule {
+				rule[k] = v
+			}
+			if _, err := resourceAccessPolicy().Diff(context.Background(), nil,
+				terraform.NewResourceConfigRaw(
+					map[string]interface{}{"rule": []interface{}{rule}}), nil); err != nil {
+				t.Fatalf("this configuration was refused at plan time, and it is legal: %v", err)
+			}
+		})
+	}
+}
+
+/*
+hcl2ValueNotYetKnown is the sentinel terraform-plugin-sdk uses inside a
+ResourceConfig for a value that will not be known until apply. It is unexported
+in the SDK (config.UnknownVariableValue), so it is transcribed here rather than
+imported; the constant has been stable since Terraform 0.12.
+*/
+const hcl2ValueNotYetKnown = "74D93920-ED26-11E3-AC10-0800200C9A66"
+
+// ---------------------------------------------------------------------------
+// Order, where it does NOT exist
+// ---------------------------------------------------------------------------
+
+/*
+TestAccessPolicyReadIsInsensitiveToCollectionOrder is the answer to the one
+assumption the first version of this resource made and never checked.
+
+`rule` is ordered, because array position IS rule precedence (API-FINDINGS 1.16).
+Nothing else in this resource is. A rule's source ids, destination ids, weekdays
+and time windows have no order anywhere in the API -- RuleWeb.json even declares
+weekdays `uniqueItems`, which is set semantics outright -- and no probe ever
+measured the server preserving the order they were sent in.
+
+Modelling them as ordered lists would be asserting a property nobody checked, and
+the cost of being wrong is a permanent diff. `weekdays` is the one that would
+have bitten: EVERY rule with a time constraint has one, so it is the common case
+rather than the rare one.
+
+This test hands the flattener a response whose every collection is in a DIFFERENT
+order from the configuration, and asks for a plan. Sets make it empty. Lists make
+every element a diff.
+*/
+func TestAccessPolicyReadIsInsensitiveToCollectionOrder(t *testing.T) {
+	// The server's answer, with every collection deliberately shuffled relative
+	// to the configuration below: users reversed, categories reversed, weekdays
+	// out of calendar order, and the two time windows swapped.
+	shuffled := accessPolicyGetBody(accessPolicyCanonicalRuleJSON("rule-zzz", "shuffled", 0,
+		`{"type":"users","value":["user-2","user-1"]}`,
+		`{"type":"categories","value":["100000034","100000001"]}`,
+		`{"type":"datetime","value":[`+
+			`{"weekdays":["Wed","Mon"],"startTime":{"hour":18,"minute":0},`+
+			`"endTime":{"hour":23,"minute":59}},`+
+			`{"weekdays":["Sat"],"startTime":{"hour":0,"minute":0},`+
+			`"endTime":{"hour":6,"minute":0}}]}`))
+
+	config := map[string]interface{}{
+		"rule": []interface{}{map[string]interface{}{
+			"name": "shuffled", "applied_on": "both", "action": "block", "status": "active",
+			"sources": []interface{}{map[string]interface{}{
+				"users": []interface{}{"user-1", "user-2"},
+			}},
+			"destinations": []interface{}{map[string]interface{}{
+				"categories": []interface{}{"100000001", "100000034"},
+			}},
+			"conditions": []interface{}{
+				// Written in the opposite order from the response, and with the
+				// minutes OMITTED on one window -- which also pins that the
+				// Default on a nested attribute inside a set does not itself
+				// produce a hash mismatch.
+				map[string]interface{}{
+					"weekdays": []interface{}{"Sat"}, "start_hour": 0, "end_hour": 6,
+					"end_minute": 0,
+				},
+				map[string]interface{}{
+					"weekdays":   []interface{}{"Mon", "Wed"},
+					"start_hour": 18, "start_minute": 0, "end_hour": 23, "end_minute": 59,
+				},
+			},
+		}},
+	}
+
+	r := resourceAccessPolicy()
+	d := schema.TestResourceDataRaw(t, r.Schema, map[string]interface{}{})
+	d.SetId(accessPolicyResourceID)
+	if err := d.Set("rule", accessPolicyRulesFromBody(t, shuffled)); err != nil {
+		t.Fatalf("could not set rule from the read: %v", err)
+	}
+
+	diff, err := r.Diff(context.Background(), d.State(),
+		terraform.NewResourceConfigRaw(config), nil)
+	if err != nil {
+		t.Fatalf("planning against the read state failed: %v", err)
+	}
+	if diff != nil && !diff.Empty() {
+		var report string
+		for key, attr := range diff.Attributes {
+			report += fmt.Sprintf("  %s: %q -> %q\n", key, attr.Old, attr.New)
+		}
+		t.Errorf("the plan is not empty even though the server returned exactly what was "+
+			"configured, only in a different order. Nothing in the API assigns an order to "+
+			"a bucket's ids, to weekdays or to time windows, so these must be sets:\n%s", report)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bucket types this provider does not know
+// ---------------------------------------------------------------------------
+
+/*
+findOpenAPIDocument locates the OpenAPI document the SDK is generated from.
+
+It walks up from the test's working directory rather than hard-coding a relative
+path, so the test survives being run from a different depth. It SKIPS rather than
+fails when the document is absent: the SDK is consumed as a module and a checkout
+that has only the module cache genuinely cannot answer this question. The skip
+message says exactly what was looked for, so a skip is actionable rather than
+mysterious.
+*/
+func findOpenAPIDocument(t *testing.T) map[string]interface{} {
+	t.Helper()
+
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("working directory: %v", err)
+	}
+	const relative = "perimeter-81-client-sdk/api/openapi.yaml"
+	for {
+		candidate := filepath.Join(dir, relative)
+		if body, err := os.ReadFile(candidate); err == nil {
+			var doc map[string]interface{}
+			if err := yaml.Unmarshal(body, &doc); err != nil {
+				t.Fatalf("parsing %s: %v", candidate, err)
+			}
+			return doc
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Skipf("no %s found in any parent of the working directory. This check needs the "+
+				"SDK's source checkout, which the go.mod replace directive points at; a "+
+				"module-cache-only build cannot run it.", relative)
+		}
+		dir = parent
+	}
+}
+
+// openAPITypeEnum returns the `type` property's enum for one schema in the
+// document, failing rather than skipping if the schema is missing -- a schema
+// that has disappeared is a real signal, not an absent input.
+func openAPITypeEnum(t *testing.T, doc map[string]interface{}, schemaName string) []string {
+	t.Helper()
+
+	components, ok := doc["components"].(map[string]interface{})
+	if !ok {
+		t.Fatal("the OpenAPI document has no components section")
+	}
+	schemas, ok := components["schemas"].(map[string]interface{})
+	if !ok {
+		t.Fatal("the OpenAPI document has no components.schemas section")
+	}
+	definition, ok := schemas[schemaName].(map[string]interface{})
+	if !ok {
+		t.Fatalf("the OpenAPI document has no %s schema", schemaName)
+	}
+	properties, ok := definition["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("%s has no properties", schemaName)
+	}
+	typeProperty, ok := properties["type"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("%s has no type property", schemaName)
+	}
+	raw, ok := typeProperty["enum"].([]interface{})
+	if !ok {
+		t.Fatalf("%s.type has no enum", schemaName)
+	}
+
+	values := make([]string, 0, len(raw))
+	for _, value := range raw {
+		values = append(values, fmt.Sprint(value))
+	}
+	return values
+}
+
+/*
+TestAccessPolicyBucketTablesCoverTheAPIEnums fails when the API grows a bucket
+type this provider has no attribute for.
+
+Without it, a new type is invisible and the invisibility is the damage. Trace it:
+the server holds a rule restricted by the new type; Read has nowhere to put it so
+it is dropped; state therefore says the block is absent; the configuration also
+has no block, so THE PLAN IS EMPTY and the operator is shown nothing; and the
+next apply for any unrelated reason POSTs the whole array without the
+restriction. A policy widened with no plan output is the one outcome a
+declarative tool exists to make impossible.
+
+So this converts "the spec grew a type" from a runtime silence into a failing
+test at the moment the SDK is regenerated, which is the moment somebody is
+already looking. unknownAccessPolicyBucketTypes is the runtime backstop for a
+server that is ahead of its own spec.
+
+The condition type is checked in the same place and for the same reason: the
+resource does not expose `conditions[].type` at all, on the grounds that
+`datetime` is the only legal value. That is only safe while it stays true.
+*/
+func TestAccessPolicyBucketTablesCoverTheAPIEnums(t *testing.T) {
+	doc := findOpenAPIDocument(t)
+
+	for _, tc := range []struct {
+		schemaName string
+		attr       string
+		buckets    []accessPolicyBucket
+	}{
+		{"AccessPolicySource", "sources", accessPolicySourceBuckets},
+		{"AccessPolicyDestination", "destinations", accessPolicyDestinationBuckets},
+	} {
+		t.Run(tc.schemaName, func(t *testing.T) {
+			declared := openAPITypeEnum(t, doc, tc.schemaName)
+
+			mapped := map[string]bool{}
+			for _, bucket := range tc.buckets {
+				mapped[bucket.apiType] = true
+			}
+
+			for _, apiType := range declared {
+				if !mapped[apiType] {
+					t.Errorf("the API declares %s.type = %q and this provider has no attribute "+
+						"for it, so a rule restricted by it is DROPPED on read -- and because "+
+						"the configuration has no block for it either, the plan is empty and "+
+						"the next apply silently removes the restriction. Add it to "+
+						"accessPolicy%sBuckets and to the %s element schema.",
+						tc.schemaName, apiType, strings.Title(tc.attr[:len(tc.attr)-1]), tc.attr)
+				}
+			}
+
+			// And the other direction: an attribute mapping to a type the API no
+			// longer has would be accepted at plan time and rejected on apply.
+			for _, bucket := range tc.buckets {
+				found := false
+				for _, apiType := range declared {
+					if apiType == bucket.apiType {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("this provider maps %s.%s to API type %q, which %s.type no longer "+
+						"declares: %v", tc.attr, bucket.attr, bucket.apiType, tc.schemaName,
+						declared)
+				}
+			}
+		})
+	}
+
+	// conditions[].type is not exposed at all, which is only correct while
+	// datetime is the only value.
+	if declared := openAPITypeEnum(t, doc, "Condition"); !testComparableArraiesEq(
+		declared, []string{accessPolicyConditionTypeDatetime}) {
+		t.Errorf("Condition.type now declares %v. This resource exposes `conditions` as a flat "+
+			"list of time windows precisely because %q was the only legal type; with more than "+
+			"one, the type level has to be exposed or the others are silently unmanageable.",
+			declared, accessPolicyConditionTypeDatetime)
+	}
+}
+
+/*
+TestAccessPolicyReadWarnsAboutBucketTypesItDropped is the runtime half of the
+same problem, for the case the build-time test cannot reach: a server that
+returns a type its own published spec does not declare.
+
+The warning does not prevent the loss -- nothing in a whole-policy resource can,
+because the configuration is the policy -- but it converts an empty plan that
+silently widens a tenant's rules into something the operator is shown on the
+refresh before it happens.
+*/
+func TestAccessPolicyReadWarnsAboutBucketTypesItDropped(t *testing.T) {
+	body := accessPolicyGetBody(accessPolicyCanonicalRuleJSON("rule-new", "future-type", 0,
+		`{"type":"serviceAccounts","value":["sa-1"]}`, "", ""))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	d := schema.TestResourceDataRaw(t, resourceAccessPolicy().Schema, map[string]interface{}{})
+	d.SetId(accessPolicyResourceID)
+
+	diags := resourceAccessPolicyRead(context.Background(), d, newTestUserAPIClient(srv.URL))
+	if diags.HasError() {
+		t.Fatalf("the read failed: %v", diags)
+	}
+
+	var warnings string
+	for _, diagnostic := range diags {
+		if diagnostic.Severity == diag.Warning {
+			warnings += diagnostic.Summary + " " + diagnostic.Detail + " "
+		}
+	}
+	if warnings == "" {
+		t.Fatal("a source bucket of an unknown type was dropped with no warning. The " +
+			"configuration has no block for it either, so the plan is EMPTY and the next " +
+			"apply removes the restriction with nothing shown to the operator.")
+	}
+	for _, fragment := range []string{"serviceAccounts", "future-type"} {
+		if !strings.Contains(warnings, fragment) {
+			t.Errorf("the warning does not name %q, so it cannot be acted on: %s",
+				fragment, warnings)
+		}
+	}
+
+	// The rule itself must still be read; a dropped bucket is not a dropped rule.
+	if got := len(d.Get("rule").([]interface{})); got != 1 {
+		t.Errorf("read %d rules into state, want 1", got)
 	}
 }

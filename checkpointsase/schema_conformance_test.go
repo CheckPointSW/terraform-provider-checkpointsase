@@ -316,8 +316,8 @@ const (
 )
 
 /*
-listAttributeEmptyPolicy records, for every list attribute in the provider, whether the server
-accepts an empty array for it. The verdict for each entry comes from reading the field's validation
+listAttributeEmptyPolicy records, for every list AND set attribute in the provider, whether the
+server accepts an empty array for it. The verdict for each entry comes from reading the field's validation
 decorators in perimeter81-public-api, not from inference:
 
   - @IsOptional() with @ArrayMinSize(1) means the minimum applies only when the key is present, so an
@@ -448,8 +448,15 @@ var listAttributeEmptyPolicy = map[string]struct {
 	// value of the API's single `datetime` bucket; RuleWeb.json puts no minItems on it, and
 	// API-FINDINGS 1.15 measured `conditions: []` accepted -- it is in fact the form the server
 	// canonicalises FROM.
-	"resource.checkpointsase_access_policy.rule.sources":      {mayBeEmpty, "MaxItems 1 wrapper block; absent means any source"},
-	"resource.checkpointsase_access_policy.rule.destinations": {mayBeEmpty, "MaxItems 1 wrapper block; absent means any destination"},
+	//
+	// Note what mayBeEmpty does and does not say for the two wrapper blocks. It is about the
+	// NUMBER OF BLOCKS -- zero blocks is legal and is how "any source" is spelled. A block that
+	// is present but EMPTY is a different thing and is refused by
+	// resourceAccessPolicyCustomizeDiff, because the server returns an unrestricted rule as
+	// empty buckets which read back as no block at all, so the two spellings could never
+	// converge. MinItems could not express that: an empty block is still one block.
+	"resource.checkpointsase_access_policy.rule.sources":      {mayBeEmpty, "MaxItems 1 wrapper block; ZERO blocks means any source, an empty block is refused in CustomizeDiff"},
+	"resource.checkpointsase_access_policy.rule.destinations": {mayBeEmpty, "MaxItems 1 wrapper block; ZERO blocks means any destination, an empty block is refused in CustomizeDiff"},
 	"resource.checkpointsase_access_policy.rule.conditions":   {mayBeEmpty, "measured: conditions: [] accepted (API-FINDINGS 1.15); RuleWeb.json sets no minItems"},
 
 	// --- mayBeEmpty: [] is legal, and for most of these it is the only way to clear -------------
@@ -525,7 +532,7 @@ var listAttributeEmptyPolicy = map[string]struct {
 
 /*
 TestSchemaListAttributesMatchTheirEmptyArrayVerdict enforces listAttributeEmptyPolicy in both
-directions, and fails on any list attribute missing from it.
+directions, and fails on any list or set attribute missing from it.
 
 The "unclassified" failure is the point. A new list attribute that reaches a request body is exactly
 the situation that produced three blockers, so the suite refuses to pass until someone has read the
@@ -537,13 +544,20 @@ func TestSchemaListAttributesMatchTheirEmptyArrayVerdict(t *testing.T) {
 			continue // data sources have no request body
 		}
 		walkSchema("", m, func(path string, s *schema.Schema) {
-			if s.Type != schema.TypeList || (s.Computed && !s.Optional) {
+			// TypeSet as well as TypeList. Both reach a request body as a JSON
+			// array, so both can be sent as `[]`, and a sweep that looked only at
+			// TypeList would have a hole exactly the size of the next attribute
+			// somebody makes a set. checkpointsase_access_policy was the first
+			// resource in this provider to use TypeSet at all, which is how the
+			// hole was found; widening it here cost nothing elsewhere.
+			if (s.Type != schema.TypeList && s.Type != schema.TypeSet) ||
+				(s.Computed && !s.Optional) {
 				return
 			}
 			full := res + "." + path
 			policy, ok := listAttributeEmptyPolicy[full]
 			if !ok {
-				t.Errorf("%s is a list attribute with no entry in listAttributeEmptyPolicy. Read the "+
+				t.Errorf("%s is a list or set attribute with no entry in listAttributeEmptyPolicy. Read the "+
 					"field's validator in perimeter81-public-api and record whether the server accepts "+
 					"an empty array for it — guessing is what this map exists to stop", full)
 				return

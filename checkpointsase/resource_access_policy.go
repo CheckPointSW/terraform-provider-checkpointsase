@@ -3,6 +3,7 @@ package checkpointsase
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
@@ -197,6 +198,7 @@ func resourceAccessPolicy() *schema.Resource {
 		ReadContext:   resourceAccessPolicyRead,
 		UpdateContext: resourceAccessPolicyWrite,
 		DeleteContext: resourceAccessPolicyDelete,
+		CustomizeDiff: resourceAccessPolicyCustomizeDiff,
 		Schema: map[string]*schema.Schema{
 			"rule": {
 				/*
@@ -282,26 +284,43 @@ func resourceAccessPolicy() *schema.Resource {
 							Type:     schema.TypeList,
 							Optional: true,
 							MaxItems: 1,
-							Description: "Restricts who the rule matches. Omit the block, or leave " +
-								"every attribute in it empty, to match **any** source — that is what " +
-								"the API's empty bucket means. Each attribute takes object **ids**, " +
-								"not names.",
+							Description: "Restricts who the rule matches. **Omitting the block is the " +
+								"only way to express \"any source\".** A block that is present but " +
+								"empty is refused at plan time: the server answers an unrestricted " +
+								"rule with empty buckets, which read back as no block at all, so a " +
+								"configuration holding an empty block could never converge. " +
+								"Each attribute takes object **ids**, not names.",
 							Elem: accessPolicySourcesResource(),
 						},
 						"destinations": {
 							Type:     schema.TypeList,
 							Optional: true,
 							MaxItems: 1,
-							Description: "Restricts what the rule matches traffic to. Omit the block, " +
-								"or leave every attribute in it empty, to match **any** destination. " +
-								"Each attribute takes object **ids**, not names or URLs.",
+							Description: "Restricts what the rule matches traffic to. **Omitting the " +
+								"block is the only way to express \"any destination\".** A block that " +
+								"is present but empty is refused at plan time, for the reason given " +
+								"on `sources`. Each attribute takes object **ids**, not names or URLs.",
 							Elem: accessPolicyDestinationsResource(),
 						},
 						"conditions": {
-							Type:     schema.TypeList,
+							/*
+								A TypeSet. Time windows have no order: nothing in the API
+								assigns one, nothing in RuleWeb.json records one, and the
+								server was never measured preserving one. A TypeList would
+								be asserting a property nobody has checked, and the cost of
+								being wrong is a permanent diff on every rule with more
+								than one window.
+
+								`rule` is deliberately the ONLY ordered list in this
+								resource, which is the whole of Option B's contract: order
+								is the security posture for RULES and means nothing
+								anywhere else.
+							*/
+							Type:     schema.TypeSet,
 							Optional: true,
 							Description: "Time windows during which the rule is in force. Omit it for " +
-								"a rule with no time constraint, which is the default. " +
+								"a rule with no time constraint, which is the default. Order is not " +
+								"significant. " +
 								"This maps to the API's `conditions` array, whose only legal entry " +
 								"type is `datetime`; because there is exactly one type, the type " +
 								"level is not exposed and each block here is one entry of that " +
@@ -346,6 +365,120 @@ func validateAccessPolicyRuleName(v interface{}, k string) (warns []string, errs
 	return nil, nil
 }
 
+/*
+resourceAccessPolicyCustomizeDiff refuses a `sources` or `destinations` block
+that is present but empty, at plan time, and it exists because the alternative is
+a plan that never converges.
+
+THE MECHANISM, because it is not obvious and the wrong fix is tempting. The
+server answers an unrestricted rule with one EMPTY bucket per legal type
+(API-FINDINGS 1.15), and flattenAccessPolicySources correctly drops those, so
+such a rule always reads back as ZERO blocks. A configuration that spells "any
+source" as `sources {}` or `sources { users = [] }` holds ONE. Those two never
+meet: every plan proposes `rule.N.sources.#: "0" -> "1"`, the apply succeeds, the
+re-read writes 0 back, and the next plan proposes it again. Measured, on this
+resource's own probe fixture, through the real Diff path.
+
+WHY THIS AND NOT NORMALISATION. The obvious-looking fix is to have the expander
+treat an empty block as absent. It does not work, and it is worth writing down
+why so that nobody spends an afternoon on it: the diff is computed at PLAN time
+from configuration against state, and the expander runs at APPLY time, long
+after. Normalising there fixes what is POSTed and leaves the perpetual diff
+untouched.
+
+That is measured, not argued. expandAccessPolicySources has ALWAYS omitted an
+empty bucket -- it is the write-side half of the same normalisation, and
+TestAccessPolicyExpandOmitsEmptyBuckets pins it -- and the diff was still
+`rule.0.sources.#: "0" -> "1"` on every plan. Delete this function and
+TestAccessPolicyEmptyEndpointBlockIsRefusedAtPlanTime prints exactly that, with
+the expander's normalisation fully in place. So the expander-side fix has been
+in the code the whole time and never helped.
+
+Making the empty spelling genuinely work would instead need a DiffSuppressFunc on
+the block's `.#` count key, which in SDKv2 cannot suppress a nested block's count
+without leaving the child keys unsuppressed. So the honest choice is between a
+silent permanent diff and a loud plan-time error, and this is the error. It names
+the block and says to remove it.
+
+The same wording is now on both attribute descriptions, and it matches
+checkpointsase_firewall_policy, which has said "the only way to express any
+source" since it shipped.
+
+UNKNOWN VALUES ARE SKIPPED, not rejected. `sources { users = [x.y.id] }` where
+the id is not yet known reads as an EMPTY SET during plan, which is
+indistinguishable here from a genuinely empty block -- so a guard without that
+check refuses a correct configuration whenever a rule references a resource
+created in the same apply, which is the normal case. It was written without it
+first and TestAccessPolicyPopulatedEndpointBlockStillPlans caught it.
+
+  - @param d *schema.ResourceDiff - the planned diff
+
+@return error - a plan-time refusal naming the block, or nil
+*/
+func resourceAccessPolicyCustomizeDiff(_ context.Context, d *schema.ResourceDiff, _ interface{}) error {
+	rules, ok := d.Get("rule").([]interface{})
+	if !ok {
+		return nil
+	}
+
+	for index := range rules {
+		for _, endpoint := range []struct {
+			attr    string
+			buckets []accessPolicyBucket
+			any     string
+		}{
+			{"sources", accessPolicySourceBuckets, "any source"},
+			{"destinations", accessPolicyDestinationBuckets, "any destination"},
+		} {
+			path := fmt.Sprintf("rule.%d.%s", index, endpoint.attr)
+			blocks, ok := d.Get(path).([]interface{})
+			if !ok || len(blocks) == 0 {
+				continue // omitted, which is the spelling this guard is steering towards
+			}
+
+			empty := true
+			for _, bucket := range endpoint.buckets {
+				key := fmt.Sprintf("%s.0.%s", path, bucket.attr)
+				/*
+					THE COUNT KEY, not the collection key. Measured: for
+					`users = [some_resource.x.id]` at plan time,
+					NewValueKnown("…users") answers true while
+					NewValueKnown("…users.#") answers false -- the unknown is
+					recorded against the element count, and asking about the
+					collection itself gets a confident "known" for a set that
+					reads as empty. Checking the wrong key here is not a subtle
+					degradation: it refuses every rule that references a resource
+					created in the same apply, which is the normal case.
+				*/
+				if !d.NewValueKnown(key+".#") || !d.NewValueKnown(key) {
+					// Not yet computable, so assume it will be non-empty. A
+					// genuinely empty one still cannot converge and will be
+					// caught on the next plan, once the value is known; a false
+					// refusal here would break correct configuration now.
+					empty = false
+					break
+				}
+				if len(accessPolicyCollection(d.Get(key))) > 0 {
+					empty = false
+					break
+				}
+			}
+
+			if empty {
+				return fmt.Errorf(
+					"%s is present but empty. Remove the block entirely: omitting it is the "+
+						"only way to express %q. An empty block cannot be applied -- the server "+
+						"returns an unrestricted rule as empty buckets, which read back as no "+
+						"block at all, so %s would propose the same change on every plan and "+
+						"never converge",
+					path, endpoint.any, path)
+			}
+		}
+	}
+
+	return nil
+}
+
 // accessPolicySourcesResource is the element schema of a rule's `sources` block:
 // one attribute per legal source type. See accessPolicyBucket for why the API's
 // `{type, value}` list is not exposed directly.
@@ -353,25 +486,25 @@ func accessPolicySourcesResource() *schema.Resource {
 	return &schema.Resource{
 		Schema: map[string]*schema.Schema{
 			"users": {
-				Type:     schema.TypeList,
+				Type:     schema.TypeSet,
 				Optional: true,
-				Description: "Ids of `checkpointsase_user` objects this rule matches. Empty or " +
-					"absent means the rule is not restricted by user.",
+				Description: "Ids of `checkpointsase_user` objects this rule matches. A set: order " +
+					"is not significant. Omit it to leave the rule unrestricted by user.",
 				Elem: &schema.Schema{Type: schema.TypeString},
 			},
 			"groups": {
-				Type:     schema.TypeList,
+				Type:     schema.TypeSet,
 				Optional: true,
-				Description: "Ids of `checkpointsase_group` objects this rule matches. Empty or " +
-					"absent means the rule is not restricted by group.",
+				Description: "Ids of `checkpointsase_group` objects this rule matches. A set: order " +
+					"is not significant. Omit it to leave the rule unrestricted by group.",
 				Elem: &schema.Schema{Type: schema.TypeString},
 			},
 			"addresses": {
-				Type:     schema.TypeList,
+				Type:     schema.TypeSet,
 				Optional: true,
 				Description: "Ids of `checkpointsase_object_addresses` objects this rule matches — " +
-					"**not** CIDRs or IP literals. Empty or absent means the rule is not " +
-					"restricted by address.",
+					"**not** CIDRs or IP literals. A set: order is not significant. Omit it to " +
+					"leave the rule unrestricted by address.",
 				Elem: &schema.Schema{Type: schema.TypeString},
 			},
 		},
@@ -386,34 +519,35 @@ func accessPolicyDestinationsResource() *schema.Resource {
 	return &schema.Resource{
 		Schema: map[string]*schema.Schema{
 			"custom_urls": {
-				Type:     schema.TypeList,
+				Type:     schema.TypeSet,
 				Optional: true,
-				Description: "Ids of custom-URL shared objects this rule matches. Empty or absent " +
-					"means the rule is not restricted by custom URL list.",
+				Description: "Ids of custom-URL shared objects this rule matches. A set: order is " +
+					"not significant. Omit it to leave the rule unrestricted by custom URL list.",
 				Elem: &schema.Schema{Type: schema.TypeString},
 			},
 			"categories": {
-				Type:     schema.TypeList,
+				Type:     schema.TypeSet,
 				Optional: true,
 				Description: "Ids of web categories this rule matches, as returned by the " +
-					"`checkpointsase_web_categories` data source. Empty or absent means the rule " +
-					"is not restricted by category.",
+					"`checkpointsase_web_categories` data source. A set: order is not " +
+					"significant. Omit it to leave the rule unrestricted by category.",
 				Elem: &schema.Schema{Type: schema.TypeString},
 			},
 			"application_control_applications": {
-				Type:     schema.TypeList,
+				Type:     schema.TypeSet,
 				Optional: true,
 				Description: "Ids of application-control applications this rule matches, as " +
 					"returned by the `checkpointsase_application_control_applications` data " +
-					"source. Empty or absent means the rule is not restricted by application.",
+					"source. A set: order is not significant. Omit it to leave the rule " +
+					"unrestricted by application.",
 				Elem: &schema.Schema{Type: schema.TypeString},
 			},
 			"updatable_objects": {
-				Type:     schema.TypeList,
+				Type:     schema.TypeSet,
 				Optional: true,
 				Description: "Ids of updatable objects this rule matches, as returned by the " +
-					"`checkpointsase_updatable_objects` data source. Empty or absent means the " +
-					"rule is not restricted by updatable object.",
+					"`checkpointsase_updatable_objects` data source. A set: order is not " +
+					"significant. Omit it to leave the rule unrestricted by updatable object.",
 				Elem: &schema.Schema{Type: schema.TypeString},
 			},
 		},
@@ -427,11 +561,20 @@ func accessPolicyConditionResource() *schema.Resource {
 	return &schema.Resource{
 		Schema: map[string]*schema.Schema{
 			"weekdays": {
-				Type:     schema.TypeList,
+				/*
+					A TypeSet, and this is the one of the four that would have bitten.
+					RuleWeb.json declares weekdays `uniqueItems: true`, which IS set
+					semantics -- and unlike a multi-window rule, EVERY rule with a time
+					constraint has a weekdays array, so a server that returns them in
+					its own order rather than the configuration's would diff forever on
+					the common case rather than the rare one.
+				*/
+				Type:     schema.TypeSet,
 				Required: true,
 				Description: "The days this window covers, as the API's three-letter capitalised " +
 					"abbreviations: `Mon`, `Tue`, `Wed`, `Thu`, `Fri`, `Sat`, `Sun`. Matched " +
-					"case-sensitively.",
+					"case-sensitively. A set: order is not significant, and the API's own " +
+					"stored-document schema declares it `uniqueItems`.",
 				Elem: &schema.Schema{
 					Type:         schema.TypeString,
 					ValidateFunc: validation.StringInSlice(accessPolicyWeekdayValues, false),
@@ -566,6 +709,19 @@ func resourceAccessPolicyRead(ctx context.Context, d *schema.ResourceData, m int
 	if err := d.Set("rule", flattenAccessPolicyRules(rules)); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set the tenant's web access policy rules", err)
+	}
+
+	// A bucket type this provider has no attribute for is dropped by the
+	// flattener and would otherwise vanish without trace -- and because the
+	// configuration has no block for it either, the resulting plan is EMPTY and
+	// the next apply quietly widens the policy. See unknownAccessPolicyBucketTypes.
+	if dropped := unknownAccessPolicyBucketTypes(rules); len(dropped) > 0 {
+		diags = appendWarningDiags(diags,
+			"The web access policy uses rule types this provider does not know",
+			fmt.Sprintf("These restrictions were dropped when the policy was read into state, "+
+				"and the next apply will REMOVE them from the tenant because Terraform cannot "+
+				"see them: %s. Upgrade the provider, or stop managing this policy with "+
+				"Terraform until it supports these types.", strings.Join(dropped, ", ")))
 	}
 
 	return diags
@@ -738,7 +894,7 @@ func expandAccessPolicySources(raw interface{}) []perimeter81Sdk.AccessPolicySou
 	}
 
 	for _, bucket := range accessPolicySourceBuckets {
-		values := flattenStringsArrayData(accessPolicyStringList(block[bucket.attr]))
+		values := flattenStringsArrayData(accessPolicyCollection(block[bucket.attr]))
 		if len(values) == 0 {
 			continue
 		}
@@ -762,7 +918,7 @@ func expandAccessPolicyDestinations(raw interface{}) []perimeter81Sdk.AccessPoli
 	}
 
 	for _, bucket := range accessPolicyDestinationBuckets {
-		values := flattenStringsArrayData(accessPolicyStringList(block[bucket.attr]))
+		values := flattenStringsArrayData(accessPolicyCollection(block[bucket.attr]))
 		if len(values) == 0 {
 			continue
 		}
@@ -791,8 +947,8 @@ canonicalises FROM, so it is the known-good shape to send.
 func expandAccessPolicyConditions(raw interface{}) []perimeter81Sdk.Condition {
 	conditions := []perimeter81Sdk.Condition{}
 
-	windows, ok := raw.([]interface{})
-	if !ok || len(windows) == 0 {
+	windows := accessPolicyCollection(raw)
+	if len(windows) == 0 {
 		return conditions
 	}
 
@@ -803,7 +959,7 @@ func expandAccessPolicyConditions(raw interface{}) []perimeter81Sdk.Condition {
 			continue
 		}
 		values = append(values, perimeter81Sdk.ConditionValueInner{
-			Weekdays: flattenStringsArrayData(accessPolicyStringList(block["weekdays"])),
+			Weekdays: flattenStringsArrayData(accessPolicyCollection(block["weekdays"])),
 			StartTime: perimeter81Sdk.ConditionTime{
 				Hour:   int32(block["start_hour"].(int)),
 				Minute: int32(block["start_minute"].(int)),
@@ -831,8 +987,8 @@ func expandAccessPolicyConditions(raw interface{}) []perimeter81Sdk.Condition {
 // bucket array from -- the same result as omitting the block, which is what the
 // server means by it.
 func accessPolicySingleBlock(raw interface{}) map[string]interface{} {
-	list, ok := raw.([]interface{})
-	if !ok || len(list) == 0 || list[0] == nil {
+	list := accessPolicyCollection(raw)
+	if len(list) == 0 || list[0] == nil {
 		return nil
 	}
 	block, ok := list[0].(map[string]interface{})
@@ -842,15 +998,30 @@ func accessPolicySingleBlock(raw interface{}) map[string]interface{} {
 	return block
 }
 
-// accessPolicyStringList narrows an interface{} that should hold a TypeList of
-// strings, returning an empty slice for an absent or wrongly-typed value rather
-// than panicking. The nested attributes are all Optional, so absent is ordinary.
-func accessPolicyStringList(raw interface{}) []interface{} {
-	list, ok := raw.([]interface{})
-	if !ok {
+/*
+accessPolicyCollection narrows an interface{} that should hold a collection --
+of strings, or of nested blocks -- returning nil for an absent or wrongly-typed value rather than
+panicking. The nested attributes are all Optional, so absent is ordinary.
+
+It accepts BOTH forms because the two are not interchangeable and the compiler
+will not tell you which one you have: every id collection in this resource, and
+`conditions`, are TypeSets, which d.Get hands back as a *schema.Set, while
+`sources` and `destinations` are TypeLists and arrive as []interface{}. Handling
+only the second is how a set attribute silently reads as empty -- which here
+would mean "unrestricted", i.e. a rule that matches everything.
+*/
+func accessPolicyCollection(raw interface{}) []interface{} {
+	switch value := raw.(type) {
+	case *schema.Set:
+		if value == nil {
+			return nil
+		}
+		return value.List()
+	case []interface{}:
+		return value
+	default:
 		return nil
 	}
-	return list
 }
 
 /*
@@ -892,6 +1063,57 @@ func flattenAccessPolicyRules(rules []perimeter81Sdk.AccessPolicyRule) []interfa
 	}
 
 	return flattened
+}
+
+/*
+unknownAccessPolicyBucketTypes reports every source or destination `type` the
+server returned that this provider has no attribute for, as
+"rule-name: sources.someNewType" strings.
+
+It exists because the flatteners have to drop such a bucket -- there is nowhere
+to put it -- and dropping it SILENTLY is worse than it first looks. Trace it: the
+server holds a rule restricted by an unknown type; Read flattens it away, so
+state says the block is absent; the configuration also has no block, so THE PLAN
+IS EMPTY and the operator is shown nothing; and the next apply for any unrelated
+reason POSTs the whole array without the restriction. That is a policy widening
+with no plan output, which is the one thing a declarative tool exists to prevent.
+
+A warning does not stop it, but it makes it visible on the refresh that precedes
+every plan. TestAccessPolicyBucketTablesCoverTheAPIEnums is the other half and
+the better half: it fails at build time when the spec grows a type, so the
+warning is the backstop for a server that is ahead of the spec rather than the
+primary defence.
+
+  - @param rules []perimeter81Sdk.AccessPolicyRule - the list as returned by a GET
+
+@return []string - one entry per dropped bucket; nil when nothing was dropped
+*/
+func unknownAccessPolicyBucketTypes(rules []perimeter81Sdk.AccessPolicyRule) []string {
+	known := func(buckets []accessPolicyBucket, apiType string) bool {
+		for _, bucket := range buckets {
+			if bucket.apiType == apiType {
+				return true
+			}
+		}
+		return false
+	}
+
+	var dropped []string
+	for _, rule := range rules {
+		for _, source := range rule.GetSources() {
+			if !known(accessPolicySourceBuckets, source.GetType()) {
+				dropped = append(dropped,
+					fmt.Sprintf("%s: sources.%s", rule.GetName(), source.GetType()))
+			}
+		}
+		for _, destination := range rule.GetDestinations() {
+			if !known(accessPolicyDestinationBuckets, destination.GetType()) {
+				dropped = append(dropped,
+					fmt.Sprintf("%s: destinations.%s", rule.GetName(), destination.GetType()))
+			}
+		}
+	}
+	return dropped
 }
 
 /*

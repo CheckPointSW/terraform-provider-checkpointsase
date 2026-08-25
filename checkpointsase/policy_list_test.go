@@ -252,8 +252,13 @@ The assertion is on the serialised bytes, not on the slice, because the slice is
 only a problem once it reaches the wire.
 */
 func TestSanitiseNeverSendsANullArray(t *testing.T) {
+	// status is "active", not "enabled": the OpenAPI document declares
+	// `enum: [active, inactive]` on both rule models and $defs.SWGStatus agrees.
+	// Nothing here asserts on it, which is exactly why the wrong value survived
+	// the first sweep -- so the sweep is finished rather than left to the fixture
+	// that happened to be checked.
 	access, err := json.Marshal(sanitiseAccessPolicyRule(perimeter81Sdk.AccessPolicyRule{
-		Name: "unset arrays", AppliedOn: "both", Action: "block", Status: "enabled",
+		Name: "unset arrays", AppliedOn: "both", Action: "block", Status: "active",
 	}))
 	if err != nil {
 		t.Fatalf("marshalling a sanitised access policy rule: %v", err)
@@ -265,7 +270,7 @@ func TestSanitiseNeverSendsANullArray(t *testing.T) {
 	}
 
 	https, err := json.Marshal(sanitiseHttpsInspectionRule(perimeter81Sdk.HttpsInspectionRule{
-		Name: "unset arrays", AppliedOn: "sites", Status: "enabled",
+		Name: "unset arrays", AppliedOn: "sites", Status: "active",
 	}))
 	if err != nil {
 		t.Fatalf("marshalling a sanitised HTTPS inspection rule: %v", err)
