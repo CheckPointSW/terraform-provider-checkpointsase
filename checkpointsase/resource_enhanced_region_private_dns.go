@@ -68,17 +68,38 @@ the call returns. The body, the schema, the expander, the flattener, the diff
 rules and the async wait are all in private_dns.go, shared verbatim; this file is
 this resource's ADDRESS and its CRUD wiring and nothing else.
 
-THE REGION ENDPOINT HAS NEVER BEEN MEASURED, AND NOTHING HERE MAY PRETEND
-OTHERWISE. Every capture behind API-FINDINGS.md 1.31 -- the two disabled read
-shapes, the 422 for a body with no `attributes`, the 400 for a null array, the
-byte-exact round trip -- was taken against the NETWORK path. No probe has ever
-touched `/regions/{regionId}/privateDNS`. What justifies reusing all of it is the
-SPEC: the two paths share the request model (CustomDnsUpdate), the response model
+THE REGION ENDPOINT HAS NOW BEEN READ, ONCE, AND WHAT IT RETURNED IS NOT WHAT
+THIS FILE ASSUMED. Measured 2026-08-26 (API-FINDINGS.md 1.37):
+
+	GET /v3/networks/enhanced/{networkId}/regions/{regionId}/privateDNS
+	-> 200 {"enabled":false,"attributes":{
+	          "dnsPolicy":{"public":{"domains":[]},
+	                       "private":{"mode":"resolveAllViaPrivate",
+	                                  "publicFallback":true,"domains":[]}},
+	          "servers":[],"searchDomains":[]}}
+
+A region nobody had configured came back with `attributes` PRESENT and a fully
+populated `dnsPolicy`, byte-for-byte the same body 1.36 read from the STANDARD
+region. So the "third disabled read shape" is a property of REGIONS and not of
+the standard family: both region endpoints return it and neither NETWORK endpoint
+does. `attributes` being Optional AND Computed is what makes this converge, and
+it is not optional-with-a-shrug -- see resourceEnhancedRegionPrivateDNSRead.
+The region-level 404 was measured in the same run and is a THIRD spelling
+("Region with ID <id> not found.", which echoes the id) -- see the Read comment.
+
+WHAT IS STILL UNMEASURED ON THIS PATH, and it is most of the write half: the 422
+for a body with no `attributes`, the 400 for a null array, the byte-exact round
+trip and every ordering claim all come from captures against the NETWORK path
+(API-FINDINGS.md 1.31, 1.34). Nothing has ever been WRITTEN to
+`/regions/{regionId}/privateDNS`. What justifies reusing all of it is the SPEC:
+the two paths share the request model (CustomDnsUpdate), the response model
 (CustomDns), the response map (202 only) and the operation description, word for
 word. That is a good reason to expect the same behaviour and it is not evidence
-of it. Every fixture in resource_enhanced_region_private_dns_test.go is therefore
-labelled spec-derived, and TestAccEnhancedRegionPrivateDNS_basic is the first
-thing that will find out.
+of it -- and the one read that HAS happened differed from the network path, which
+is a reason to hold the remaining assumptions loosely rather than tightly. The
+write fixtures in resource_enhanced_region_private_dns_test.go stay labelled
+spec-derived, and TestAccEnhancedRegionPrivateDNS_basic is the first thing that
+will find out.
 
 A REGION IS SCOPED INSIDE A NETWORK, and the API says nothing about how the two
 configurations interact -- whether a region's private DNS overrides the network's,
@@ -108,25 +129,33 @@ func resourceEnhancedRegionPrivateDNS() *schema.Resource {
 			"`search_domains` arrays the API requires. After anything has been written, " +
 			"omitting the block carries the last-applied values forward instead — write " +
 			"`attributes {}` to send empty arrays deliberately. " +
-			"**`attributes` is computed as well as optional**, because the API returns the " +
-			"object on every read once anything has been written — a region that has never " +
-			"been configured reads back as `{\"enabled\": false}` with no `attributes` key, " +
-			"and one that has been explicitly disabled reads back with `attributes` present " +
-			"and empty. Removing the block from your configuration therefore leaves whatever " +
+			"**`attributes` is computed as well as optional**, and on this endpoint that is " +
+			"load-bearing from the very first read: a region nobody has configured was " +
+			"measured on 2026-08-26 returning `enabled = false` with `attributes` PRESENT and " +
+			"a fully populated `dns_policy` (`mode = \"resolveAllViaPrivate\"`, " +
+			"`public_fallback = true`, empty domain lists) — the same body the standard " +
+			"region returns, so it is how REGIONS behave rather than a quirk of one family. " +
+			"That is a value nobody wrote, so a configuration naming no `attributes` block " +
+			"would diff against it for ever if `attributes` were merely optional. " +
+			"Removing the block from your configuration therefore leaves whatever " +
 			"the region already holds rather than clearing it; there is nothing it could " +
 			"clear to, since a write with no `attributes` object is rejected. To empty a " +
 			"list write it empty, and to drop the DNS policy remove the `dns_policy` block — " +
 			"the blocks nested inside `attributes` are optional only, so omitting one of those " +
 			"does still clear it. " +
-			"**Everything above about what this API requires, returns and rejects was " +
-			"measured on the enhanced-NETWORK private-DNS endpoint**, not on this one: the " +
-			"two read shapes, the `422` for a write with no `attributes`, and the " +
-			"order-preserving round trip all come from probes against " +
-			"`/v3/networks/enhanced/{networkId}/privateDNS` (`API-FINDINGS.md` §1.31, §1.34). " +
-			"That endpoint takes the identical request and response models and the same " +
+			"**Everything above about what this API REJECTS and ACCEPTS was measured on the " +
+			"enhanced-NETWORK private-DNS endpoint**, not on this one: the `422` for a write " +
+			"with no `attributes` and the order-preserving round trip come from probes " +
+			"against `/v3/networks/enhanced/{networkId}/privateDNS` (`API-FINDINGS.md` " +
+			"§1.31, §1.34), and nothing has ever been written to the region route. That " +
+			"endpoint takes the identical request and response models and the same " +
 			"specification applies to both, so this is the documented contract rather than a " +
-			"guess — but the region route itself has not been probed, and the acceptance test " +
-			"is the first thing that will know if it differs. " +
+			"guess — and the acceptance test is still the first thing that will know if the " +
+			"write half differs. **The read half is measured on this route** " +
+			"(`API-FINDINGS.md` §1.37): both a successful read of an unconfigured region and " +
+			"the `404` for an unknown region id, which reads " +
+			"`{\"message\":\"Region with ID <id> not found.\"}` and is a different string from " +
+			"the network route's `\"Network doesn't exist.\"`. " +
 			privateDNSNoOpDeleteNote + " " +
 			"Import with the network id and the region id joined by a colon: " +
 			"`terraform import checkpointsase_enhanced_region_private_dns.this " +
@@ -299,17 +328,41 @@ report, and both ids are required user-supplied arguments, so the vanished-paren
 case is directly reachable through HCL and has to plan as a recreation rather than
 as an apply-time failure (test-plan row EPD-D01).
 
-THAT P10 CAPTURE IS FROM THE NETWORK PATH, NOT THIS ONE. No probe has ever hit
-/regions/{regionId}/privateDNS at all. The 404 is in the region operation's
-declared response map (openapi.yaml:1121) exactly as it is in the network's, and
-a bogus REGION id -- as opposed to a bogus network id -- has never been sent to
-anything. If it turns out to answer something other than a 404, this branch is
-where that shows up and this is the comment to correct.
+THAT P10 CAPTURE IS FROM THE NETWORK PATH. THE REGION PATH HAS ITS OWN 404 AND
+ITS OWN WORDING, measured 2026-08-26 (API-FINDINGS.md 1.37):
 
-`attributes` MAY BE ABSENT, AND THAT IS THE ORDINARY CASE. API-FINDINGS.md 1.31
-measured an unconfigured network reading back as exactly `{"enabled": false}`,
+	GET /v3/networks/enhanced/{realNetwork}/regions/zzzzzzzzzz/privateDNS
+	-> 404 {"message":"Region with ID zzzzzzzzzz not found.",
+	        "messageCode":"NOT_FOUND","status":404}
+
+It names the REGION and echoes the id back. That makes FOUR measured spellings of
+this one 404 across the endpoints this provider touches -- "Network doesn't
+exist." (enhanced network privateDNS), "network doesnt exists" (standard network
+privateDNS), "network doesnt exist" (split tunneling) and this one -- so nothing
+may reuse another path's constant. This branch does not read the text at all; it
+classifies on the STATUS, which is why the wording never mattered here. It
+matters to any test that asserts on a message, and to an operator reading one.
+
+WHAT IS STILL UNMEASURED is which id the 404 blames when BOTH are wrong, and
+whether a bogus network id with a real region id answers the network wording or
+this one. Either way it is a 404 and this branch treats it as drift, which is
+right for both.
+
+ONE MORE THING THE SAME RUN FOUND: an EMPTY region segment does not reach the
+application at all. `/regions//privateDNS` returns 403 with a capital-M
+`{"Message":"User is not authorized..."}` -- infrastructure-level, not a
+validation error -- so a blank region_id surfaces as an authorization failure
+rather than as drift. isNotFound does not match it, so it errors instead of
+silently clearing the id, which is the correct outcome.
+
+`attributes` MAY BE ABSENT, AND THIS BRANCH MUST STILL COPE. API-FINDINGS.md 1.31
+measured an unconfigured NETWORK reading back as exactly `{"enabled": false}`,
 with no `attributes` key at all, which decodes to a nil *CustomDnsAttributes.
 flattenCustomDnsAttributes handles the nil; nothing here may dereference it.
+On the REGION path that is NOT the ordinary case -- 1.37 measured an unconfigured
+region returning `attributes` present with a populated `dnsPolicy` -- but the
+model still declares `attributes` optional, so the nil-safe path stays required
+rather than becoming dead code.
 
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data

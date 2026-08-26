@@ -23,22 +23,31 @@ the summary as 21 skipped acceptance tests and zero offline coverage. The one
 acceptance test for this resource lives in
 resource_enhanced_region_private_dns_acc_test.go and genuinely is one.
 
-THE FIXTURES ARE SPEC-DERIVED, NOT MEASURED, AND EVERY TEST BELOW HAS TO BE READ
-IN THAT LIGHT. This is the one honest difference from the network resource's test
-file, which drives the same JSON as a MEASUREMENT. Read that carefully:
+MOST FIXTURES HERE ARE SPEC-DERIVED, NOT MEASURED, AND EVERY TEST BELOW HAS TO BE
+READ IN THAT LIGHT. This is the one honest difference from the network resource's
+test file, which drives the same JSON as a MEASUREMENT. Read that carefully:
 
   - the bodies are the ones API-FINDINGS.md 1.31 measured, and it measured them
     against GET/PUT /v3/networks/enhanced/{networkId}/privateDNS -- the NETWORK
-    path. No probe in Phase 5's run, or any run before it, has touched
-    /v3/networks/enhanced/{networkId}/regions/{regionId}/privateDNS at all.
+    path. Nothing has ever been WRITTEN to
+    /v3/networks/enhanced/{networkId}/regions/{regionId}/privateDNS.
   - what justifies reusing them is the SPEC: both operations declare the same
     request model (CustomDnsUpdate), the same response model (CustomDns), the same
     response map (202 only, no 200) and the same word-for-word full-replacement
     description (openapi.yaml:1121 for the region, :633 for the network).
   - so these tests prove the PROVIDER reads and writes the shape the spec
     declares, on the region's path, with both ids in it. They do not prove the
-    region endpoint behaves like the network one. Nothing here may claim it does.
-    TestAccEnhancedRegionPrivateDNS_basic is the first thing that will find out.
+    region endpoint behaves like the network one on the WRITE half. Nothing here
+    may claim it does. TestAccEnhancedRegionPrivateDNS_basic is the first thing
+    that will find out.
+
+THE READ HALF IS NO LONGER IN THAT CATEGORY, and the sentence this paragraph used
+to carry ("No probe ... has touched the region path at all") is now false.
+API-FINDINGS.md 1.37 read the region path on 2026-08-26 and got a body the
+network path never returns:
+measuredRegionPrivateDNSUnconfigured below is that capture, and the 404 for an
+unknown region id is measured too. Where a fixture here is a region-path capture
+it is named measuredRegionPrivateDNS*; everything else is still the network's.
 
 This project has twice shipped a fixture claiming wire fidelity it did not have,
 and both times somebody else found it. The reuse of the network's fake and its
@@ -58,6 +67,34 @@ const (
 	// literally rather than built from the constants above so that a test asserting
 	// on it cannot agree with a resource that swapped the two path parameters.
 	testRegionPDNSPath = "/v3/networks/enhanced/net-1/regions/reg-1/privateDNS"
+)
+
+/*
+The two bodies that ARE captures from this route, both from 2026-08-26
+(API-FINDINGS.md 1.37; probes/p14-enh-region.json and p14-enh-region-bogus.json).
+Everything else in this file is the NETWORK path's, reused for the reasons the
+file header gives.
+
+measuredRegionPrivateDNSUnconfigured is the THIRD DISABLED READ SHAPE, and it is
+the one that matters for convergence: a region nobody had configured returned
+`enabled: false` with `attributes` PRESENT and a fully populated `dnsPolicy`
+carrying defaults nobody wrote. It is byte-for-byte what 1.36 read from the
+STANDARD region, which is what settles the question 1.36 left open -- this is how
+REGIONS behave, on both families, and not a quirk of the standard family.
+
+measuredRegionPrivateDNSRegionGone is a FOURTH spelling of the 404 this provider
+has now measured. It names the region and echoes the id, where the enhanced
+NETWORK path says "Network doesn't exist.", the standard network path says
+"network doesnt exists" and split tunneling says "network doesnt exist". Nothing
+in this resource reads the text -- it classifies on the status -- but a test that
+asserted on the message would be wrong to reuse another path's constant.
+*/
+const (
+	measuredRegionPrivateDNSUnconfigured = `{"enabled":false,"attributes":{"dnsPolicy":` +
+		`{"public":{"domains":[]},"private":{"mode":"resolveAllViaPrivate",` +
+		`"publicFallback":true,"domains":[]}},"servers":[],"searchDomains":[]}}`
+	measuredRegionPrivateDNSRegionGone = `{"message":"Region with ID zzzzzzzzzz not found.",` +
+		`"messageCode":"NOT_FOUND","status":404}`
 )
 
 // testEnhancedRegionPrivateDNSData builds a ResourceData over the REGISTERED
@@ -170,41 +207,68 @@ BOTH IDS ARE REQUIRED ARGUMENTS, so an operator deleting the network or the regi
 outside Terraform is directly reachable through HCL and has to plan as a
 recreation.
 
-WHAT IS ASSUMED HERE AND WHAT IS NOT. That a 404 is what a bogus id gets on THIS
-path is spec-derived: 404 is in the region operation's declared response map
-(openapi.yaml:1121) exactly as it is in the network's, and P10 never sent a bogus
-id to it. What the test itself pins is unconditional and does not depend on that
--- given a 404, this resource treats it as drift. If the endpoint turns out to
-answer something else for a missing region, this test still holds and the
-resource's Read comment is what needs correcting.
+WHAT IS ASSUMED HERE AND WHAT IS NOT, and this paragraph is narrower than it was.
+A bogus REGION id on this path IS now measured (API-FINDINGS.md 1.37): it answers
+404, with its own wording -- `{"message":"Region with ID zzzzzzzzzz not found."}`,
+which names the region and echoes the id, and is not the network path's "Network
+doesn't exist." What remains spec-derived is a bogus NETWORK id on the REGION
+route, which no probe has sent; 404 is in the region operation's declared response
+map (openapi.yaml:1121) exactly as it is in the network's. Either way what the
+test itself pins is unconditional and does not depend on which: given a 404, this
+resource treats it as drift. The body driven below is still the network's,
+deliberately -- the resource classifies on STATUS and never reads the text, so
+driving the network's spelling through the region's Read is the stronger check
+that no accidental message-matching has crept in.
 
 The companion assertion is in the test below: a non-404 must NOT clear the id.
 Without it this test passes for an implementation that clears the id on every
 error, which would turn a transient 500 into a silent state wipe.
 */
 func TestEnhancedRegionPrivateDNSReadClearsIdWhenTheParentIsGone(t *testing.T) {
-	fake := startEnhancedPrivateDNSFake(t, &enhancedPrivateDNSFake{
-		getStatus: http.StatusNotFound,
-		getBody:   measuredPrivateDNSNetworkGone,
-	})
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{
+			// The network path's spelling, driven through the region's Read on
+			// purpose: the resource must classify on the STATUS, so a body it
+			// has never seen has to work exactly as well as one it has.
+			name: "the network route's 404 body",
+			body: measuredPrivateDNSNetworkGone,
+		},
+		{
+			// The region route's own 404, measured 2026-08-26
+			// (API-FINDINGS.md 1.37). Different wording, same status, and the
+			// same verdict is required.
+			name: "the region route's own 404 body (1.37)",
+			body: measuredRegionPrivateDNSRegionGone,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := startEnhancedPrivateDNSFake(t, &enhancedPrivateDNSFake{
+				getStatus: http.StatusNotFound,
+				getBody:   tt.body,
+			})
 
-	d := testEnhancedRegionPrivateDNSData(t, map[string]interface{}{
-		"network_id": "net-gone",
-		"region_id":  "reg-gone",
-		"enabled":    true,
-	})
-	d.SetId("net-gone:reg-gone")
+			d := testEnhancedRegionPrivateDNSData(t, map[string]interface{}{
+				"network_id": "net-gone",
+				"region_id":  "reg-gone",
+				"enabled":    true,
+			})
+			d.SetId("net-gone:reg-gone")
 
-	diags := resourceEnhancedRegionPrivateDNSRead(context.Background(), d, fake.client())
-	if diags.HasError() {
-		t.Fatalf("a vanished parent must read as DRIFT, not as a failure, or `terraform plan` "+
-			"cannot propose recreating the configuration (EPD-D01). Diagnostics: %s",
-			diagsText(diags))
-	}
-	if d.Id() != "" {
-		t.Errorf("the id is still %q after a 404. Terraform would keep tracking the private DNS "+
-			"of a region that no longer exists, and every later plan would fail on the same 404 "+
-			"instead of proposing a recreation", d.Id())
+			diags := resourceEnhancedRegionPrivateDNSRead(context.Background(), d, fake.client())
+			if diags.HasError() {
+				t.Fatalf("a vanished parent must read as DRIFT, not as a failure, or "+
+					"`terraform plan` cannot propose recreating the configuration (EPD-D01). "+
+					"Diagnostics: %s", diagsText(diags))
+			}
+			if d.Id() != "" {
+				t.Errorf("the id is still %q after a 404. Terraform would keep tracking the "+
+					"private DNS of a region that no longer exists, and every later plan would "+
+					"fail on the same 404 instead of proposing a recreation", d.Id())
+			}
+		})
 	}
 }
 
@@ -305,16 +369,24 @@ func TestEnhancedRegionPrivateDNSReadStoresTheConfigurationAsReturned(t *testing
 }
 
 /*
-TestEnhancedRegionPrivateDNSReadOnUnconfiguredRegion covers what the spec says is
-the ORDINARY state of this endpoint, which looks like an edge case and is not.
+TestEnhancedRegionPrivateDNSReadOnUnconfiguredRegion covers the nil-`attributes`
+body, which this comment used to call "the ORDINARY state of this endpoint" and
+which the wire says is not.
 
 API-FINDINGS.md 1.31 measured GET on a NETWORK nobody has configured returning
 exactly {"enabled": false} -- no `attributes` key, decoding to a nil
 *CustomDnsAttributes. The region operation returns the same CustomDns model with
-the same optional `attributes`, so a region nobody has configured is expected to
-read the same way; that expectation is spec-derived, and it is every Read that
-runs before the first apply lands. A Read that dereferenced the nil would panic
-the provider on the normal path.
+the same optional `attributes`, so a region nobody has configured was EXPECTED to
+read the same way. IT DOES NOT. API-FINDINGS.md 1.37 read this route on
+2026-08-26 and an untouched region came back with `attributes` present and a
+populated `dnsPolicy` -- measuredRegionPrivateDNSUnconfigured, driven by
+TestEnhancedRegionPrivateDNSDisablingDoesNotDiffForever's third row.
+
+SO WHY KEEP THIS TEST. Because the model still declares `attributes` optional and
+this Read still has to survive its absence: one read of one region on one tenant
+does not make the nil branch unreachable, and a Read that dereferenced the nil
+would panic the provider rather than fail it. What has changed is the label --
+this is the DEFENSIVE case now, not the ordinary one.
 
 The assertion is that `attributes` lands in state as an EMPTY LIST, which is what
 an unset Optional block holds -- so a configuration that writes no `attributes`
@@ -1292,20 +1364,39 @@ the convergence check, and API-FINDINGS.md 1.31 says in as many words that this
 resource needs it: "Anything else reading this endpoint needs the same correction,
 including the enhanced REGION private-DNS resource".
 
-THERE ARE TWO DISABLED READ SHAPES on the network path, and they differ in the one
-key that decides whether a resource converges:
+THERE ARE THREE DISABLED READ SHAPES, and they differ in the one key that decides
+whether a resource converges:
 
 	never written to      GET -> {"enabled":false}
 	                             attributes ABSENT      (p3-privatedns-enhanced.json)
 	after an explicit off GET -> {"enabled":false,"attributes":{"servers":[],"searchDomains":[]}}
 	                             attributes PRESENT and empty  (p8-get-after.json)
+	an untouched REGION   GET -> {"enabled":false,"attributes":{"dnsPolicy":{...populated...},
+	                              "servers":[],"searchDomains":[]}}
+	                             attributes PRESENT, dnsPolicy PRESENT AND POPULATED
+	                             (p14-enh-region.json)
 
-Both captures are from the NETWORK endpoint. That the region endpoint does the
-same is SPEC-DERIVED -- same CustomDns response model, same optional `attributes`
--- and it is the assumption this test encodes rather than one it proves. What it
-does prove is unconditional: GIVEN either body, this resource re-plans clean. If
-the region endpoint turns out to have a third disabled shape, this test is where
-the row for it goes.
+The first two captures are from the NETWORK endpoint, and that the region
+endpoint does the same for them is SPEC-DERIVED -- same CustomDns response model,
+same optional `attributes`. The THIRD is a capture from THIS route
+(API-FINDINGS.md 1.37) and it is the shape this endpoint actually returned the
+first time anyone read it: a region nobody configured, carrying a complete
+dnsPolicy nobody wrote. This comment used to end "if the region endpoint turns
+out to have a third disabled shape, this test is where the row for it goes"; it
+did, and this is that row.
+
+What the test proves is unconditional in every row: GIVEN the body, this resource
+re-plans clean.
+
+BE HONEST ABOUT WHAT THE THIRD ROW ADDS, because the first draft of this comment
+overclaimed and a mutation caught it. It is NOT a row that fails where the others
+pass: dropping `Computed` from `attributes` fails rows 1 and 3 together and rows
+2 passes, and making `dns_policy` Computed-without-Optional is survived by all
+three. What the third row changes is the PROVENANCE, and on this resource that is
+the whole argument: rows 1 and 2 assume the region endpoint behaves like the
+network one, and row 3 is the first body in this file the region endpoint
+actually sent. If the endpoint's disabled shape ever diverges again, this is
+where a capture goes and the failure is a finding rather than a code change.
 
 The configuration this resource's own description recommends --
 
@@ -1338,6 +1429,14 @@ func TestEnhancedRegionPrivateDNSDisablingDoesNotDiffForever(t *testing.T) {
 		{
 			name: "attributes absent, as it reads before anything is written",
 			body: measuredPrivateDNSUnconfigured,
+		},
+		{
+			// The one row driven by a capture from THIS route, and the only
+			// body here where the server volunteers a whole block the
+			// configuration never names. See the doc comment for what it does
+			// and does not add over the two rows above it.
+			name: "attributes and a populated dns_policy, as an untouched region reads (1.37)",
+			body: measuredRegionPrivateDNSUnconfigured,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1380,16 +1479,25 @@ leaf; this one proves this resource's Read carries them into state, which is a
 different function and the only part of the chain that is this file's own.
 
 THE BODY IS SPEC-DERIVED FOR THIS PATH, and that is now a narrower statement than
-it was. P8 and P8b carried servers and searchDomains only, and no probe has ever
-sent a dnsPolicy to the REGION endpoint -- so for this resource the key names come
-from the DnsPolicy schema (swagger.yaml:4589: dnsPolicy.public.domains,
-dnsPolicy.private.mode / publicFallback / domains).
+it was twice over. P8 and P8b carried servers and searchDomains only, and no probe
+has ever WRITTEN a dnsPolicy to the REGION endpoint -- so the specific values here
+(publicFallback explicitly false, two domains per half in a deliberately
+non-alphabetical order) are the shape swagger.yaml:4589 declares, not a capture.
 
-They are not guesses, though. API-FINDINGS.md 1.34 (2026-08-26) measured exactly
-this shape on the enhanced-NETWORK path, which takes the identical models: a full
-policy PUT and read back intact, `publicFallback` present and explicitly `false`.
-What is unmeasured is whether the REGION route behaves the same, and the
-acceptance test is the first thing that will know.
+The KEY NAMES are no longer spec-derived on this route. API-FINDINGS.md 1.37 read
+the region endpoint on 2026-08-26 and it returned a dnsPolicy unprompted, spelled
+exactly as the schema says: dnsPolicy.public.domains and
+dnsPolicy.private.mode / publicFallback / domains, with mode "resolveAllViaPrivate"
+and publicFallback true. So a flattener that misread a key name would already be
+caught by the third row of TestEnhancedRegionPrivateDNSDisablingDoesNotDiffForever
+against a real body; what this test adds is that every leaf reaches STATE, which a
+convergence check cannot see.
+
+API-FINDINGS.md 1.34 (2026-08-26) measured this shape end-to-end on the
+enhanced-NETWORK path, which takes the identical models: a full policy PUT and
+read back intact, `publicFallback` present and explicitly `false`. What is still
+unmeasured is whether the REGION route accepts and round-trips a dnsPolicy the
+same way, and the acceptance test is the first thing that will know.
 */
 func TestEnhancedRegionPrivateDNSReadStoresEveryDnsPolicyLeaf(t *testing.T) {
 	const specShaped = `{"enabled":true,"attributes":{` +

@@ -175,8 +175,9 @@ func privateDNSSchema() map[string]*schema.Schema {
 				COMPUTED AS WELL AS OPTIONAL, AND WITHOUT IT THIS RESOURCE NEVER
 				CONVERGES. Do not "tidy" it away.
 
-				THERE ARE TWO DISABLED READ SHAPES, and API-FINDINGS.md 1.31
-				recorded only one of them. Both are measured, on 2026-08-26:
+				THERE ARE THREE DISABLED READ SHAPES, and API-FINDINGS.md 1.31
+				recorded only one of them. All three are measured, on
+				2026-08-26:
 
 				  never configured       GET -> {"enabled":false}
 				                                attributes ABSENT
@@ -184,6 +185,21 @@ func privateDNSSchema() map[string]*schema.Schema {
 				                                 "attributes":{"servers":[],
 				                                               "searchDomains":[]}}
 				                                attributes PRESENT and empty
+				  an untouched REGION    GET -> {"enabled":false,
+				                                 "attributes":{"dnsPolicy":{
+				                                   ...populated...},
+				                                  "servers":[],
+				                                  "searchDomains":[]}}
+				                                attributes PRESENT, dnsPolicy
+				                                PRESENT AND POPULATED
+
+				The first two are network-path captures. The third is a REGION
+				capture and it comes from BOTH families -- 1.36 read it on the
+				standard region, 1.37 on the enhanced one, byte-for-byte
+				identical -- so it is a property of regions rather than of a
+				family, and this schema is shared with the region resource.
+				That is the shape with the most to lose from Optional alone: the
+				server volunteers a whole dnsPolicy block nobody configured.
 
 				The finding's sentence -- "GET on a network that has never been
 				configured returns exactly {"enabled": false}" -- is true and is

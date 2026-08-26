@@ -121,17 +121,26 @@ All three are measured:
 	after an explicit disable       {"enabled":false,"attributes":{
 	  (enhanced, 1.31)               "servers":[],"searchDomains":[]}}
 	                                attributes PRESENT and empty, dnsPolicy ABSENT
-	standard region, NEVER TOUCHED  {"enabled":false,"attributes":{"dnsPolicy":{
-	  (1.36, 2026-08-26)             ...populated...},"servers":[],
-	                                 "searchDomains":[]}}
+	a REGION, NEVER TOUCHED         {"enabled":false,"attributes":{"dnsPolicy":{
+	  (standard: 1.36; enhanced:     ...populated...},"servers":[],
+	   1.37; 2026-08-26)             "searchDomains":[]}}
 	                                attributes PRESENT, dnsPolicy PRESENT AND
 	                                POPULATED
 
-The third is the one nobody predicted and the one this family actually returns:
-a region nobody configured comes back carrying a complete dnsPolicy whose
-defaults do not even match its own network's. So `enabled` says nothing about
-whether `attributes` or `dns_policy` will be there, in either direction, and
-nothing here may shortcut on it. Pinned by
+The third is the one nobody predicted: a region nobody configured comes back
+carrying a complete dnsPolicy whose defaults do not even match its own network's.
+
+IT IS A PROPERTY OF REGIONS, NOT OF THIS FAMILY, and this comment used to say the
+opposite. When 1.36 first found it, the standard region was the only region
+anyone had read, so "the shape this family returns" was the available reading.
+1.37 then read the ENHANCED region and got a byte-for-byte identical body. Both
+REGION endpoints return it; neither NETWORK endpoint does. Nothing changes for
+this data source -- it must accept the shape either way -- but the enhanced
+region resource needs the same allowance, and a reader here should not conclude
+that the enhanced family is exempt.
+
+So `enabled` says nothing about whether `attributes` or `dns_policy` will be
+there, in either direction, and nothing here may shortcut on it. Pinned by
 TestStandardRegionPrivateDNSReadStoresTheThirdDisabledShape.
 
 NO MaxItems, NO MinItems, ANYWHERE. Both are constraints on what a CONFIGURATION
@@ -437,13 +446,22 @@ THIS ENDPOINT HAS NOW BEEN READ ONCE, and the one read was a surprise
 network was touched -- returned `enabled: false` with `attributes` PRESENT and a
 fully populated `dnsPolicy` carrying different defaults from its own network's.
 That is the THIRD disabled read shape and it is covered by
-TestStandardRegionPrivateDNSReadStoresTheThirdDisabledShape.
+TestStandardRegionPrivateDNSReadStoresTheThirdDisabledShape. It is not peculiar
+to this family: 1.37 read the ENHANCED region on the same day and got the
+identical body, so it is how regions behave.
 
 WHAT THAT ONE READ DOES NOT COVER, and these remain spec-derived here: any
 populated `servers` or `searchDomains` on a region, a non-empty `domains` list in
 either policy half, `forwardDNSUpdate` in any form (the key was not returned),
-and the 404 branch -- P10's 404 is the standard NETWORK path, and a bogus REGION
-id has still never been sent to anything.
+and the 404 branch on THIS route -- P10's 404 is the standard NETWORK path.
+
+A BOGUS REGION ID HAS BEEN SENT ONCE, BUT NOT HERE. 1.37 sent one to the ENHANCED
+region private-DNS path and got `404 {"message":"Region with ID <id> not
+found.","messageCode":"NOT_FOUND","status":404}` -- a different string again from
+this family's network 404 ("network doesnt exists"). That makes it likely rather
+than certain that this route answers 404 for an unknown region, and likely rather
+than certain what it says; standardPrivateDNSReadError classifies on the status
+and reads no text, so only a test asserting on a message would care.
 
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data

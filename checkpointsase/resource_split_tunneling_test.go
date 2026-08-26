@@ -54,14 +54,36 @@ The bodies this resource has to cope with.
   - measuredSplitTunnelingNetworkGone is what a bogus networkId gets on this path,
     verified by probe P10 on 2026-08-26. The message differs from the
     enhanced-privateDNS one ("Network doesn't exist." there, "network doesnt
-    exist" here) -- three families, three spellings of the same 404. Nothing in
-    the provider reads the text, but a test that asserted on it would be wrong to
-    reuse another family's constant, which is why this one is declared here.
+    exist" here) and from the standard-privateDNS one ("network doesnt exists",
+    with the trailing s). A FOURTH spelling was measured later on the region
+    private-DNS routes -- "Region with ID <id> not found." (API-FINDINGS.md
+    1.37) -- so this is four spellings of one 404 across the endpoints this
+    provider touches, not the three this comment used to count. Nothing in the
+    provider reads the text, but a test that asserted on it would be wrong to
+    reuse another path's constant, which is why this one is declared here.
 
-  - measuredSplitTunnelingArraysMissing is the 400 from omitting the three
-    exceptData arrays (API-FINDINGS.md 1.31). Its data.errors names ALL THREE even
-    though the request omitted all three, which is the general shape of this
-    validator: it reports every array complaint it has at once.
+  - measuredSplitTunnelingArraysMissing is the 400 from omitting all three
+    exceptData arrays (API-FINDINGS.md 1.31). IT IS THE WHOLE CAPTURED BODY --
+    all ELEVEN data.errors entries, byte-for-byte from
+    probes/p4-via-tunnel.json (p5-a-empty.json and p5-b-omitted.json are
+    identical to it). It used to carry three hand-picked entries, which was a
+    fixture trimmed to fit the claim it was quoted for, in a file whose header
+    promises the opposite. Two things are only visible in the full body: ONE
+    missing array produces SEVERAL complaints (five of the eleven are about
+    addressObjectIds), and two of those five are the mutually contradictory
+    length rules that 1.31's addendum records -- which is why no length
+    validator ships on the id lists.
+
+    WHAT THIS BODY DOES NOT SHOW is what a request that omits only ONE array
+    gets. That was measured separately on 2026-08-26 (API-FINDINGS.md 1.37,
+    probes/p15-omit-one.json): a PUT carrying `cidr` populated and
+    `addressObjectIds` empty, with `updatableObjectIds` left out, came back 400
+    with exactly three data.errors -- "exceptData.each value in
+    updatableObjectIds must be a string", "exceptData.All updatableObjectIds's
+    elements must be unique" and "exceptData.updatableObjectIds must be an
+    array". All three are about the ONE array that was left out, and neither
+    `cidr` nor `addressObjectIds` is mentioned. So the validator names exactly
+    the arrays you omitted, and this file previously said the opposite.
 
   - measuredSplitTunnelingExceptionsInViaTunnel is the 400 from API-FINDINGS.md
     1.30. It is the reason there is no CustomizeDiff on this resource.
@@ -80,8 +102,16 @@ const (
 	measuredSplitTunnelingNetworkGone = `{"message":"network doesnt exist",` +
 		`"messageCode":"NOT_FOUND","status":404}`
 	measuredSplitTunnelingArraysMissing = `{"data":{"errors":[` +
+		`"exceptData.each value in cidr must be a valid CIDR",` +
+		`"exceptData.All cidr's elements must be unique",` +
 		`"exceptData.cidr must be an array",` +
+		`"exceptData.each value in addressObjectIds must be shorter than or equal to 10 characters",` +
+		`"exceptData.each value in addressObjectIds must be longer than or equal to 10 characters",` +
+		`"exceptData.each value in addressObjectIds must be a string",` +
+		`"exceptData.All addressObjectIds's elements must be unique",` +
 		`"exceptData.addressObjectIds must be an array",` +
+		`"exceptData.each value in updatableObjectIds must be a string",` +
+		`"exceptData.All updatableObjectIds's elements must be unique",` +
 		`"exceptData.updatableObjectIds must be an array"]},` +
 		`"message":"Bad Request Exception","messageCode":"BAD_REQUEST","status":400}`
 	measuredSplitTunnelingExceptionsInViaTunnel = `{"message":"Exceptions are not supported in ` +
@@ -430,6 +460,58 @@ func TestPutSplitTunnelingAndWaitReturnsNotAcceptedWhenThePutItselfFails(t *test
 	}
 }
 
+/*
+TestPutSplitTunnelingAndWaitSurvivesANullStatusBody pins the poll closure's nil
+guard, and it is the async twin of TestSplitTunnelingReadSurvivesANullBody.
+
+A 200 carrying the literal `null` decodes without error and leaves the
+*AsyncOperationStatus pointer NIL: encoding/json sets a pointer to nil for `null`
+before it consults any Unmarshaler. GetCompleted() is generated nil-safe, so it
+is not the hazard; status.Result is a DIRECT FIELD ACCESS and dereferences the
+receiver. Removing the `status == nil` guard makes this test panic rather than
+fail -- verified by mutation on 2026-08-26, at resource_split_tunneling.go:694 --
+and a panic is the one failure mode Terraform cannot report as a diagnostic.
+
+WHAT THE RIGHT ANSWER IS, since "does not panic" does not choose one: a null
+status body says nothing completed, so the closure reports "not completed yet"
+and lets the deadline decide. It must NOT be treated as a completion, because
+isSuccessStatus(0) is true and a completion with no result is a green apply --
+which would turn an empty response into a successful write. So the assertion is
+that the call FAILS on the deadline, not merely that it returns.
+
+This is unmeasured on every endpoint in this provider: no async status body has
+ever been captured from this one at all (LEFTOVERS.md L37), and async.go's two
+sibling pollers still have the unguarded shape.
+*/
+func TestPutSplitTunnelingAndWaitSurvivesANullStatusBody(t *testing.T) {
+	useSplitTunnelingTestPollInterval(t)
+
+	fake := startSplitTunnelingFake(t, &splitTunnelingFake{statusBodies: []string{`null`}})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("putSplitTunnelingAndWait PANICKED on a 200 with a null status body: %v.\n"+
+				"status.Result is a direct field access on a pointer json sets to nil for "+
+				"`null`, so the poll closure has to check the pointer before reaching for it.", r)
+		}
+	}()
+
+	accepted, err := putSplitTunnelingAndWait(ctx, fake.client(), "net-1",
+		perimeter81Sdk.SplitTunnelingBase{DefaultTunnelingMode: "out_of_tunnel"})
+	if !accepted {
+		t.Error("putSplitTunnelingAndWait() accepted = false: the PUT itself returned 202, so " +
+			"the caller must say \"accepted but did not complete\", not \"refused\"")
+	}
+	if err == nil {
+		t.Fatal("putSplitTunnelingAndWait() error = nil for a status endpoint that only ever " +
+			"answered `null`: an empty body is not a completion, and reporting it as one makes " +
+			"isSuccessStatus(0) turn nothing at all into a successful apply")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The request body
 // ---------------------------------------------------------------------------
@@ -450,16 +532,24 @@ func splitTunnelingMarshalledBody(t *testing.T, raw map[string]interface{}) []by
 TestExpandSplitTunnelingNeverMarshalsNullArrays is a MARSHALLING test, not a
 struct test, and it is the D8 trap measured rather than inferred.
 
-MEASURED 2026-08-26 (API-FINDINGS.md 1.31): omitting `cidr`, `addressObjectIds`
-or `updatableObjectIds` from exceptData returns a 400 whose data.errors names ALL
-THREE, despite each carrying `default: []` in the schema (swagger.yaml:7133,
-:7140, :7147). So the arrays are required on the wire even when empty, and the
-`default` is a trap rather than a permission.
+MEASURED 2026-08-26: omitting `cidr`, `addressObjectIds` or `updatableObjectIds`
+from exceptData returns a 400, despite each carrying `default: []` in the schema
+(swagger.yaml:7133, :7140, :7147). So the arrays are required on the wire even
+when empty, and the `default` is a trap rather than a permission.
+
+THE 400 NAMES EXACTLY THE ARRAYS THAT WERE LEFT OUT, which is narrower than what
+this comment used to claim. API-FINDINGS.md 1.31 omitted all three and got all
+three back; API-FINDINGS.md 1.37 omitted only `updatableObjectIds` and got only
+`updatableObjectIds` back. Nothing in this test depends on which, because this
+expander sends all three unconditionally -- but the earlier wording ("names ALL
+THREE even when only one is missing") was a generalisation from a probe that
+omitted all three, and it had reached an operator-facing diagnostic.
 
 Nil and empty are the same length, the same type and DeepEqual-different only in
 a way reflect will not tell you about, so the assertions are on json.Marshal
 output. SplitTunnelingData declares all four fields `omitempty`, but its ToMap
-gates on IsNil (utils.go:334) rather than on the struct tag -- so a non-nil empty
+gates on IsNil (perimeter-81-client-sdk/utils.go:334, the SDK's file and not this
+package's) rather than on the struct tag -- so a non-nil empty
 slice reaches the wire as `[]` and a nil one is dropped entirely. Both variants
 compile and both marshal without error.
 
@@ -500,9 +590,14 @@ func TestExpandSplitTunnelingNeverMarshalsNullArrays(t *testing.T) {
 			},
 		},
 		{
-			// One list filled, two left out. The 400 names all three arrays even
-			// when only one is missing, so this is the row where the operator
-			// would be sent looking at the field they DID set.
+			// One list filled, two left out -- close to the shape
+			// API-FINDINGS.md 1.37 put on the wire (cidr populated,
+			// addressObjectIds empty, updatableObjectIds absent), which came
+			// back naming ONLY the array that was absent. So this row is not
+			// "the row where the operator is sent looking at a field they DID
+			// set", as this comment used to claim; it is the row that proves the
+			// expander fills in the two the operator did not name, so the
+			// request 1.37 was refused for is one this provider cannot send.
 			name: "one list set, the other two unset",
 			raw: map[string]interface{}{
 				"network_id":             "net-1",
@@ -992,11 +1087,21 @@ TestSplitTunnelingCreateTimesOutWithoutWritingAnId pins SPT-N03.
 
 THE INTERVAL IS DELIBERATELY NOT COLLAPSED HERE, which is the opposite of every
 other polling test in this file, and it is what makes this one deterministic. The
-production interval is 10s and the context deadline is 50ms, so the sequence is
+production interval is 10s and the context deadline is 500ms, so the sequence is
 forced: one status GET returns `completed:false`, sleepCtx is then asked to wait
 10s, and the deadline fires during that wait. Exactly one poll, every time, on any
 machine. Collapsing the interval instead would make the number of polls a race
 against the wall clock.
+
+THE DEADLINE IS 500ms AND NOT 50ms, and the difference is the review finding that
+raised it. The deadline has to cover the adoption GET, the PUT and one status GET
+against httptest BEFORE sleepCtx is reached; if it fires during that first status
+GET instead, the error comes back through fmt.Errorf("polling async operation:
+%w", ...) and does NOT contain "timed out waiting for the async operation", so the
+message assertion and the exactly-one-poll assertion both fail for a reason that
+is purely load on the machine. 500ms is still twenty times smaller than the poll
+interval, so the "exactly one poll" property is unchanged; it just stops a busy
+CI box from failing a test about timeouts.
 
 Two things are asserted and both are in the row:
 
@@ -1017,7 +1122,7 @@ func TestSplitTunnelingCreateTimesOutWithoutWritingAnId(t *testing.T) {
 		"default_tunneling_mode": "out_of_tunnel",
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
 	diags := resourceSplitTunnelingCreate(ctx, d, fake.client())
@@ -1398,6 +1503,23 @@ one of them reopens the hole:
 The fourth assertion is behavioural rather than structural: a configuration that
 tries to write `exceptions` must be REFUSED, which is what makes the first three
 mean something to an operator rather than only to a reader of the schema.
+
+AND IT HAS TO NAME THE LIST, NOT MERELY BE AN ERROR. Measured with the mutation
+on 2026-08-26: with `exceptions` made Optional but its two leaves left
+Computed-only, schemaMap.validate still refuses the configuration -- validateList
+descends into the element resource and rejects `type` and `destination` instead
+-- so a bare `err != nil` check passes under the very defect it claims to catch.
+Worse, so does `strings.Contains(err.Error(), "exceptions")`, because the leaf
+keys are spelled `except_data.0.exceptions.0.type`. What actually distinguishes
+the two is WHICH key the diagnostic names:
+
+	shipped:  Can't configure a value for "except_data.0.exceptions"
+	mutated:  Can't configure a value for "except_data.0.exceptions.0.type"
+	          Can't configure a value for "except_data.0.exceptions.0.destination"
+
+so the assertion is on the quoted key including its closing quote. The test as a
+whole already failed under the mutation through the structural assertion above;
+this makes the fourth assertion carry its own weight instead of borrowing it.
 */
 func TestSplitTunnelingExceptionsAreComputedOnly(t *testing.T) {
 	exceptData := resourceSplitTunneling().Schema["except_data"]
@@ -1448,7 +1570,13 @@ func TestSplitTunnelingExceptionsAreComputedOnly(t *testing.T) {
 		}},
 	})
 	if err == nil {
-		t.Error("a configuration that writes except_data.exceptions was ACCEPTED at plan time")
+		t.Fatal("a configuration that writes except_data.exceptions was ACCEPTED at plan time")
+	}
+	if want := `"except_data.0.exceptions"`; !strings.Contains(err.Error(), want) {
+		t.Errorf("the plan-time refusal does not name the LIST itself (%s), so it does not "+
+			"distinguish \"exceptions is read-only\" from \"only its leaves are\": a schema "+
+			"with exceptions Optional and the leaves Computed-only is refused too, naming "+
+			"except_data.0.exceptions.0.type instead.\ngot: %s", want, err.Error())
 	}
 }
 

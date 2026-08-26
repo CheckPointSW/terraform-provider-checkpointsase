@@ -62,6 +62,11 @@ The four bodies this resource's Read has to cope with, all measured 2026-08-26.
     standard privateDNS   {"message":"network doesnt exists", ...}
     split-tunneling       {"message":"network doesnt exist",  ...}
 
+    A FOURTH was measured later, and it is not a network 404 at all: the REGION
+    private-DNS routes answer an unknown REGION id with
+    {"message":"Region with ID <id> not found.", ...} -- naming the object and
+    echoing the id (API-FINDINGS.md 1.37, 2026-08-26).
+
     All three are 404 with messageCode NOT_FOUND, so nothing in the provider
     behaves differently and every test that drives this constant is unaffected --
     they assert on the status classification, not on the text. But a test that

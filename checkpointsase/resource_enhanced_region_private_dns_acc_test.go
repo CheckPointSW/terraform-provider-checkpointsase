@@ -225,8 +225,11 @@ func TestAccEnhancedRegionPrivateDNS_basic(t *testing.T) {
 				ImportStateVerify: true,
 				ImportStateIdFunc: testAccEnhancedRegionPrivateDNSImportID(privateDNS),
 			},
-			// 6. The dns_policy shape -- unmeasured on either endpoint -- and
-			//    search_domains dropped, which the full replacement must clear.
+			// 6. The dns_policy shape -- READ on this endpoint but never
+			//    WRITTEN to it (API-FINDINGS.md 1.37 read a populated policy
+			//    off an untouched region; 1.34 measured the write round trip on
+			//    the NETWORK path only) -- and search_domains dropped, which the
+			//    full replacement must clear.
 			{
 				Config: testAccEnhancedRegionPrivateDNSConfigWithPolicy(),
 				Check: resource.ComposeTestCheckFunc(
@@ -489,9 +492,16 @@ the servers it inherited rather than `[]`.
 What it catches there, ON THE NETWORK PATH where it was measured: the read of a
 never-configured object is {"enabled": false} and PUTting that same body back is a
 422 (API-FINDINGS.md 1.31), so the provider must synthesise
-{"servers": [], "searchDomains": []} for a configuration that names neither. The
-region path has never been probed; if this step is a 422 that IS the measurement
-and it belongs in the findings.
+{"servers": [], "searchDomains": []} for a configuration that names neither.
+
+THE REGION PATH HAS NOW BEEN READ, AND ITS NEVER-CONFIGURED BODY IS NOT THAT ONE.
+API-FINDINGS.md 1.37 measured an untouched region returning `attributes` present
+with a populated `dnsPolicy`, so the premise this step inherits from the network
+path -- "there is nothing there to carry forward" -- may not hold here: the
+region may hand back a dnsPolicy for the provider to carry into the first write.
+Nothing has ever been WRITTEN to the region route, so what that PUT does is still
+open. If this step is a 422, or if it sends a dnsPolicy nobody configured, EITHER
+outcome IS the measurement and it belongs in the findings.
 */
 func testAccEnhancedRegionPrivateDNSConfigDisabled() string {
 	return testAccEnhancedRegionPrivateDNSNetwork() + `

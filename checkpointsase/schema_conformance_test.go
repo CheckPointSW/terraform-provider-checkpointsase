@@ -668,17 +668,20 @@ var listAttributeEmptyPolicy = map[string]struct {
 	// and NO uniqueItems, and each carries `default: []`.
 	//
 	// AND THE DEFAULT IS A TRAP, WHICH IS WHY THE MEASUREMENT IS QUOTED ON EVERY ONE OF THEM.
-	// `default: []` reads as "you may omit this". Measured 2026-08-26 (API-FINDINGS.md 1.31):
-	// omitting any one of the three returns a 400 whose data.errors names ALL THREE
-	// ("exceptData.cidr must be an array", and the same for the other two). So [] is not merely
-	// tolerated here, it is the only legal way to have none -- which is the strongest possible
-	// form of mayBeEmpty, and makes MinItems: 1 a bug that would remove the ability to clear a
-	// list the server insists on receiving. expandSplitTunneling sends all three as [] for a
+	// `default: []` reads as "you may omit this". Measured 2026-08-26: omitting an array returns
+	// a 400, and the 400 names EXACTLY THE ARRAYS THAT WERE LEFT OUT -- all three when all three
+	// are omitted (API-FINDINGS.md 1.31), only updatableObjectIds when only that one is omitted
+	// (API-FINDINGS.md 1.37). These `why` strings used to say "omitting it is a 400 naming all
+	// three arrays"; that generalised 1.31's probe, which omitted all three at once, and 1.37
+	// measured it false. The verdict is unaffected either way: [] is not merely tolerated here,
+	// it is the only legal way to have none -- which is the strongest possible form of
+	// mayBeEmpty, and makes MinItems: 1 a bug that would remove the ability to clear a list the
+	// server insists on receiving. expandSplitTunneling sends all three as [] for a
 	// configuration that names none, which is what makes Optional-in-HCL and required-on-the-wire
 	// consistent rather than contradictory.
-	"resource.checkpointsase_split_tunneling.except_data.cidr":                 {mayBeEmpty, "swagger.yaml:7127-7133: no minItems, no maxItems, no uniqueItems, `default: []`. MEASURED 2026-08-26 (API-FINDINGS.md 1.31): the key is required on the wire even when empty -- omitting it is a 400 naming all three arrays -- so [] is the prescribed empty value, not a tolerated one"},
-	"resource.checkpointsase_split_tunneling.except_data.address_object_ids":   {mayBeEmpty, "swagger.yaml:7134-7140: no minItems, no maxItems, no uniqueItems, `default: []`. MEASURED 2026-08-26 (API-FINDINGS.md 1.31): omitting it is a 400 (\"exceptData.addressObjectIds must be an array\"), so [] is the prescribed empty value"},
-	"resource.checkpointsase_split_tunneling.except_data.updatable_object_ids": {mayBeEmpty, "swagger.yaml:7141-7147: no minItems, no maxItems, no uniqueItems, `default: []`. MEASURED 2026-08-26 (API-FINDINGS.md 1.31): omitting it is a 400 (\"exceptData.updatableObjectIds must be an array\"), so [] is the prescribed empty value"},
+	"resource.checkpointsase_split_tunneling.except_data.cidr":                 {mayBeEmpty, "swagger.yaml:7127-7133: no minItems, no maxItems, no uniqueItems, `default: []`. MEASURED 2026-08-26 (API-FINDINGS.md 1.31, 1.37): the key is required on the wire even when empty -- omitting it is a 400 that names it (\"exceptData.cidr must be an array\") -- so [] is the prescribed empty value, not a tolerated one"},
+	"resource.checkpointsase_split_tunneling.except_data.address_object_ids":   {mayBeEmpty, "swagger.yaml:7134-7140: no minItems, no maxItems, no uniqueItems, `default: []`. MEASURED 2026-08-26 (API-FINDINGS.md 1.31, 1.37): omitting it is a 400 that names it (\"exceptData.addressObjectIds must be an array\", plus four more complaints about the same array), so [] is the prescribed empty value"},
+	"resource.checkpointsase_split_tunneling.except_data.updatable_object_ids": {mayBeEmpty, "swagger.yaml:7141-7147: no minItems, no maxItems, no uniqueItems, `default: []`. MEASURED 2026-08-26 (API-FINDINGS.md 1.37, which omitted THIS ARRAY ALONE): omitting it is a 400 naming only it (\"exceptData.updatableObjectIds must be an array\", and two more about the same array), so [] is the prescribed empty value"},
 }
 
 /*

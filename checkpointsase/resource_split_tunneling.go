@@ -134,12 +134,12 @@ const splitTunnelingWriteAcceptedButNotCompleted = "The API ACCEPTED this write 
 const splitTunnelingWriteRefused = "The API REFUSED this write, so the network's split tunnelling " +
 	"is unchanged. The message above is the server's own. Three refusals have been measured on " +
 	"this endpoint: a `404` (`{\"message\":\"network doesnt exist\"}`) for a `network_id` the API " +
-	"does not know; a `400` naming `exceptData.cidr`, `exceptData.addressObjectIds` and " +
-	"`exceptData.updatableObjectIds` together when any one of the three arrays is missing — it " +
-	"reports every array complaint at once, so the field it names first is not necessarily the " +
-	"one you got wrong; and a `400` reading \"Exceptions are not supported in via_tunnel mode.\" " +
-	"A `409` on this path means the API could not reconcile the updatable objects in the " +
-	"configuration."
+	"does not know; a `400` listing the `exceptData` arrays the request left out — the " +
+	"validator names EXACTLY the arrays you omitted and no others, so the fields it names are " +
+	"the fields to add (it may raise several complaints about one array, so count the distinct " +
+	"array names rather than the messages); and a `400` reading \"Exceptions are not supported " +
+	"in via_tunnel mode.\" A `409` on this path means the API could not reconcile the updatable " +
+	"objects in the configuration."
 
 /*
 splitTunnelingPollInterval is the cadence putSplitTunnelingAndWait polls the
@@ -154,7 +154,10 @@ cadence an order of magnitude larger than what every poller in this provider
 uses. Honouring it is one change across all of them, with each path's own value
 read rather than assumed. Doing it here alone would leave this endpoint twelve
 times slower to converge than its neighbours for no reason a reader of this file
-could see. Tracked as LEFTOVERS.md L13.
+could see. Tracked as LEFTOVERS.md L38 -- which is a NEW entry, opened in Task 6's
+fix round. The pointer this comment used to carry, L13, is a 403-during-polling
+entry with nothing to do with poll cadence; grep samplingTime in LEFTOVERS.md
+before believing any citation here again.
 
 It is a var rather than a const solely so the tests can collapse it and drive a
 multi-poll operation in microseconds instead of half a minute. Nothing in the
@@ -179,8 +182,11 @@ apply is the failure the whole helper exists to prevent.
 
 The cost is a false failure if the server ever legitimately returns a 202 with no
 statusUrl for a write that did land. Every async 202 measured on this endpoint on
-2026-08-26 carried one (API-FINDINGS.md 1.28, 1.29 -- six writes across the two
-probe networks). If that changes, revisit this as the decision it is.
+2026-08-26 carried one (API-FINDINGS.md 1.28, 1.29, 1.31): EIGHT writes, six of
+them on ONE network (the p5b sequence) plus p4b-control and the p13 ordering
+probe. The count in this comment used to read "six writes across the two probe
+networks", which understated the evidence and misdescribed how it was spread.
+If a 202 without a statusUrl ever appears, revisit this as the decision it is.
 */
 var errSplitTunnelingNoStatusUrl = errors.New(
 	"the API accepted the split tunnelling update with a 202 that carried no statusUrl, " +
@@ -223,7 +229,11 @@ func resourceSplitTunneling() *schema.Resource {
 			"current split tunnelling and replaces it with yours. " +
 			"`default_tunneling_mode`, `except_data.cidr`, `except_data.address_object_ids` and " +
 			"`except_data.updatable_object_ids` are a **full replacement** — what you write is " +
-			"what the network gets, and dropping an entry removes it. " +
+			"what the network gets, and dropping an entry removes it. That was measured on " +
+			"2026-08-26 for `cidr` (shrinking it to a smaller range left only the smaller " +
+			"range); `address_object_ids` and `updatable_object_ids` were sent EMPTY in every " +
+			"probe, so for those two the replacement semantics come from the specification and " +
+			"from the fact that the write is a `PUT` of a complete body, not from the wire. " +
 			"The write is asynchronous: the API answers `202 Accepted` and the provider polls the " +
 			"operation to completion before reporting the apply as done. " +
 			"**`except_data.exceptions` is READ-ONLY, and the cost of that is that you cannot " +
@@ -325,11 +335,18 @@ EVERY LIMIT AND EVERY ABSENCE OF ONE IS SOURCED:
     of them has evidence behind it, and a comment that generalised this to "the
     three arrays" would be claiming two measurements that do not exist.
 
-  - MEASURED 2026-08-26 (API-FINDINGS.md 1.31): all three arrays are REQUIRED ON
-    THE WIRE even when empty, `default: []` notwithstanding. Omitting any one
-    returns a 400 whose data.errors names all three. They are Optional in HCL and
-    always sent as [] by expandSplitTunneling; see there for why that is not a
-    contradiction.
+  - MEASURED 2026-08-26: all three arrays are REQUIRED ON THE WIRE even when
+    empty, `default: []` notwithstanding. THE VALIDATOR NAMES EXACTLY THE ARRAYS
+    YOU LEFT OUT. Omitting all three returns a 400 whose data.errors covers all
+    three (API-FINDINGS.md 1.31, eleven messages); omitting only
+    updatableObjectIds returns a 400 whose data.errors mentions only
+    updatableObjectIds (API-FINDINGS.md 1.37, three messages, all about that one
+    array). This file previously said "omitting any one returns a 400 naming all
+    three" in five places -- that generalised 1.31's probe, which omitted all
+    three at once, and 1.37 measured it false. Note the shape of the messages:
+    ONE missing array produces SEVERAL complaints, so count distinct array names
+    and not messages. They are Optional in HCL and always sent as [] by
+    expandSplitTunneling; see there for why that is not a contradiction.
 
   - cidr's items carry an IPv4 CIDR pattern (swagger.yaml:7131). validation.IsCIDR
     is WIDER than that pattern -- it accepts IPv6 too -- which is the safe
@@ -376,9 +393,12 @@ func splitTunnelingSchema() map[string]*schema.Schema {
 			MaxItems: 1,
 			Description: "The destinations that are the exception to `default_tunneling_mode`. " +
 				"Required, and required on the wire even when every list in it is empty: the API " +
-				"refuses a write with no `exceptData` object, and refuses one whose `cidr`, " +
-				"`address_object_ids` or `updatable_object_ids` is missing. Write `except_data {}` " +
-				"to send three empty arrays.",
+				"refuses a write whose `cidr`, `address_object_ids` or `updatable_object_ids` is " +
+				"missing, naming exactly the ones that are, and the `exceptData` object itself is " +
+				"in the request model's required list. (The missing-array `400` is measured; that " +
+				"a request with no `exceptData` key at all is refused comes from the " +
+				"specification — every probe that was refused sent the object and left arrays out " +
+				"of it.) Write `except_data {}` to send three empty arrays.",
 			Elem: &schema.Resource{
 				Schema: map[string]*schema.Schema{
 					splitTunnelingAttrCidr: {
@@ -488,15 +508,19 @@ func splitTunnelingSchema() map[string]*schema.Schema {
 expandSplitTunneling builds the PUT body from resource data.
 
 EVERY ARRAY IS EMPTY, NEVER NIL, AND THAT IS THE WHOLE POINT OF THIS FUNCTION.
-Measured 2026-08-26 (API-FINDINGS.md 1.31): omitting any of `cidr`,
-`addressObjectIds` or `updatableObjectIds` returns a 400 whose data.errors names
-all three -- "exceptData.cidr must be an array", and the same for the other two --
-despite each carrying `default: []` in the schema. The generated model declares
-all four fields `omitempty`, but SplitTunnelingData.ToMap gates on IsNil rather
-than on the struct tag (model_split_tunneling_data.go, utils.go:334), so a
-non-nil empty slice reaches the wire as `[]` and a nil one is omitted entirely.
-Both variants compile and both marshal without error, which is why the test pins
-the BODY and not the struct.
+Measured 2026-08-26: omitting `cidr`, `addressObjectIds` or `updatableObjectIds`
+returns a 400 whose data.errors names THE ONES THAT WERE OMITTED -- all three
+when all three are left out (API-FINDINGS.md 1.31: "exceptData.cidr must be an
+array", and the same for the other two), only updatableObjectIds when only that
+one is left out (API-FINDINGS.md 1.37) -- despite each carrying `default: []` in
+the schema. Either way this function's job is the same: send all three, always.
+The generated model declares all four fields `omitempty`, but
+SplitTunnelingData.ToMap gates on IsNil rather than on the struct tag
+(model_split_tunneling_data.go, and perimeter-81-client-sdk/utils.go:334 -- the
+SDK's utils.go, NOT this package's, whose line 334 is an unrelated struct field),
+so a non-nil empty slice reaches the wire as `[]` and a nil one is omitted
+entirely. Both variants compile and both marshal without error, which is why the
+test pins the BODY and not the struct.
 
 That is why the three arrays are Optional in HCL and required on the wire without
 contradiction: a configuration that names none of them still sends all three.
@@ -686,10 +710,30 @@ func putSplitTunnelingAndWait(
 		//
 		// A `completed: true` WITH NO `result` IS THEREFORE REPORTED AS SUCCESS,
 		// and that is an UNMEASURED assumption on this endpoint. No probe has
-		// forced a failing write here and recorded whether `result` is present.
-		// Until one has, do not read a green apply as proof the server finished
-		// the work. Same caveat as putPrivateDNSAndWait, inherited from the shared
-		// helper rather than introduced here.
+		// forced a failing write here and recorded whether `result` is present --
+		// in fact NO async status body has ever been captured from this endpoint
+		// at all, so every {"completed":...,"result":{...}} fixture in the tests
+		// is built from async.go's shared envelope rather than from the wire.
+		// Until one probe has been run, do not read a green apply as proof the
+		// server finished the work. Same caveat as putPrivateDNSAndWait, inherited
+		// from the shared helper rather than introduced here, and TRACKED as
+		// LEFTOVERS.md L37 so that it has an owner rather than only a comment.
+		//
+		// status IS CHECKED FOR NIL, and that is not defensive noise. A 200
+		// carrying the literal `null` decodes without error and leaves the pointer
+		// nil -- encoding/json sets a pointer to nil for `null` before it consults
+		// any Unmarshaler -- and status.Result is a DIRECT FIELD ACCESS, so it
+		// dereferences the receiver and panics. GetCompleted() is nil-safe;
+		// Result is not. This is the same reasoning that put the nil guard in
+		// Read, and a panic is the one failure mode Terraform cannot report as a
+		// diagnostic. Pinned by TestPutSplitTunnelingAndWaitSurvivesANullStatusBody.
+		// async.go's two sibling pollers have the identical unguarded shape; that
+		// is a house pattern to fix in one pass, and it is part of L37.
+		if status == nil {
+			// Nothing completed and nothing to report: treat it as another
+			// not-yet-finished poll rather than inventing a result.
+			return asyncResult{}, resp, nil
+		}
 		out := asyncResult{Completed: status.GetCompleted()}
 		if r := status.Result; r != nil {
 			out.StatusCode = int(r.GetStatusCode())
