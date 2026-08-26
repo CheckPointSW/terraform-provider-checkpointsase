@@ -584,12 +584,12 @@ var listAttributeEmptyPolicy = map[string]struct {
 	// would make the 202 above unwritable -- i.e. would remove the only way to turn the feature
 	// off. The conditional is enforced in validatePrivateDNSDiff (private_dns.go) instead, which is
 	// where a cross-field rule can see both fields.
-	"resource.checkpointsase_enhanced_network_private_dns.attributes":                    {mayBeEmpty, "MaxItems 1 wrapper block; ZERO blocks is the legal 'off' config, and expandCustomDnsUpdate still sends the required empty arrays"},
+	"resource.checkpointsase_enhanced_network_private_dns.attributes":                    {mayBeEmpty, "MaxItems 1 wrapper block: ZERO blocks is the legal 'off' CONFIGURATION. It is not a legal BODY -- a PUT with no `attributes` object is a 422 -- and mayBeEmpty holds only because expandCustomDnsUpdate synthesises the two required empty arrays. Also Optional+Computed, so MinItems must be 0 regardless"},
 	"resource.checkpointsase_enhanced_network_private_dns.attributes.servers":            {mayBeEmpty, "measured: {\"enabled\":false,...\"servers\":[]} is a 202 (API-FINDINGS.md 1.31). The 'at least one when enabled is true' minimum (swagger.yaml:4492) is CONDITIONAL on a sibling, so it lives in validatePrivateDNSDiff -- MinItems here would make the 'off' body unwritable"},
 	"resource.checkpointsase_enhanced_network_private_dns.attributes.search_domains":     {mayBeEmpty, "swagger.yaml:4500 says so in words: \"Required — send an empty array if you have none\""},
-	"resource.checkpointsase_enhanced_network_private_dns.attributes.dns_policy":         {mayBeEmpty, "MaxItems 1 wrapper block; ZERO blocks means no policy and expandDnsPolicy omits the key entirely"},
-	"resource.checkpointsase_enhanced_network_private_dns.attributes.dns_policy.public":  {mayBeEmpty, "MaxItems 1 wrapper block"},
-	"resource.checkpointsase_enhanced_network_private_dns.attributes.dns_policy.private": {mayBeEmpty, "MaxItems 1 wrapper block"},
+	"resource.checkpointsase_enhanced_network_private_dns.attributes.dns_policy":         {mayBeEmpty, "MaxItems 1 wrapper block; dnsPolicy is absent from CustomDnsUpdateAttributes' required list (swagger.yaml:4482-4484, which names only servers and searchDomains) and is an `omitempty` pointer in the model, so ZERO blocks omits the key entirely rather than sending null"},
+	"resource.checkpointsase_enhanced_network_private_dns.attributes.dns_policy.public":  {mayBeEmpty, "MaxItems 1 wrapper block; DnsPolicy (swagger.yaml:4589) requires neither half and Public is an `omitempty` pointer, so zero blocks omits the key"},
+	"resource.checkpointsase_enhanced_network_private_dns.attributes.dns_policy.private": {mayBeEmpty, "MaxItems 1 wrapper block; DnsPolicy (swagger.yaml:4589) requires neither half and Private is an `omitempty` pointer, so zero blocks omits the key"},
 	// Both domains lists are Required INSIDE their blocks (swagger.yaml:4595, :4609) and carry
 	// maxItems 100 with no minItems -- so once you write the block you must write the key, and []
 	// is a legal value for it. Required-and-empty is not a contradiction here.
@@ -634,7 +634,7 @@ var listAttributeEmptyPolicy = map[string]struct {
 	// sending null. Same for public/private: DnsPolicy (swagger.yaml:4589) requires neither, and
 	// both are `omitempty` pointers. expandDnsPolicy returns nil when neither half is written,
 	// which is what makes "no blocks" reach the wire as "no key".
-	"resource.checkpointsase_enhanced_region_private_dns.attributes.dns_policy":         {mayBeEmpty, "MaxItems 1 wrapper block; dnsPolicy is absent from CustomDnsUpdateAttributes' required list (swagger.yaml:4483) and is an `omitempty` pointer in the model, so ZERO blocks omits the key entirely rather than sending null"},
+	"resource.checkpointsase_enhanced_region_private_dns.attributes.dns_policy":         {mayBeEmpty, "MaxItems 1 wrapper block; dnsPolicy is absent from CustomDnsUpdateAttributes' required list (swagger.yaml:4482-4484, which names only servers and searchDomains) and is an `omitempty` pointer in the model, so ZERO blocks omits the key entirely rather than sending null"},
 	"resource.checkpointsase_enhanced_region_private_dns.attributes.dns_policy.public":  {mayBeEmpty, "MaxItems 1 wrapper block; DnsPolicy (swagger.yaml:4589) requires neither half and Public is an `omitempty` pointer, so zero blocks omits the key"},
 	"resource.checkpointsase_enhanced_region_private_dns.attributes.dns_policy.private": {mayBeEmpty, "MaxItems 1 wrapper block; DnsPolicy (swagger.yaml:4589) requires neither half and Private is an `omitempty` pointer, so zero blocks omits the key"},
 	// Both domains lists are Required INSIDE their blocks (swagger.yaml:4595, :4609) and carry

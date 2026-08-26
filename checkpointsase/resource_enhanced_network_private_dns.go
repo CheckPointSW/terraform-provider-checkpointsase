@@ -144,9 +144,12 @@ func resourceEnhancedNetworkPrivateDNS() *schema.Resource {
 			"`dns_policy` block — to keep a value, write it. " +
 			"The write is asynchronous: the API answers `202 Accepted` and the provider polls " +
 			"the operation to completion before reporting the apply as done. " +
-			"Setting `enabled = false` is the supported way to turn private DNS off, and the " +
-			"provider sends the empty `servers` and `search_domains` arrays the API requires " +
-			"even when you omit the `attributes` block entirely. " +
+			"Setting `enabled = false` is the supported way to turn private DNS off. On the " +
+			"FIRST write to a network that has never been configured, omitting the " +
+			"`attributes` block is enough: the provider synthesises the empty `servers` and " +
+			"`search_domains` arrays the API requires. After anything has been written, " +
+			"omitting the block carries the last-applied values forward instead — write " +
+			"`attributes {}` to send empty arrays deliberately. " +
 			"**`attributes` is computed as well as optional**, because the API returns the " +
 			"object on every read once anything has been written — a network that has never " +
 			"been configured reads back as `{\"enabled\": false}` with no `attributes` key, " +
@@ -170,6 +173,19 @@ func resourceEnhancedNetworkPrivateDNS() *schema.Resource {
 		Schema:        enhancedNetworkPrivateDNSSchema(),
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceEnhancedNetworkPrivateDNSImportState,
+		},
+		// The write is asynchronous and this resource POLLS it to completion, so
+		// without this it inherits SDKv2's 20-minute system default and the
+		// operator has no `timeouts {}` block to raise it with. Thirteen other
+		// resources in this package already declare asyncResourceTimeout for the
+		// same reason.
+		//
+		// THERE IS DELIBERATELY NO Delete TIMEOUT. Delete makes no API call at all
+		// (D9, privateDNSNoOpDeleteNote) -- it clears the id and returns -- so
+		// declaring a budget for it would advertise a wait that cannot happen.
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(asyncResourceTimeout),
+			Update: schema.DefaultTimeout(asyncResourceTimeout),
 		},
 	}
 }
@@ -342,6 +358,20 @@ func resourceEnhancedNetworkPrivateDNSRead(ctx context.Context, d *schema.Resour
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set enhanced network private DNS network_id", err)
 	}
+	// A 200 WITH A `null` BODY DOES NOT ERROR, and without this it PANICS. decode
+	// runs json.Unmarshal into *CustomDns; a literal `null` unmarshals cleanly and
+	// leaves the pointer nil, so classifyAPIError never sees a failure. The
+	// generated getters are nil-safe (GetEnabled checks o == nil), but
+	// customDns.Attributes below is a DIRECT FIELD ACCESS and dereferences it.
+	//
+	// Unmeasured on this endpoint -- no probe has seen a null body -- but a panic
+	// is the one failure mode Terraform cannot report as a diagnostic, and the
+	// unconfigured shape is the correct reading of an empty answer anyway
+	// (API-FINDINGS.md 1.31: a never-configured object reads as {"enabled":false}).
+	if customDns == nil {
+		customDns = &perimeter81Sdk.CustomDns{}
+	}
+
 	if err := d.Set(privateDNSAttrEnabled, customDns.GetEnabled()); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set enhanced network private DNS enabled", err)
@@ -510,13 +540,16 @@ func resourceEnhancedNetworkPrivateDNSImportState(ctx context.Context, d *schema
 			"and this one is empty: terraform import " +
 			"checkpointsase_enhanced_network_private_dns.<name> <network_id>")
 	}
-	// A no-op on every path today: networkId was just read OUT of this attribute,
-	// so writing it back changes nothing. It is kept because it makes Read the
-	// single place that populates this resource's state -- the importer sets
-	// network_id only so that the GET above has a path to build, and if that ever
-	// changed to deriving the address from d.Id() this is the line that would carry
-	// it into state. Removing it would move that responsibility somewhere less
-	// obvious for no gain.
+	// THIS LINE IS WHAT MAKES IMPORT WORK, and it is the opposite of the
+	// identically-shaped line in Read. Do not "tidy" it away.
+	//
+	// Read addresses the object by the network_id ATTRIBUTE, not by d.Id(). On
+	// import the attribute is empty -- networkId here came out of d.Id() -- so
+	// without this the GET below is /v3/networks/enhanced//privateDNS: an empty
+	// path segment, which is a DIFFERENT ROUTE rather than a 404 on this one.
+	// Pinned by TestEnhancedNetworkPrivateDNSImportSetsNetworkIdBeforeReading,
+	// which asserts the whole request list so the empty segment is visible
+	// rather than inferred.
 	if err := d.Set(privateDNSAttrNetworkID, networkId); err != nil {
 		return nil, fmt.Errorf("could not set network_id from the import id %q: %w", networkId, err)
 	}

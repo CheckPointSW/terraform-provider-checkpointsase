@@ -9,10 +9,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
 
 /*
@@ -212,6 +215,383 @@ func TestPrivateDNSSchemaAndExpanderAgreeOnEveryAttribute(t *testing.T) {
 				"it came from is declared in privateDNSSchema and dropped by "+
 				"expandCustomDnsUpdate.\nbody: %s", sentinel, body)
 		}
+	}
+}
+
+/*
+TestPrivateDNSResourcesDeclareAnAsyncTimeout pins the Timeouts block on every
+resource that polls this endpoint.
+
+WHY THIS IS NOT COSMETIC. putPrivateDNSAndWait polls a 202 to completion. A
+resource with no Timeouts inherits SDKv2's 20-minute system DEFAULT, and -- the
+part that actually bites -- the operator cannot raise it, because `timeouts {}`
+is only accepted in HCL for a resource that declares the block. So a tenant whose
+write legitimately takes longer has no configuration that lets it finish.
+
+Both resources shipped without it: the shared contract in private_dns.go asked
+for it and neither task read the line. This test is the version of that contract
+that fails.
+
+Delete is asserted ABSENT, not present. Delete makes no API call (D9), so a
+declared Delete budget would advertise a wait that cannot happen -- and a future
+edit that "completed" the block by adding one is a claim about this resource that
+is not true.
+*/
+func TestPrivateDNSResourcesDeclareAnAsyncTimeout(t *testing.T) {
+	for name, r := range map[string]*schema.Resource{
+		"checkpointsase_enhanced_network_private_dns": resourceEnhancedNetworkPrivateDNS(),
+		"checkpointsase_enhanced_region_private_dns":  resourceEnhancedRegionPrivateDNS(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if r.Timeouts == nil {
+				t.Fatalf("%s declares no Timeouts. The write is asynchronous and polled, so it "+
+					"silently inherits SDKv2's 20-minute default and the operator has no "+
+					"`timeouts {}` block to raise it with", name)
+			}
+			for label, got := range map[string]*time.Duration{
+				"Create": r.Timeouts.Create,
+				"Update": r.Timeouts.Update,
+			} {
+				if got == nil {
+					t.Errorf("%s declares no %s timeout; it polls an async operation and must "+
+						"use asyncResourceTimeout", name, label)
+					continue
+				}
+				if *got != asyncResourceTimeout {
+					t.Errorf("%s %s timeout = %s, want asyncResourceTimeout (%s)",
+						name, label, *got, asyncResourceTimeout)
+				}
+			}
+			if r.Timeouts.Delete != nil {
+				t.Errorf("%s declares a Delete timeout of %s, and Delete makes NO API CALL "+
+					"(D9). A budget for a wait that cannot happen tells the operator something "+
+					"false about this resource", name, *r.Timeouts.Delete)
+			}
+		})
+	}
+}
+
+/*
+privateDNSListMaximums is every MaxItems privateDNSSchema declares, as a CLOSED
+set, with the swagger line each value comes from.
+
+THE FOUR LEAF LIMITS ARE NOT THE SAME NUMBER, AND THAT IS THE POINT. `servers`
+and `search_domains` cap at 4; both `domains` lists cap at 100. A table that made
+them uniform would be wrong in one direction or the other -- it would either
+refuse a legal 100-domain policy or accept a five-server body the API rejects.
+
+Nothing in the suite noticed when they were wrong. A reviewer's mutation on
+2026-08-26 set both 4s to 100 and both 100s to 4 in one edit, and the full suite
+still ran 285 PASS / 55 SKIP / 0 FAIL. These four constants were a headline
+requirement of the task brief and were pinned by nothing.
+
+The four `MaxItems: 1` rows are the wrapper BLOCKS -- `attributes` and the three
+dns_policy containers. They are here for the same reason the conformance sweep
+counts them: a MaxItems-1 block is a TypeList like any other, so a set that left
+them out would not be closed, and "closed" is what makes a NEW list added without
+a maximum a failure rather than a silence.
+*/
+var privateDNSListMaximums = map[string]struct {
+	max     int
+	swagger string
+}{
+	privateDNSAttrAttributes: {1, "CustomDnsUpdate.attributes is a $ref to one object, swagger.yaml:4468-4469"},
+
+	privateDNSAttrAttributes + "." + privateDNSAttrServers:       {4, "swagger.yaml:4489"},
+	privateDNSAttrAttributes + "." + privateDNSAttrSearchDomains: {4, "swagger.yaml:4496"},
+
+	privateDNSAttrAttributes + "." + privateDNSAttrDNSPolicy: {1, "CustomDnsUpdateAttributes.dnsPolicy is a $ref to one object, swagger.yaml:4501-4502"},
+	privateDNSAttrAttributes + "." + privateDNSAttrDNSPolicy + "." +
+		privateDNSAttrPublic: {1, "DnsPolicy.public is one object, swagger.yaml:4593-4594"},
+	privateDNSAttrAttributes + "." + privateDNSAttrDNSPolicy + "." +
+		privateDNSAttrPublic + "." + privateDNSAttrDomains: {100, "swagger.yaml:4601"},
+	privateDNSAttrAttributes + "." + privateDNSAttrDNSPolicy + "." +
+		privateDNSAttrPrivate: {1, "DnsPolicy.private is one object, swagger.yaml:4607-4608"},
+	privateDNSAttrAttributes + "." + privateDNSAttrDNSPolicy + "." +
+		privateDNSAttrPrivate + "." + privateDNSAttrDomains: {100, "swagger.yaml:4626"},
+}
+
+/*
+TestPrivateDNSSchemaPinsEveryListMaximum asserts the eight MaxItems above and
+that there are no others.
+
+Both directions matter. A value that DROPS (100 -> 4) refuses a configuration the
+API accepts, and the operator sees a plan error naming a limit that is not real.
+A value that RISES (4 -> 100) sends a body the API rejects, and the operator sees
+a 422 from the server at apply time instead of a plan error -- after Terraform has
+already started an apply.
+
+Asserting the whole map rather than four rows is what makes a NEW list attribute
+with no maximum a failure here. That is the shape of the original defect: the
+limits existed in the brief, went into the schema correctly, and then nothing
+referred to them again.
+*/
+func TestPrivateDNSSchemaPinsEveryListMaximum(t *testing.T) {
+	found := map[string]int{}
+	walkSchema("", privateDNSSchema(), func(path string, s *schema.Schema) {
+		if s.MaxItems != 0 {
+			found[path] = s.MaxItems
+		}
+	})
+
+	for path, want := range privateDNSListMaximums {
+		got, ok := found[path]
+		if !ok {
+			t.Errorf("%s declares no MaxItems; it must cap at %d (%s)", path, want.max, want.swagger)
+			continue
+		}
+		if got != want.max {
+			t.Errorf("%s MaxItems = %d, want %d (%s). Too high sends a body the API rejects at "+
+				"apply time; too low refuses a configuration the API accepts",
+				path, got, want.max, want.swagger)
+		}
+	}
+	for path, got := range found {
+		if _, ok := privateDNSListMaximums[path]; !ok {
+			t.Errorf("%s declares MaxItems = %d and is not in privateDNSListMaximums. Add it "+
+				"with the swagger line it comes from, so the next reader can check it", path, got)
+		}
+	}
+}
+
+/*
+privateDNSValidateConfig runs the SDK's schema validation -- MaxItems, MinItems
+and every ValidateFunc -- over a raw configuration, the way `terraform validate`
+does before a plan is ever built.
+
+This is deliberately NOT planEnhancedNetworkPrivateDNS. r.Diff runs CustomizeDiff
+and does NOT run MaxItems or ValidateFunc, so every plan-time test in this package
+is blind to both. That is why the mutation described above survived: the suite had
+extensive plan coverage and no validation coverage at all.
+
+The resource is assembled from testPrivateDNSResourceSchema rather than named
+directly, so this stays a statement about the SHARED schema and holds for both
+private-DNS resources.
+
+  - @param t *testing.T
+  - @param raw map[string]interface{} - the configuration, as HCL decodes to
+
+@return error - the joined validation errors, or nil
+*/
+func privateDNSValidateConfig(t *testing.T, raw map[string]interface{}) error {
+	t.Helper()
+
+	r := &schema.Resource{Schema: testPrivateDNSResourceSchema()}
+	diags := r.Validate(terraform.NewResourceConfigRaw(raw))
+
+	var sb strings.Builder
+	for _, d := range diags {
+		if d.Severity != diag.Error {
+			continue
+		}
+		sb.WriteString(d.Summary)
+		sb.WriteString(" ")
+		sb.WriteString(d.Detail)
+		sb.WriteString("\n")
+	}
+	if sb.Len() == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s", strings.TrimSpace(sb.String()))
+}
+
+// privateDNSStrings builds n distinct domain-shaped strings.
+func privateDNSStrings(n int) []interface{} {
+	out := make([]interface{}, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, fmt.Sprintf("d%d.example.com", i))
+	}
+	return out
+}
+
+// privateDNSServers builds n distinct server blocks.
+func privateDNSServers(n int) []interface{} {
+	out := make([]interface{}, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, map[string]interface{}{
+			privateDNSAttrAddress: fmt.Sprintf("10.0.0.%d", i+1),
+			privateDNSAttrIsTLS:   false,
+		})
+	}
+	return out
+}
+
+// privateDNSConfigWithAttributes wraps an `attributes` block in the surrounding
+// required arguments, so each case below writes only the part it is about.
+func privateDNSConfigWithAttributes(attributes map[string]interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		privateDNSAttrNetworkID:  "net-1",
+		privateDNSAttrEnabled:    true,
+		privateDNSAttrAttributes: []interface{}{attributes},
+	}
+}
+
+// privateDNSPolicyConfig wraps a `private` policy block, filling the two other
+// properties the spec marks required inside it, so a `mode` case can vary `mode`
+// alone.
+func privateDNSPolicyConfig(mode string) map[string]interface{} {
+	return privateDNSConfigWithAttributes(map[string]interface{}{
+		privateDNSAttrServers: privateDNSServers(1),
+		privateDNSAttrDNSPolicy: []interface{}{map[string]interface{}{
+			privateDNSAttrPrivate: []interface{}{map[string]interface{}{
+				privateDNSAttrMode:           mode,
+				privateDNSAttrPublicFallback: true,
+				privateDNSAttrDomains:        privateDNSStrings(1),
+			}},
+		}},
+	})
+}
+
+/*
+TestPrivateDNSValidationEnforcesTheLimitsAndTheModeEnum is the behavioural half of
+the two constants nothing was checking: it drives the SDK's real validator and
+asserts each boundary from BOTH sides.
+
+WHY EACH LIMIT IS TESTED AT max AND AT max+1. Asserting only that 101 domains is
+refused passes for a schema that refuses 5, and asserting only that 100 is
+accepted passes for a schema with no limit at all. The pair is what pins the
+number. Because the two limits differ (4 for servers and search_domains, 100 for
+both domains lists), the accepted row of one is larger than the refused row of the
+other -- so a schema that used one number everywhere fails here whichever number
+it picked.
+
+`mode` MUST STAY CASE-SENSITIVE. validation.StringInSlice takes an
+`ignoreCase bool` and privateDNSSchema passes false. Phase 3 shipped the opposite
+mistake on `access` and the API answered a 422 for "Read" where it accepts "read":
+this API does not fold case on enums, so accepting "matchpattern" at plan time
+only moves the refusal to apply time and blames the server for it. Flipping that
+one boolean to true left the whole suite green before this test existed.
+*/
+func TestPrivateDNSValidationEnforcesTheLimitsAndTheModeEnum(t *testing.T) {
+	publicDomains := func(n int) map[string]interface{} {
+		return privateDNSConfigWithAttributes(map[string]interface{}{
+			privateDNSAttrServers: privateDNSServers(1),
+			privateDNSAttrDNSPolicy: []interface{}{map[string]interface{}{
+				privateDNSAttrPublic: []interface{}{map[string]interface{}{
+					privateDNSAttrDomains: privateDNSStrings(n),
+				}},
+			}},
+		})
+	}
+	privateDomains := func(n int) map[string]interface{} {
+		return privateDNSConfigWithAttributes(map[string]interface{}{
+			privateDNSAttrServers: privateDNSServers(1),
+			privateDNSAttrDNSPolicy: []interface{}{map[string]interface{}{
+				privateDNSAttrPrivate: []interface{}{map[string]interface{}{
+					privateDNSAttrMode:           "matchPattern",
+					privateDNSAttrPublicFallback: true,
+					privateDNSAttrDomains:        privateDNSStrings(n),
+				}},
+			}},
+		})
+	}
+
+	cases := []struct {
+		name    string
+		config  map[string]interface{}
+		refused bool
+		why     string
+	}{
+		{
+			name:   "four servers, the documented maximum",
+			config: privateDNSConfigWithAttributes(map[string]interface{}{privateDNSAttrServers: privateDNSServers(4)}),
+			why:    "swagger.yaml:4489 caps servers at 4, so exactly 4 is legal and must not be refused",
+		},
+		{
+			name:    "five servers, one over",
+			config:  privateDNSConfigWithAttributes(map[string]interface{}{privateDNSAttrServers: privateDNSServers(5)}),
+			refused: true,
+			why:     "swagger.yaml:4489 caps servers at 4; a fifth is a 422 at apply time unless the plan refuses it",
+		},
+		{
+			name: "four search domains, the documented maximum",
+			config: privateDNSConfigWithAttributes(map[string]interface{}{
+				privateDNSAttrServers:       privateDNSServers(1),
+				privateDNSAttrSearchDomains: privateDNSStrings(4),
+			}),
+			why: "swagger.yaml:4496 caps search_domains at 4",
+		},
+		{
+			name: "five search domains, one over",
+			config: privateDNSConfigWithAttributes(map[string]interface{}{
+				privateDNSAttrServers:       privateDNSServers(1),
+				privateDNSAttrSearchDomains: privateDNSStrings(5),
+			}),
+			refused: true,
+			why:     "swagger.yaml:4496 caps search_domains at 4",
+		},
+		{
+			name:   "one hundred public domains, the documented maximum",
+			config: publicDomains(100),
+			why: "swagger.yaml:4601 caps dns_policy.public.domains at 100, NOT at 4. A schema that " +
+				"reused the servers limit refuses this legal policy",
+		},
+		{
+			name:    "one hundred and one public domains, one over",
+			config:  publicDomains(101),
+			refused: true,
+			why:     "swagger.yaml:4601 caps dns_policy.public.domains at 100",
+		},
+		{
+			name:   "one hundred private domains, the documented maximum",
+			config: privateDomains(100),
+			why: "swagger.yaml:4626 caps dns_policy.private.domains at 100, NOT at 4. A schema that " +
+				"reused the servers limit refuses this legal policy",
+		},
+		{
+			name:    "one hundred and one private domains, one over",
+			config:  privateDomains(101),
+			refused: true,
+			why:     "swagger.yaml:4626 caps dns_policy.private.domains at 100",
+		},
+		{
+			name:   "mode matchPattern, exactly as the API spells it",
+			config: privateDNSPolicyConfig("matchPattern"),
+			why:    "one of the two values privateDNSPrivateModes declares",
+		},
+		{
+			name:   "mode resolveAllViaPrivate, exactly as the API spells it",
+			config: privateDNSPolicyConfig("resolveAllViaPrivate"),
+			why:    "the other value privateDNSPrivateModes declares",
+		},
+		{
+			name:    "mode matchpattern, lowercased",
+			config:  privateDNSPolicyConfig("matchpattern"),
+			refused: true,
+			why: "the enum is CASE-SENSITIVE. StringInSlice is passed ignoreCase=false on purpose: " +
+				"Phase 3 accepted \"Read\" for `access` and the API answered 422",
+		},
+		{
+			name:    "mode MATCHPATTERN, uppercased",
+			config:  privateDNSPolicyConfig("MATCHPATTERN"),
+			refused: true,
+			why:     "the enum is case-sensitive in both directions, not just for a lowercased first letter",
+		},
+		{
+			name:    "mode resolveallviaprivate, lowercased",
+			config:  privateDNSPolicyConfig("resolveallviaprivate"),
+			refused: true,
+			why:     "the second enum value is case-sensitive too",
+		},
+		{
+			name:    "mode matchPatern, a plain typo",
+			config:  privateDNSPolicyConfig("matchPatern"),
+			refused: true,
+			why:     "the enum is closed, so a misspelling is refused whatever the case rule is",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := privateDNSValidateConfig(t, tc.config)
+			switch {
+			case tc.refused && err == nil:
+				t.Errorf("this configuration was ACCEPTED and must be refused: %s", tc.why)
+			case !tc.refused && err != nil:
+				t.Errorf("this configuration was REFUSED and is legal: %s\nvalidation said: %v",
+					tc.why, err)
+			}
+		})
 	}
 }
 

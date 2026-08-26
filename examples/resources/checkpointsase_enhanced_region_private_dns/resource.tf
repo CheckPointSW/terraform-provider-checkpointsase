@@ -28,6 +28,16 @@
 # ordinary optional blocks, so dropping `dns_policy` or `search_domains` does clear
 # those. To turn private DNS off, set `enabled = false`.
 #
+# WHERE THOSE STATEMENTS COME FROM, because it is not this endpoint. Everything
+# above about what the API requires, returns and rejects -- the two read shapes,
+# the 422 for a write with no `attributes` object, the order-preserving round trip
+# -- was measured against the enhanced-NETWORK private-DNS path
+# (/v3/networks/enhanced/{networkId}/privateDNS; API-FINDINGS.md 1.31 and 1.34).
+# That path takes the identical request and response models and the same spec
+# covers both, so this is the documented contract and not a guess -- but this
+# REGION route has never been probed directly. If the two ever diverge, this file
+# is describing the network's behaviour.
+#
 # HOW A REGION'S PRIVATE DNS COMBINES WITH ITS NETWORK'S IS NOT DOCUMENTED, and
 # this provider does not model any relationship between the two. Using this
 # alongside checkpointsase_enhanced_network_private_dns on the same network is
@@ -97,14 +107,22 @@ resource "checkpointsase_enhanced_region_private_dns" "example" {
 }
 
 # Turning private DNS off is a configuration change, not a destroy. Setting
-# `enabled = false` is the supported way to do it, and the provider still sends
-# the empty `servers` and `search_domains` arrays the API demands on every write
-# -- so you can omit the `attributes` block entirely:
+# `enabled = false` is the supported way to do it:
 #
 #   resource "checkpointsase_enhanced_region_private_dns" "example" {
 #     network_id = checkpointsase_enhanced_network.example.id
 #     region_id  = one(checkpointsase_enhanced_network.example.region[*].id)
 #     enabled    = false
+#
+#     # Name the block and leave it empty to send the empty `servers` and
+#     # `search_domains` arrays the API demands. You can drop the `attributes {}`
+#     # line on the FIRST write to a region that has never been configured -- the
+#     # provider synthesises the empty arrays then. After anything has been
+#     # written, `attributes` is computed: omitting it carries the last-applied
+#     # servers and search domains FORWARD and the write sends those, not `[]`.
+#     # With `enabled = false` the retained servers resolve nothing, but
+#     # `terraform show` will still display them.
+#     attributes {}
 #   }
 #
 # `terraform destroy` on this resource makes NO API CALL. It releases Terraform's

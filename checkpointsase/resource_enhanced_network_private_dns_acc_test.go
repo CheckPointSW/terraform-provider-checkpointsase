@@ -80,12 +80,13 @@ what it is here to prove.
     step is a permanent diff -- every plan proposing a change, every apply re-PUTting
     the same body. Making it Computed is the fix; this is the assertion that the fix
     is still in place.
- 3. The dns_policy shape. NOTHING HAS MEASURED THIS ENDPOINT WITH A dns_policy:
-    P8/P8b sent servers and searchDomains only, so this step is the first live
-    exercise of `public.domains` and `private.{mode, public_fallback, domains}`.
-    A failure here is INFORMATION, not necessarily a provider defect -- if the
-    server canonicalises the policy the way API-FINDINGS.md 1.15 found elsewhere,
-    step 4 is where it shows and the flattener is what needs changing.
+ 3. The dns_policy shape. API-FINDINGS.md 1.34 has now measured this endpoint with
+    a dns_policy -- a full policy PUT and read back intact, `publicFallback: false`
+    included -- so this step exercises a shape the API is known to accept, through
+    the provider's own expander and flattener. A failure here is therefore more
+    likely a provider defect than an API surprise, which is the opposite of what
+    this comment said before 1.34 was measured. If the server canonicalises the
+    policy the way 1.15 found elsewhere, step 4 is where it shows.
  4. An empty re-plan over the dns_policy shape, for exactly that reason.
  5. Import by network id, verified against the state the apply produced. Both sides
     come from the same Read, so any difference is an importer defect.
@@ -420,10 +421,14 @@ resource "checkpointsase_enhanced_network_private_dns" "pdns" {
 testAccEnhancedNetworkPrivateDNSConfigWithPolicy adds a dns_policy and DROPS
 search_domains.
 
-No probe has ever sent a dns_policy to this endpoint -- P8 and P8b carried
-`servers` and `searchDomains` only. See the test's doc comment: this is the first
-live exercise of it, and a failure here is information about the API rather than
-automatically a provider defect.
+A dns_policy HAS now been measured on this endpoint. P8 and P8b carried `servers`
+and `searchDomains` only, but API-FINDINGS.md 1.34 (2026-08-26) PUT a full policy
+and read it back intact -- `public.domains` and `private.{mode, publicFallback,
+domains}`, with `publicFallback` present and explicitly `false` -- and both
+CustomDns and CustomDnsResponse decoded it through the real generated types. So
+this step is no longer the first exercise of the shape; it is the first exercise
+of it THROUGH THE PROVIDER, which is still worth having because the flattener and
+the expander sit between the operator and that body.
 
 It drops search_domains, which step 6 then adds back while dropping dns_policy.
 Between them the two steps show the full replacement working in both directions on

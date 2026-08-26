@@ -3,12 +3,12 @@
 page_title: "checkpointsase_enhanced_region_private_dns Resource - checkpointsase"
 subcategory: ""
 description: |-
-  Manages the private DNS configuration of ONE REGION of a Check Point SASE enhanced network — GET/PUT /v3/networks/enhanced/{networkId}/regions/{regionId}/privateDNS. This is a setting on a region that already exists, not an object of its own: the API has no create and no delete for it, so terraform apply adopts the region's current private DNS configuration and replaces it with yours. Every write is a full replacement. Anything omitted from attributes is cleared rather than preserved, including search_domains and the whole dns_policy block — to keep a value, write it. The write is asynchronous: the API answers 202 Accepted and the provider polls the operation to completion before reporting the apply as done. Setting enabled = false is the supported way to turn private DNS off, and the provider sends the empty servers and search_domains arrays the API requires even when you omit the attributes block entirely. attributes is computed as well as optional, because the API returns the object on every read once anything has been written — a region that has never been configured reads back as {"enabled": false} with no attributes key, and one that has been explicitly disabled reads back with attributes present and empty. Removing the block from your configuration therefore leaves whatever the region already holds rather than clearing it; there is nothing it could clear to, since the API rejects a write with no attributes object. To empty a list write it empty, and to drop the DNS policy remove the dns_policy block — the blocks nested inside attributes are optional only, so omitting one of those does still clear it. terraform destroy on this resource makes NO API call. It releases Terraform's claim on the setting and leaves the configuration exactly as it is — whatever private DNS configuration was last applied stays in force. Destroying it deliberately does not write enabled = false, because changing how a live production network resolves names as a side effect of removing a Terraform resource is not something a destroy should do. If you want private DNS off, apply enabled = false first, then destroy. Import with the network id and the region id joined by a colon: terraform import checkpointsase_enhanced_region_private_dns.this <network_id>:<region_id>. A colon is the separator because a hyphen appears inside network ids themselves. This resource and checkpointsase_enhanced_network_private_dns address different endpoints; how the API combines a region's private DNS with its network's is not documented and is not modelled here.
+  Manages the private DNS configuration of ONE REGION of a Check Point SASE enhanced network — GET/PUT /v3/networks/enhanced/{networkId}/regions/{regionId}/privateDNS. This is a setting on a region that already exists, not an object of its own: the API has no create and no delete for it, so terraform apply adopts the region's current private DNS configuration and replaces it with yours. Every write is a full replacement. Anything omitted from attributes is cleared rather than preserved, including search_domains and the whole dns_policy block — to keep a value, write it. The write is asynchronous: the API answers 202 Accepted and the provider polls the operation to completion before reporting the apply as done. Setting enabled = false is the supported way to turn private DNS off. On the FIRST write to a region that has never been configured, omitting the attributes block is enough: the provider synthesises the empty servers and search_domains arrays the API requires. After anything has been written, omitting the block carries the last-applied values forward instead — write attributes {} to send empty arrays deliberately. attributes is computed as well as optional, because the API returns the object on every read once anything has been written — a region that has never been configured reads back as {"enabled": false} with no attributes key, and one that has been explicitly disabled reads back with attributes present and empty. Removing the block from your configuration therefore leaves whatever the region already holds rather than clearing it; there is nothing it could clear to, since a write with no attributes object is rejected. To empty a list write it empty, and to drop the DNS policy remove the dns_policy block — the blocks nested inside attributes are optional only, so omitting one of those does still clear it. Everything above about what this API requires, returns and rejects was measured on the enhanced-NETWORK private-DNS endpoint, not on this one: the two read shapes, the 422 for a write with no attributes, and the order-preserving round trip all come from probes against /v3/networks/enhanced/{networkId}/privateDNS (API-FINDINGS.md §1.31, §1.34). That endpoint takes the identical request and response models and the same specification applies to both, so this is the documented contract rather than a guess — but the region route itself has not been probed, and the acceptance test is the first thing that will know if it differs. terraform destroy on this resource makes NO API call. It releases Terraform's claim on the setting and leaves the configuration exactly as it is — whatever private DNS configuration was last applied stays in force. Destroying it deliberately does not write enabled = false, because changing how a live production network resolves names as a side effect of removing a Terraform resource is not something a destroy should do. If you want private DNS off, apply enabled = false first, then destroy. Import with the network id and the region id joined by a colon: terraform import checkpointsase_enhanced_region_private_dns.this <network_id>:<region_id>. A colon is the separator because a hyphen appears inside network ids themselves. This resource and checkpointsase_enhanced_network_private_dns address different endpoints; how the API combines a region's private DNS with its network's is not documented and is not modelled here.
 ---
 
 # checkpointsase_enhanced_region_private_dns (Resource)
 
-Manages the private DNS configuration of ONE REGION of a Check Point SASE **enhanced network** — `GET`/`PUT /v3/networks/enhanced/{networkId}/regions/{regionId}/privateDNS`. This is a setting on a region that already exists, not an object of its own: the API has no create and no delete for it, so `terraform apply` adopts the region's current private DNS configuration and replaces it with yours. **Every write is a full replacement.** Anything omitted from `attributes` is cleared rather than preserved, including `search_domains` and the whole `dns_policy` block — to keep a value, write it. The write is asynchronous: the API answers `202 Accepted` and the provider polls the operation to completion before reporting the apply as done. Setting `enabled = false` is the supported way to turn private DNS off, and the provider sends the empty `servers` and `search_domains` arrays the API requires even when you omit the `attributes` block entirely. **`attributes` is computed as well as optional**, because the API returns the object on every read once anything has been written — a region that has never been configured reads back as `{"enabled": false}` with no `attributes` key, and one that has been explicitly disabled reads back with `attributes` present and empty. Removing the block from your configuration therefore leaves whatever the region already holds rather than clearing it; there is nothing it could clear to, since the API rejects a write with no `attributes` object. To empty a list write it empty, and to drop the DNS policy remove the `dns_policy` block — the blocks nested inside `attributes` are optional only, so omitting one of those does still clear it. `terraform destroy` on this resource makes NO API call. It releases Terraform's claim on the setting and leaves the configuration exactly as it is — whatever private DNS configuration was last applied stays in force. Destroying it deliberately does not write `enabled = false`, because changing how a live production network resolves names as a side effect of removing a Terraform resource is not something a destroy should do. If you want private DNS off, apply `enabled = false` first, then destroy. Import with the network id and the region id joined by a colon: `terraform import checkpointsase_enhanced_region_private_dns.this <network_id>:<region_id>`. A colon is the separator because a hyphen appears inside network ids themselves. This resource and `checkpointsase_enhanced_network_private_dns` address different endpoints; how the API combines a region's private DNS with its network's is not documented and is not modelled here.
+Manages the private DNS configuration of ONE REGION of a Check Point SASE **enhanced network** — `GET`/`PUT /v3/networks/enhanced/{networkId}/regions/{regionId}/privateDNS`. This is a setting on a region that already exists, not an object of its own: the API has no create and no delete for it, so `terraform apply` adopts the region's current private DNS configuration and replaces it with yours. **Every write is a full replacement.** Anything omitted from `attributes` is cleared rather than preserved, including `search_domains` and the whole `dns_policy` block — to keep a value, write it. The write is asynchronous: the API answers `202 Accepted` and the provider polls the operation to completion before reporting the apply as done. Setting `enabled = false` is the supported way to turn private DNS off. On the FIRST write to a region that has never been configured, omitting the `attributes` block is enough: the provider synthesises the empty `servers` and `search_domains` arrays the API requires. After anything has been written, omitting the block carries the last-applied values forward instead — write `attributes {}` to send empty arrays deliberately. **`attributes` is computed as well as optional**, because the API returns the object on every read once anything has been written — a region that has never been configured reads back as `{"enabled": false}` with no `attributes` key, and one that has been explicitly disabled reads back with `attributes` present and empty. Removing the block from your configuration therefore leaves whatever the region already holds rather than clearing it; there is nothing it could clear to, since a write with no `attributes` object is rejected. To empty a list write it empty, and to drop the DNS policy remove the `dns_policy` block — the blocks nested inside `attributes` are optional only, so omitting one of those does still clear it. **Everything above about what this API requires, returns and rejects was measured on the enhanced-NETWORK private-DNS endpoint**, not on this one: the two read shapes, the `422` for a write with no `attributes`, and the order-preserving round trip all come from probes against `/v3/networks/enhanced/{networkId}/privateDNS` (`API-FINDINGS.md` §1.31, §1.34). That endpoint takes the identical request and response models and the same specification applies to both, so this is the documented contract rather than a guess — but the region route itself has not been probed, and the acceptance test is the first thing that will know if it differs. `terraform destroy` on this resource makes NO API call. It releases Terraform's claim on the setting and leaves the configuration exactly as it is — whatever private DNS configuration was last applied stays in force. Destroying it deliberately does not write `enabled = false`, because changing how a live production network resolves names as a side effect of removing a Terraform resource is not something a destroy should do. If you want private DNS off, apply `enabled = false` first, then destroy. Import with the network id and the region id joined by a colon: `terraform import checkpointsase_enhanced_region_private_dns.this <network_id>:<region_id>`. A colon is the separator because a hyphen appears inside network ids themselves. This resource and `checkpointsase_enhanced_network_private_dns` address different endpoints; how the API combines a region's private DNS with its network's is not documented and is not modelled here.
 
 ## Example Usage
 
@@ -42,6 +42,16 @@ Manages the private DNS configuration of ONE REGION of a Check Point SASE **enha
 # `attributes` object is rejected outright. The blocks nested INSIDE it are
 # ordinary optional blocks, so dropping `dns_policy` or `search_domains` does clear
 # those. To turn private DNS off, set `enabled = false`.
+#
+# WHERE THOSE STATEMENTS COME FROM, because it is not this endpoint. Everything
+# above about what the API requires, returns and rejects -- the two read shapes,
+# the 422 for a write with no `attributes` object, the order-preserving round trip
+# -- was measured against the enhanced-NETWORK private-DNS path
+# (/v3/networks/enhanced/{networkId}/privateDNS; API-FINDINGS.md 1.31 and 1.34).
+# That path takes the identical request and response models and the same spec
+# covers both, so this is the documented contract and not a guess -- but this
+# REGION route has never been probed directly. If the two ever diverge, this file
+# is describing the network's behaviour.
 #
 # HOW A REGION'S PRIVATE DNS COMBINES WITH ITS NETWORK'S IS NOT DOCUMENTED, and
 # this provider does not model any relationship between the two. Using this
@@ -112,14 +122,22 @@ resource "checkpointsase_enhanced_region_private_dns" "example" {
 }
 
 # Turning private DNS off is a configuration change, not a destroy. Setting
-# `enabled = false` is the supported way to do it, and the provider still sends
-# the empty `servers` and `search_domains` arrays the API demands on every write
-# -- so you can omit the `attributes` block entirely:
+# `enabled = false` is the supported way to do it:
 #
 #   resource "checkpointsase_enhanced_region_private_dns" "example" {
 #     network_id = checkpointsase_enhanced_network.example.id
 #     region_id  = one(checkpointsase_enhanced_network.example.region[*].id)
 #     enabled    = false
+#
+#     # Name the block and leave it empty to send the empty `servers` and
+#     # `search_domains` arrays the API demands. You can drop the `attributes {}`
+#     # line on the FIRST write to a region that has never been configured -- the
+#     # provider synthesises the empty arrays then. After anything has been
+#     # written, `attributes` is computed: omitting it carries the last-applied
+#     # servers and search domains FORWARD and the write sends those, not `[]`.
+#     # With `enabled = false` the retained servers resolve nothing, but
+#     # `terraform show` will still display them.
+#     attributes {}
 #   }
 #
 # `terraform destroy` on this resource makes NO API CALL. It releases Terraform's
@@ -144,7 +162,8 @@ output "enhanced_region_private_dns_enabled" {
 
 ### Optional
 
-- `attributes` (Block List, Max: 1) Private DNS configuration. May be omitted when `enabled` is false; the provider still sends the empty servers and search domain arrays the API requires on every write. This block is also computed, because the API returns it on every read once anything has been written — so REMOVING the block does not clear the configuration, it leaves whatever the network already holds. To empty a list, write it empty (`search_domains = []`); to turn private DNS off, set `enabled = false`. (see [below for nested schema](#nestedblock--attributes))
+- `attributes` (Block List, Max: 1) Private DNS configuration. May be omitted, but what omitting it means depends on history. On the FIRST write to an object that has never been configured, the provider synthesises the empty `servers` and `search_domains` arrays the API requires, so `enabled = false` on its own is a legal apply. After that this block is computed — the API returns it on every read once anything has been written — so a configuration that does not name it carries the LAST APPLIED values forward and the write sends those, not empty arrays. Removing the block therefore clears nothing. To send empty arrays deliberately, name the block and leave it empty (`attributes {}`), which is the way to empty `servers`; `search_domains = []` empties that list on its own. To turn private DNS off, set `enabled = false`. (see [below for nested schema](#nestedblock--attributes))
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
 
@@ -196,6 +215,16 @@ Required:
 Optional:
 
 - `is_tls` (Boolean) Whether DNS-over-TLS is used for this server. Defaults to false.
+
+
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `update` (String)
 
 ## Import
 

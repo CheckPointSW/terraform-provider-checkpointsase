@@ -45,9 +45,20 @@ var randNameEnhancedRegionPrivateDNS = randStringBytesRmndr()
 
 /*
 TestAccEnhancedRegionPrivateDNS_basic covers test-plan rows EPD-02 (apply, then an
-empty re-plan), EPD-03 (flip `enabled` in place), EPD-D01 (the vanished parent, in
-its live half) and EPD-I01 (import by the composite id), plus the LIVE half of
-decision D9 (destroy leaves the setting in force).
+empty re-plan), EPD-03 (flip `enabled` in place) and EPD-I01 (import by the
+composite id), plus the LIVE half of decision D9 (destroy leaves the setting in
+force).
+
+EPD-D01 -- THE VANISHED PARENT -- IS NOT COVERED HERE, and an earlier version of
+this comment claimed it was. No step below deletes the parent network or region
+out of band, which is the only thing that would exercise it live; step 8 is D9,
+which is a different assertion (the setting SURVIVES a destroy) and was miscounted
+as this one. Covering it for real needs a step that deletes the parent behind
+Terraform's back and then re-plans, and nothing here does that. The drift branch
+itself is covered offline, by
+TestEnhancedRegionPrivateDNSReadClearsIdWhenTheParentIsGone and
+TestEnhancedRegionPrivateDNSImportRejectsAnUnknownParent, against the measured P10
+404. The sibling network test makes no live EPD-D01 claim either, correctly.
 
 THE REGION ID COMES FROM THE NETWORK'S OWN INLINE `region` BLOCK, and that is not
 interchangeable with the catalogue id it was created from.
@@ -535,10 +546,12 @@ resource "checkpointsase_enhanced_region_private_dns" "rpdns" {
 testAccEnhancedRegionPrivateDNSConfigWithPolicy adds a dns_policy and DROPS
 search_domains.
 
-No probe has ever sent a dns_policy to EITHER private-DNS endpoint -- P8 and P8b
-carried `servers` and `searchDomains` only. See the test's doc comment: this is
-among the first live exercises of it, and a failure here is information about the
-API rather than automatically a provider defect.
+No probe has sent a dns_policy to THIS endpoint. API-FINDINGS.md 1.34 (2026-08-26)
+measured one on the enhanced-NETWORK path -- a full policy PUT and read back
+intact, `publicFallback: false` included -- but the region path has never carried
+one, so this remains among its first live exercises. A failure here is information
+about the region endpoint rather than automatically a provider defect; if it
+diverges from 1.34's network result, that divergence is itself the finding.
 
 It drops search_domains, which step 3 wrote. Between them the two steps show the
 full replacement working in both directions on the nested blocks -- which is the

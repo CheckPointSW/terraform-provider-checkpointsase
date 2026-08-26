@@ -53,6 +53,14 @@ is worth having; it is not automatic.
 Tasks 2 and 3 must call privateDNSSchema and add only their own address
 attributes (network_id, plus region_id for the region resource). Restating any of
 this in a resource file re-opens the hole.
+
+ANY RESOURCE THAT CALLS putPrivateDNSAndWait MUST ALSO DECLARE Timeouts. The wait
+polls, so a resource without one silently inherits SDKv2's 20-minute default and
+gives the operator no `timeouts {}` block to raise it with. Both shipping
+resources declare Create and Update against asyncResourceTimeout and deliberately
+omit Delete, which makes no request. This paragraph exists because the same note
+was written once as a downstream contract, was not read, and both resources
+shipped without it.
 */
 const (
 	privateDNSAttrEnabled        = "enabled"
@@ -198,13 +206,17 @@ func privateDNSSchema() map[string]*schema.Schema {
 			*/
 			Computed: true,
 			MaxItems: 1,
-			Description: "Private DNS configuration. May be omitted when `enabled` is false; the " +
-				"provider still sends the empty servers and search domain arrays the API requires " +
-				"on every write. This block is also computed, because the API returns it on every " +
-				"read once anything has been written — so REMOVING the block does not clear the " +
-				"configuration, it leaves whatever the network already holds. To empty a list, " +
-				"write it empty (`search_domains = []`); to turn private DNS off, set " +
-				"`enabled = false`.",
+			Description: "Private DNS configuration. May be omitted, but what omitting it means " +
+				"depends on history. On the FIRST write to an object that has never been " +
+				"configured, the provider synthesises the empty `servers` and `search_domains` " +
+				"arrays the API requires, so `enabled = false` on its own is a legal apply. " +
+				"After that this block is computed — the API returns it on every read once " +
+				"anything has been written — so a configuration that does not name it carries " +
+				"the LAST APPLIED values forward and the write sends those, not empty arrays. " +
+				"Removing the block therefore clears nothing. To send empty arrays " +
+				"deliberately, name the block and leave it empty (`attributes {}`), which is " +
+				"the way to empty `servers`; `search_domains = []` empties that list on its " +
+				"own. To turn private DNS off, set `enabled = false`.",
 			Elem: &schema.Resource{
 				Schema: map[string]*schema.Schema{
 					privateDNSAttrServers: {
@@ -422,6 +434,20 @@ func putPrivateDNSAndWait(
 		if err != nil {
 			return asyncResult{}, resp, err
 		}
+		// A `completed: true` WITH NO `result` IS REPORTED AS A SUCCESSFUL APPLY,
+		// and that is an UNMEASURED assumption on this endpoint, not a verified
+		// one. StatusCode stays 0 when Result is nil, and isSuccessStatus
+		// (async.go:147-149) treats 0 as success because some successful
+		// completions elsewhere omit statusCode. If a FAILED private-DNS
+		// completion can also omit `result`, a failed write is reported as an
+		// applied one -- the single outcome putPrivateDNSAndWait exists to
+		// prevent.
+		//
+		// Inherited from the shared async helper rather than introduced here, and
+		// P6 (which would have measured it) was never completed. The next probe on
+		// this endpoint should force a failing write and record whether `result` is
+		// present. Until then, do not read a green apply here as proof the server
+		// finished the work.
 		out := asyncResult{Completed: status.GetCompleted()}
 		if r := status.Result; r != nil {
 			out.StatusCode = int(r.GetStatusCode())
@@ -736,20 +762,40 @@ round-tripping byte-exactly with non-alphabetical order preserved, so a set woul
 discard ordering the API demonstrably keeps. Plan time is therefore the only place
 uniqueness can be checked.
 
-SERVERS ARE COMPARED BY ADDRESS, NOT BY WHOLE ELEMENT, and that is a reading of
-evidence rather than of the spec. The spec says uniqueItems on an array of
-objects, which literally means whole-object uniqueness -- so two servers with the
-same address and different is_tls would pass. P8 (2026-08-26) points the other
-way: the request sent two servers with DIFFERENT ip values and got
-"attributes.All servers's elements must be unique" back alongside two "property ip
-should not exist" complaints. That message is class-validator's @ArrayUnique, and
-plain @ArrayUnique over two distinct object literals can never fire -- it only
-fires if an identifier function is projecting each element onto one value, and the
-one value both of those elements shared was an ABSENT address. So the server's
-uniqueness is on address. Comparing by address is therefore the narrower and the
-correct rule, it matches the description privateDNSSchema already ships ("Addresses
-must be unique"), and the configuration it refuses -- one address twice with
-different is_tls -- has no meaning to configure.
+SERVERS ARE COMPARED BY ADDRESS, NOT BY WHOLE ELEMENT. That is a CHOICE OF THE
+NARROWER RULE, not a measured fact, and the difference matters because the
+operator sees it in an error message.
+
+What the spec says: swagger.yaml:4488 is uniqueItems over an array of objects,
+i.e. whole-object uniqueness -- which would permit the same address twice with
+different is_tls.
+
+What the one capture says: P8 (2026-08-26) sent two servers with DIFFERENT ip
+values and got "attributes.All servers's elements must be unique" back alongside
+two "property ip should not exist" complaints. That message is class-validator's
+@ArrayUnique.
+
+WHAT P8 CANNOT SETTLE, and an earlier version of this comment claimed it could.
+Both P8 elements carried isTLS: false, and `ip` is not a whitelisted property --
+so once `ip` is stripped the two elements' entire readable content is IDENTICAL.
+Two readings therefore fit the same capture equally well:
+
+  - @ArrayUnique with an identifier function projecting onto `address`, which
+    both elements left absent; or
+  - @ArrayUnique with no identifier at all, projecting onto the whole stripped
+    element -- which is exactly the whole-object uniqueItems the spec declares.
+
+A capture that distinguished them would need two servers with the SAME address,
+DIFFERENT is_tls and correct property names. That probe has not been run.
+
+WHY ADDRESS ANYWAY. It is the narrower rule, so the provider refuses a superset
+of what the API refuses and never lets through a body the API rejects; it matches
+the description privateDNSSchema already ships ("Addresses must be unique"). The
+cost is real and belongs on the record: one address listed twice, DoT first and
+plaintext second, is a priority-ordered fallback rather than a meaningless
+duplicate, and the API may well accept it. The error text says which reading it is
+refusing on, so an operator who wants that configuration knows it is the provider
+and not the server standing in the way.
 
 WHY THE COUNT KEY IS CHECKED AS WELL AS THE PATH. Measured in
 resourceAccessPolicyCustomizeDiff and recorded there: for a list whose elements
@@ -785,11 +831,17 @@ func validatePrivateDNSDiff(d privateDNSDiffReader) error {
 	}
 
 	if duplicate, found := privateDNSDuplicateServerAddress(d, serversPath); found {
-		return fmt.Errorf("%s lists the address %q more than once. The API refuses duplicate "+
-			"server addresses (P8, 2026-08-26: \"attributes.All servers's elements must be "+
-			"unique\"), and this cannot be a TypeSet -- the write round-trips byte-exactly with "+
-			"the order sent preserved (API-FINDINGS.md 1.31), so a set would discard ordering "+
-			"the API keeps. Remove the duplicate; %s is priority-ordered, not a set",
+		return fmt.Errorf("%s lists the address %q more than once. The provider compares servers "+
+			"by ADDRESS, which is the NARROWER of the two rules the evidence allows. The API's "+
+			"own declared rule is uniqueItems over the whole server object "+
+			"(swagger.yaml:4488), which would permit one address twice with different is_tls; "+
+			"the single capture available (P8, 2026-08-26: \"attributes.All servers's elements "+
+			"must be unique\") cannot separate the two, because its two rejected elements were "+
+			"content-identical once the non-whitelisted property was stripped. So this is "+
+			"refused on the narrower reading rather than because the API is known to refuse it. "+
+			"Remove the duplicate; %s is priority-ordered, which is why it is a list and not a "+
+			"set (the write round-trips byte-exactly with the order sent preserved, "+
+			"API-FINDINGS.md 1.31)",
 			serversPath, duplicate, privateDNSAttrServers)
 	}
 

@@ -861,12 +861,16 @@ set would discard ordering the API demonstrably keeps, and `servers` is priority
 ordered. helper/schema has no uniqueItems for a TypeList, so plan time is the only
 place left.
 
-Servers are compared by ADDRESS rather than by whole element, which is a reading
-of P8's evidence rather than of the spec: the spec's uniqueItems over objects
-would allow the same address twice with different is_tls, but P8 got
-"attributes.All servers's elements must be unique" back for two elements whose
-only shared value was an ABSENT address -- which is class-validator's @ArrayUnique
-projecting onto one field. See validatePrivateDNSDiff.
+Servers are compared by ADDRESS rather than by whole element, and that is a CHOICE
+OF THE NARROWER RULE rather than a measured fact. The spec's uniqueItems is over
+whole objects (swagger.yaml:4488), which would allow the same address twice with
+different is_tls. P8 got "attributes.All servers's elements must be unique" back,
+but its two rejected elements both carried isTLS: false and both used the
+non-whitelisted `ip` -- so once `ip` is stripped their entire readable content was
+identical, and the capture fits whole-object uniqueness just as well as it fits a
+projection onto `address`. This test therefore pins the PROVIDER'S rule, not the
+API's; what the API actually does is still unprobed. See validatePrivateDNSDiff,
+which says the same thing in the error the operator reads.
 */
 func TestEnhancedNetworkPrivateDNSPlanRefusesDuplicates(t *testing.T) {
 	for _, tt := range []struct {
@@ -1093,6 +1097,20 @@ things about this resource's schema that are decisions rather than transcription
     class of defect this codebase has shipped repeatedly. The assertion is that
     every attribute the shared schema declares is present here, so a resource that
     restated the schema and drifted by one key fails.
+
+    THE COMPARISON IS OVER FULL PATHS, NOT TOP-LEVEL KEYS, and the difference is
+    the whole value of the assertion. privateDNSSchema returns exactly two
+    entries -- `enabled` and `attributes` -- so a loop over its keys is satisfied
+    by any resource that has an `attributes` block of ANY shape, including one
+    that lost `search_domains` or misspelled `is_tls` four levels down. That was
+    the first version of this test, and a mutation deleting `search_domains` from
+    enhancedNetworkPrivateDNSSchema passed it green. walkSchema descends, so the
+    sets compared below are the thirteen paths privateDNSSchema really declares.
+
+    walkSchema is the package's one implementation (schema_conformance_test.go)
+    and the region resource's equivalent test uses the same one. A second copy of
+    this walk would be the drift it exists to catch.
+
  2. network_id is Required and ForceNew. It is the object's ADDRESS: this resource
     owns one setting on the network that id names, so pointing it elsewhere is a
     different object, not a change to this one. ForceNew is free here precisely
@@ -1101,11 +1119,32 @@ things about this resource's schema that are decisions rather than transcription
 func TestEnhancedNetworkPrivateDNSSchemaIsTheSharedOnePlusAnAddress(t *testing.T) {
 	s := resourceEnhancedNetworkPrivateDNS().Schema
 
-	for name := range privateDNSSchema() {
-		if _, ok := s[name]; !ok {
+	shared := map[string]bool{}
+	walkSchema("", privateDNSSchema(), func(path string, _ *schema.Schema) {
+		shared[path] = true
+	})
+	declared := map[string]bool{}
+	walkSchema("", s, func(path string, _ *schema.Schema) {
+		declared[path] = true
+	})
+
+	for path := range shared {
+		if !declared[path] {
 			t.Errorf("the resource does not declare %q, which privateDNSSchema does. The "+
-				"expander reads it by name and would send a zero value for it, silently", name)
+				"expander reads it by name and would send a zero value for it, silently", path)
 		}
+	}
+	// The other direction: this resource must add its ADDRESS and nothing else.
+	// An extra body attribute here is one privateDNSSchema does not declare and
+	// expandCustomDnsUpdate therefore never reads -- it would accept the
+	// operator's value, plan cleanly and drop it on the floor.
+	for path := range declared {
+		if shared[path] || path == privateDNSAttrNetworkID {
+			continue
+		}
+		t.Errorf("the resource declares %q, which is neither in privateDNSSchema nor the "+
+			"address attribute. expandCustomDnsUpdate does not read it, so it would be "+
+			"accepted in HCL and silently never sent", path)
 	}
 
 	networkId, ok := s[privateDNSAttrNetworkID]
@@ -1258,6 +1297,172 @@ func TestEnhancedNetworkPrivateDNSDisablingDoesNotDiffForever(t *testing.T) {
 }
 
 /*
+TestEnhancedNetworkPrivateDNSReadSurvivesANullBody pins the one nil-handling gap
+left on a Read whose comments are otherwise scrupulous about nil.
+
+APIClient.decode runs json.Unmarshal into *CustomDns. A literal `null` body
+decodes WITHOUT ERROR and leaves the pointer nil, so a 200 carrying `null` reaches
+the d.Set block with customDns == nil. GetEnabled() is nil-safe -- the generated
+getters check o == nil -- but customDns.Attributes on the next line is a DIRECT
+FIELD ACCESS and panics the provider process.
+
+A panic is the one failure mode Terraform cannot report usefully: the operator
+gets a plugin crash and a stack trace instead of a diagnostic naming the resource.
+That is why this is guarded rather than left as "unlikely".
+
+UNMEASURED, AND SAID SO. No probe has seen this endpoint return `null`; the guard
+is here because the cost of being wrong is a crash and the cost of the guard is
+two lines. Reading it as the unconfigured shape is the right recovery, because
+`{"enabled": false}` with no attributes is what an unconfigured network genuinely
+returns (API-FINDINGS.md 1.31).
+*/
+func TestEnhancedNetworkPrivateDNSReadSurvivesANullBody(t *testing.T) {
+	fake := startEnhancedPrivateDNSFake(t, &enhancedPrivateDNSFake{getBody: `null`})
+
+	d := testEnhancedNetworkPrivateDNSData(t, map[string]interface{}{"network_id": "net-1"})
+	d.SetId("net-1")
+
+	diags := resourceEnhancedNetworkPrivateDNSRead(context.Background(), d, fake.client())
+	if diags.HasError() {
+		t.Fatalf("a 200 with a null body must read as the unconfigured shape, not as an "+
+			"error: %s", diagsText(diags))
+	}
+
+	if d.Id() != "net-1" {
+		t.Errorf("the id was cleared, so a null body was reported as DRIFT: the network is "+
+			"still there, the body was just empty. id = %q", d.Id())
+	}
+	if enabled := d.Get(privateDNSAttrEnabled).(bool); enabled {
+		t.Errorf("enabled = %v after a null body, want false", enabled)
+	}
+	if attributes := d.Get(privateDNSAttrAttributes).([]interface{}); len(attributes) != 0 {
+		t.Errorf("attributes = %#v after a null body, want an empty list -- the same shape a "+
+			"never-configured network reads as", attributes)
+	}
+}
+
+/*
+TestEnhancedNetworkPrivateDNSOmittingAttributesCarriesThemForward pins what the
+schema description, the resource description, the example and the registry page
+all now SAY, so that none of them can drift back to what they used to say.
+
+WHAT THEY USED TO SAY, and it was wrong: that the provider "sends the empty
+`servers` and `search_domains` arrays the API requires on every write", so an
+operator could omit the `attributes` block to turn private DNS off with empty
+lists. That was true of the first draft, when `attributes` was Optional only. The
+Optional+Computed fix -- the one that stopped this resource diffing forever --
+made it false from the second write onwards: a computed block that the
+configuration does not name holds the LAST APPLIED value, and that is what goes
+on the wire.
+
+The two rows are the two halves of the corrected text:
+
+  - omitting `attributes` after a configured apply sends the servers it
+    inherited, NOT []. The operator is not clearing anything.
+  - writing `attributes {}` explicitly IS how to send empty arrays. What makes
+    that work is NOT singleBlock's empty-block branch -- mutating that branch to
+    refuse an empty block leaves this row green, because the SDK materialises a
+    named block with zero values rather than as []interface{}{nil}. What makes it
+    work is that the NESTED leaf lists stayed Optional-only when `attributes`
+    became Optional+Computed. Adding Computed to `servers` fails this row, and
+    that is the mutation this row is here to catch: Computed leaking one level
+    down would silently turn `attributes {}` from "empty the lists" into
+    "carry them forward", with no diff and no error.
+
+Both rows assert on the recorded PUT BODY rather than on state, because the body
+is the only place the difference is visible: state shows two servers either way
+in row one, and the question is what was sent.
+*/
+func TestEnhancedNetworkPrivateDNSOmittingAttributesCarriesThemForward(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		config     string
+		wantInBody []string
+		notInBody  []string
+		why        string
+	}{
+		{
+			name:   "no attributes block at all, after a configured apply",
+			config: `{"network_id":"net-1","enabled":false}`,
+			wantInBody: []string{
+				`"servers":[{"address":"10.0.0.53"`,
+				`"searchDomains":["b.example.com","a.example.com"]`,
+			},
+			why: "`attributes` is Computed, so a configuration that does not name it carries " +
+				"the last-applied value forward and the PUT sends THAT. Any text promising " +
+				"empty arrays here is false",
+		},
+		{
+			name:   "an explicitly empty attributes block",
+			config: `{"network_id":"net-1","enabled":false,"attributes":[{}]}`,
+			wantInBody: []string{
+				`"servers":[]`,
+				`"searchDomains":[]`,
+			},
+			notInBody: []string{`10.0.0.53`, `b.example.com`},
+			why: "`attributes {}` is the documented way to send empty arrays. If this stops " +
+				"working, the description, the example and the registry page are all lying",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			usePrivateDNSTestPollInterval(t)
+
+			fake := startEnhancedPrivateDNSFake(t, &enhancedPrivateDNSFake{
+				getBody: measuredPrivateDNSConfigured,
+			})
+
+			// The prior state is the one Read really produces from the measured
+			// configured body -- not a hand-written prior, which could be written
+			// to make either answer come out.
+			d := testEnhancedNetworkPrivateDNSData(t, map[string]interface{}{
+				"network_id": "net-1",
+				"enabled":    true,
+			})
+			d.SetId("net-1")
+			if diags := resourceEnhancedNetworkPrivateDNSRead(
+				context.Background(), d, fake.client()); diags.HasError() {
+				t.Fatalf("the read that builds the prior state failed: %s", diagsText(diags))
+			}
+			prior := d.State()
+			if got := prior.Attributes["attributes.0.servers.#"]; got != "2" {
+				t.Fatalf("the prior state holds %q servers, want 2 -- this test is not set up",
+					got)
+			}
+
+			r := resourceEnhancedNetworkPrivateDNS()
+			diff := replanEnhancedNetworkPrivateDNS(t, prior, tt.config)
+
+			if _, diags := r.Apply(
+				context.Background(), prior, diff, fake.client()); diags.HasError() {
+				t.Fatalf("the apply failed: %s", diagsText(diags))
+			}
+
+			var put string
+			for i, call := range fake.calls() {
+				if strings.HasPrefix(call, http.MethodPut+" ") {
+					put = fake.bodies()[i]
+				}
+			}
+			if put == "" {
+				t.Fatalf("the apply issued no PUT; calls were %v", fake.calls())
+			}
+
+			for _, want := range tt.wantInBody {
+				if !strings.Contains(put, want) {
+					t.Errorf("the PUT body does not contain %s.\n%s\nbody: %s", want, tt.why, put)
+				}
+			}
+			for _, unwanted := range tt.notInBody {
+				if strings.Contains(put, unwanted) {
+					t.Errorf("the PUT body still contains %s, so the block was NOT emptied.\n"+
+						"%s\nbody: %s", unwanted, tt.why, put)
+				}
+			}
+		})
+	}
+}
+
+/*
 TestEnhancedNetworkPrivateDNSReadStoresEveryDnsPolicyLeaf closes a hole that the
 shared attribute constants CANNOT close.
 
@@ -1277,14 +1482,17 @@ single assignment fails here and names itself. public_fallback is deliberately
 hardcoded true, or that dropped the field and got the zero value, must not be able
 to pass by coincidence.
 
-THE BODY IS SPEC-DERIVED, NOT MEASURED, and that is stated rather than hidden. No
-Phase 5 probe ever sent a dns_policy -- P8 and P8b carried servers and
-searchDomains only -- so the key names here come from the DnsPolicy schema
-(swagger.yaml:4589: dnsPolicy.public.domains, dnsPolicy.private.mode /
-publicFallback / domains) and not from a capture. What that limits is the claim: it
-shows the provider reads the shape the SPEC declares. Whether the server sends
-that shape is what step 4 of TestAccEnhancedNetworkPrivateDNS_basic is the first
-thing to find out.
+THE BODY'S SHAPE IS NOW MEASURED, and this comment used to say the opposite. It was
+written when no Phase 5 probe had sent a dns_policy -- P8 and P8b carried servers
+and searchDomains only -- so the key names came from the DnsPolicy schema
+(swagger.yaml:4589) and from nothing else. API-FINDINGS.md 1.34 (2026-08-26) then
+PUT a policy to this endpoint and read it back intact, with `publicFallback`
+present and explicitly `false`, decoding through the real generated types.
+
+So the KEY NAMES asserted below are measured, not merely spec-derived. The VALUES
+are still this test's own -- 1.34 used matchPattern and one domain per list, this
+fixture uses resolveAllViaPrivate and two -- which is deliberate: distinct values
+per leaf are what make a dropped assignment name itself.
 */
 func TestEnhancedNetworkPrivateDNSReadStoresEveryDnsPolicyLeaf(t *testing.T) {
 	const specShaped = `{"enabled":true,"attributes":{` +

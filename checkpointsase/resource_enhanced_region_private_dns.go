@@ -102,19 +102,31 @@ func resourceEnhancedRegionPrivateDNS() *schema.Resource {
 			"`dns_policy` block — to keep a value, write it. " +
 			"The write is asynchronous: the API answers `202 Accepted` and the provider polls " +
 			"the operation to completion before reporting the apply as done. " +
-			"Setting `enabled = false` is the supported way to turn private DNS off, and the " +
-			"provider sends the empty `servers` and `search_domains` arrays the API requires " +
-			"even when you omit the `attributes` block entirely. " +
+			"Setting `enabled = false` is the supported way to turn private DNS off. On the " +
+			"FIRST write to a region that has never been configured, omitting the " +
+			"`attributes` block is enough: the provider synthesises the empty `servers` and " +
+			"`search_domains` arrays the API requires. After anything has been written, " +
+			"omitting the block carries the last-applied values forward instead — write " +
+			"`attributes {}` to send empty arrays deliberately. " +
 			"**`attributes` is computed as well as optional**, because the API returns the " +
 			"object on every read once anything has been written — a region that has never " +
 			"been configured reads back as `{\"enabled\": false}` with no `attributes` key, " +
 			"and one that has been explicitly disabled reads back with `attributes` present " +
 			"and empty. Removing the block from your configuration therefore leaves whatever " +
 			"the region already holds rather than clearing it; there is nothing it could " +
-			"clear to, since the API rejects a write with no `attributes` object. To empty a " +
+			"clear to, since a write with no `attributes` object is rejected. To empty a " +
 			"list write it empty, and to drop the DNS policy remove the `dns_policy` block — " +
 			"the blocks nested inside `attributes` are optional only, so omitting one of those " +
 			"does still clear it. " +
+			"**Everything above about what this API requires, returns and rejects was " +
+			"measured on the enhanced-NETWORK private-DNS endpoint**, not on this one: the " +
+			"two read shapes, the `422` for a write with no `attributes`, and the " +
+			"order-preserving round trip all come from probes against " +
+			"`/v3/networks/enhanced/{networkId}/privateDNS` (`API-FINDINGS.md` §1.31, §1.34). " +
+			"That endpoint takes the identical request and response models and the same " +
+			"specification applies to both, so this is the documented contract rather than a " +
+			"guess — but the region route itself has not been probed, and the acceptance test " +
+			"is the first thing that will know if it differs. " +
 			privateDNSNoOpDeleteNote + " " +
 			"Import with the network id and the region id joined by a colon: " +
 			"`terraform import checkpointsase_enhanced_region_private_dns.this " +
@@ -131,6 +143,19 @@ func resourceEnhancedRegionPrivateDNS() *schema.Resource {
 		Schema:        enhancedRegionPrivateDNSSchema(),
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceEnhancedRegionPrivateDNSImportState,
+		},
+		// The write is asynchronous and this resource POLLS it to completion, so
+		// without this it inherits SDKv2's 20-minute system default and the
+		// operator has no `timeouts {}` block to raise it with. Thirteen other
+		// resources in this package already declare asyncResourceTimeout for the
+		// same reason.
+		//
+		// THERE IS DELIBERATELY NO Delete TIMEOUT. Delete makes no API call at all
+		// (D9, privateDNSNoOpDeleteNote) -- it clears the id and returns -- so
+		// declaring a budget for it would advertise a wait that cannot happen.
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(asyncResourceTimeout),
+			Update: schema.DefaultTimeout(asyncResourceTimeout),
 		},
 	}
 }
@@ -330,6 +355,20 @@ func resourceEnhancedRegionPrivateDNSRead(ctx context.Context, d *schema.Resourc
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set enhanced region private DNS region_id", err)
 	}
+	// A 200 WITH A `null` BODY DOES NOT ERROR, and without this it PANICS. decode
+	// runs json.Unmarshal into *CustomDns; a literal `null` unmarshals cleanly and
+	// leaves the pointer nil, so classifyAPIError never sees a failure. The
+	// generated getters are nil-safe (GetEnabled checks o == nil), but
+	// customDns.Attributes below is a DIRECT FIELD ACCESS and dereferences it.
+	//
+	// Unmeasured on this endpoint -- no probe has seen a null body -- but a panic
+	// is the one failure mode Terraform cannot report as a diagnostic, and the
+	// unconfigured shape is the correct reading of an empty answer anyway
+	// (API-FINDINGS.md 1.31: a never-configured object reads as {"enabled":false}).
+	if customDns == nil {
+		customDns = &perimeter81Sdk.CustomDns{}
+	}
+
 	if err := d.Set(privateDNSAttrEnabled, customDns.GetEnabled()); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set enhanced region private DNS enabled", err)

@@ -79,13 +79,21 @@ resource "checkpointsase_enhanced_network_private_dns" "example" {
 }
 
 # Turning private DNS off is a configuration change, not a destroy. Setting
-# `enabled = false` is the supported way to do it, and the provider still sends
-# the empty `servers` and `search_domains` arrays the API demands on every write
-# -- so you can omit the `attributes` block entirely:
+# `enabled = false` is the supported way to do it:
 #
 #   resource "checkpointsase_enhanced_network_private_dns" "example" {
 #     network_id = checkpointsase_enhanced_network.example.id
 #     enabled    = false
+#
+#     # Name the block and leave it empty to send the empty `servers` and
+#     # `search_domains` arrays the API demands. You can drop the `attributes {}`
+#     # line on the FIRST write to a network that has never been configured -- the
+#     # provider synthesises the empty arrays then. After anything has been
+#     # written, `attributes` is computed: omitting it carries the last-applied
+#     # servers and search domains FORWARD and the write sends those, not `[]`.
+#     # With `enabled = false` the retained servers resolve nothing, but
+#     # `terraform show` will still display them.
+#     attributes {}
 #   }
 #
 # `terraform destroy` on this resource makes NO API CALL. It releases Terraform's

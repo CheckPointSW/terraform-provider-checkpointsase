@@ -1379,14 +1379,17 @@ state. The network resource's copy of this test proves the FLATTENER reads every
 leaf; this one proves this resource's Read carries them into state, which is a
 different function and the only part of the chain that is this file's own.
 
-THE BODY IS SPEC-DERIVED, AND MORE SO HERE THAN ANYWHERE ELSE IN THIS FILE. No
-probe has ever sent or received a dnsPolicy on EITHER private-DNS path -- P8 and
-P8b carried servers and searchDomains only -- so the key names come from the
-DnsPolicy schema (swagger.yaml:4589: dnsPolicy.public.domains,
-dnsPolicy.private.mode / publicFallback / domains) and from nothing else. What
-that limits is the claim: this shows the provider reads the shape the SPEC
-declares. Whether either server sends that shape is what the acceptance tests are
-the first thing to find out.
+THE BODY IS SPEC-DERIVED FOR THIS PATH, and that is now a narrower statement than
+it was. P8 and P8b carried servers and searchDomains only, and no probe has ever
+sent a dnsPolicy to the REGION endpoint -- so for this resource the key names come
+from the DnsPolicy schema (swagger.yaml:4589: dnsPolicy.public.domains,
+dnsPolicy.private.mode / publicFallback / domains).
+
+They are not guesses, though. API-FINDINGS.md 1.34 (2026-08-26) measured exactly
+this shape on the enhanced-NETWORK path, which takes the identical models: a full
+policy PUT and read back intact, `publicFallback` present and explicitly `false`.
+What is unmeasured is whether the REGION route behaves the same, and the
+acceptance test is the first thing that will know.
 */
 func TestEnhancedRegionPrivateDNSReadStoresEveryDnsPolicyLeaf(t *testing.T) {
 	const specShaped = `{"enabled":true,"attributes":{` +
