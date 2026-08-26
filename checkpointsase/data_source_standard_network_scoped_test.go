@@ -31,14 +31,46 @@ var randNameDataSourceNetwork string = randStringBytesRmndr()
 // they reference the network's computed id, which is an implicit dependency.
 // (checkpointsase_networks in testAccGatewaysConfig already uses the same
 // depends_on pattern inside a resource.Test config.)
+//
+// SPD-01 AND SPD-02 RIDE ALONG HERE TOO, on the same one network, which is what
+// the Phase 5 plan asks for rather than a fifth create. They are the positive
+// rows for checkpointsase_standard_network_private_dns and
+// checkpointsase_standard_region_private_dns; the negative rows SPD-N01/SPD-N02
+// need no network and live in data_source_standard_private_dns_acc_test.go.
+//
+// SPD-02 IS THE FIRST REQUEST ANYTHING HAS EVER MADE to
+// /v3/networks/standard/{networkId}/regions/{regionId}/privateDNS. No probe in
+// Phase 5's measurement run, or any run before it, has touched that path in any
+// state. A failure of that read is INFORMATION FIRST and a provider defect
+// second: read what the server said and record it in API-FINDINGS.md 1.31, which
+// today describes the network paths alone.
+//
+// The private-DNS assertions are SHAPE assertions, not content assertions, and
+// testAccCheckStandardPrivateDNSShape's comment says why: the standard family
+// has no write endpoint, so nothing can put this network into a known private-DNS
+// state first, and asserting a particular one would be asserting something about
+// the tenant. The tenant is explicitly not clean — two probe networks survive on
+// it and one has private DNS enabled — so a tenant-wide claim would fail today
+// for a reason that has nothing to do with the provider. What IS asserted
+// exactly is the id derivation, because that is entirely the provider's.
+//
+// region_id comes from the network's OWN inline region block
+// (`region[*].region_id`, server-assigned) and NOT from `cpregion_id`, which is
+// the catalogue entry it was created from. The two are different values and the
+// catalogue id is not a valid path segment here. `one(...)` rather than `[0]`
+// so a future change that makes the network two-region fails loudly instead of
+// silently reading whichever came back first.
 func TestAccDataSourceStandardNetworkScoped_basic(t *testing.T) {
 	t.Parallel()
 
 	const (
-		network       = "checkpointsase_network.ds"
-		routeTable    = "data.checkpointsase_route_table.ds"
-		networkHealth = "data.checkpointsase_network_health.ds"
-		standard      = "data.checkpointsase_standard_networks.ds"
+		network        = "checkpointsase_network.ds"
+		routeTable     = "data.checkpointsase_route_table.ds"
+		networkHealth  = "data.checkpointsase_network_health.ds"
+		standard       = "data.checkpointsase_standard_networks.ds"
+		networkPDNS    = "data.checkpointsase_standard_network_private_dns.ds"
+		regionPDNS     = "data.checkpointsase_standard_region_private_dns.ds"
+		networkRegion0 = "region.0.region_id"
 	)
 
 	resource.Test(t, resource.TestCase{
@@ -122,6 +154,26 @@ func TestAccDataSourceStandardNetworkScoped_basic(t *testing.T) {
 							"tags.0": "qa-ds",
 						},
 					),
+
+					// SPD-01: checkpointsase_standard_network_private_dns.
+					resource.TestCheckResourceAttrPair(networkPDNS, "network_id", network, "id"),
+					testAccCheckStandardNetworkPrivateDNSIDIsDerived(networkPDNS),
+					testAccCheckStandardPrivateDNSShape(networkPDNS),
+
+					// SPD-02: checkpointsase_standard_region_private_dns. The
+					// first request anything has ever made to this path — see
+					// the doc comment.
+					resource.TestCheckResourceAttrPair(regionPDNS, "network_id", network, "id"),
+					resource.TestCheckResourceAttrPair(
+						regionPDNS, "region_id", network, networkRegion0),
+					testAccCheckStandardRegionPrivateDNSIDIsDerived(regionPDNS),
+					testAccCheckStandardPrivateDNSShape(regionPDNS),
+
+					// The two reads are of DIFFERENT objects, so they must not
+					// share an identity. This is the assertion that a constant
+					// id passes and nothing else does — and a constant id is a
+					// defect this project has shipped once already.
+					testAccCheckDataSourceIDsDiffer(networkPDNS, regionPDNS),
 				),
 			},
 		},
@@ -153,6 +205,18 @@ data "checkpointsase_standard_networks" "ds" {
   depends_on = [
     checkpointsase_network.ds
   ]
+}
+
+data "checkpointsase_standard_network_private_dns" "ds" {
+  network_id = checkpointsase_network.ds.id
+}
+
+# region_id is the region's OWN server-assigned id, not the cpregion_id above
+# that it was created from. one() rather than an index so that a change making
+# this network two-region fails loudly instead of silently picking the first.
+data "checkpointsase_standard_region_private_dns" "ds" {
+  network_id = checkpointsase_network.ds.id
+  region_id  = one(checkpointsase_network.ds.region[*].region_id)
 }
   `
 	return fmt.Sprintf(config, randNameDataSourceNetwork, testAccRegionID())

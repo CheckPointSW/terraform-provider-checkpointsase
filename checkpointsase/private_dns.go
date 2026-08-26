@@ -660,8 +660,11 @@ canonicalisation here for a flattener to reproduce, so echoing what arrived is
 both correct and diff-free.
 
 THIS IS THE ENHANCED READ MODEL ONLY. Standard networks return
-CustomDnsAttributesResponse, whose dnsPolicy.private collapses to forwardDNSUpdate
-alone (plan D3), so the two standard data sources cannot share this function.
+CustomDnsAttributesResponse, whose dnsPolicy is DnsPolicyResponse rather than
+DnsPolicy (plan D3), so the two standard data sources cannot share this function
+-- Go will not let one function take both structs. They share
+flattenCustomDnsServers below and the privateDNSAttr* constants instead; see
+flattenCustomDnsAttributesResponse in data_source_standard_private_dns.go.
 
   - @param a *perimeter81Sdk.CustomDnsAttributes - the attributes as read, or nil
 
@@ -672,22 +675,43 @@ func flattenCustomDnsAttributes(a *perimeter81Sdk.CustomDnsAttributes) []interfa
 		return []interface{}{}
 	}
 
-	servers := make([]interface{}, 0, len(a.Servers))
-	for _, server := range a.Servers {
-		servers = append(servers, map[string]interface{}{
-			privateDNSAttrAddress: server.GetAddress(),
-			privateDNSAttrIsTLS:   server.GetIsTLS(),
-		})
-	}
-
 	searchDomains := make([]string, 0, len(a.SearchDomains))
 	searchDomains = append(searchDomains, a.GetSearchDomains()...)
 
 	return []interface{}{map[string]interface{}{
-		privateDNSAttrServers:       servers,
+		privateDNSAttrServers:       flattenCustomDnsServers(a.Servers),
 		privateDNSAttrSearchDomains: searchDomains,
 		privateDNSAttrDNSPolicy:     flattenDnsPolicy(a.DnsPolicy),
 	}}
+}
+
+/*
+flattenCustomDnsServers maps the `servers` array into its block list.
+
+EXTRACTED SO THE STANDARD DATA SOURCES CAN CALL IT rather than restate it. It is
+the one part of the read that IS genuinely common to both families: `servers` is
+[]CustomDnsServer in CustomDnsAttributes and in CustomDnsAttributesResponse
+alike, so unlike the enclosing flattener there is no type asymmetry to work
+around. Restating it would put a second spelling of `address` and `is_tls` in the
+package, which is exactly what the privateDNSAttr* constants exist to prevent.
+
+Always non-nil, so a network with no servers stores [] rather than null; and it
+preserves the order the API returned, which API-FINDINGS.md 1.31 measured as
+meaningful (the write round-trips byte-exactly, non-alphabetical order kept).
+
+  - @param servers []perimeter81Sdk.CustomDnsServer - the servers as read
+
+@return []interface{} - one map per server, empty when there are none
+*/
+func flattenCustomDnsServers(servers []perimeter81Sdk.CustomDnsServer) []interface{} {
+	flattened := make([]interface{}, 0, len(servers))
+	for _, server := range servers {
+		flattened = append(flattened, map[string]interface{}{
+			privateDNSAttrAddress: server.GetAddress(),
+			privateDNSAttrIsTLS:   server.GetIsTLS(),
+		})
+	}
+	return flattened
 }
 
 /*

@@ -83,6 +83,11 @@ func Provider() *schema.Provider {
 			"checkpointsase_groups":                           dataSourceGroups(),
 			"checkpointsase_access_policy":                    dataSourceAccessPolicy(),
 			"checkpointsase_https_inspection_policy":          dataSourceHttpsInspectionPolicy(),
+			// Read-only because the API is: the standard family declares `get`
+			// and nothing else on both privateDNS paths. The enhanced family's
+			// equivalents are RESOURCES, above.
+			"checkpointsase_standard_network_private_dns": dataSourceStandardNetworkPrivateDNS(),
+			"checkpointsase_standard_region_private_dns":  dataSourceStandardRegionPrivateDNS(),
 		},
 		ConfigureContextFunc: providerConfigure,
 	}
