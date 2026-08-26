@@ -2,9 +2,12 @@ package checkpointsase
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
 
@@ -314,4 +317,90 @@ func TestSameStringSet(t *testing.T) {
 			}
 		})
 	}
+}
+
+/*
+TestEnhancedRouteTableImportIDIsComposite is the gate on ERT-I01.
+
+Read builds its request from d.Get("network_id") and d.Id(), and on import only
+d.Id() is populated. The previous importer called Read directly, so an import
+issued GET /v3/networks/enhanced//route-table/<id> -- an EMPTY network segment,
+which is a different route rather than a 404 on this one, and the resulting error
+named nothing an operator could act on.
+
+This matters more here than on a resource that can be created. API-FINDINGS.md
+1.1 measured that the create endpoint cannot succeed for any tunnel that exists,
+so this resource refuses every configuration at plan time and import is the ONLY
+way an entry reaches state.
+
+The parse rows come first because they need no server. The request row is the one
+that would have caught the original defect: it asserts the network id reaches the
+URL, which is exactly what the old importer dropped.
+*/
+func TestEnhancedRouteTableImportIDIsComposite(t *testing.T) {
+	t.Run("the parse rejects what it cannot split", func(t *testing.T) {
+		for _, tc := range []struct {
+			id      string
+			wantErr bool
+			wantNet string
+			wantRt  string
+		}{
+			{"net-1:rt-1", false, "net-1", "rt-1"},
+			{"net-1:rt:with:colons", false, "net-1", "rt:with:colons"},
+			{"rt-1", true, "", ""},
+			{":rt-1", true, "", ""},
+			{"net-1:", true, "", ""},
+			{"", true, "", ""},
+		} {
+			gotNet, gotRt, err := parseEnhancedRouteTableID(tc.id)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("%q: err = %v, wantErr %v", tc.id, err, tc.wantErr)
+				continue
+			}
+			if err == nil && (gotNet != tc.wantNet || gotRt != tc.wantRt) {
+				t.Errorf("%q: got (%q,%q), want (%q,%q)", tc.id, gotNet, gotRt, tc.wantNet, tc.wantRt)
+			}
+			if err != nil && !strings.Contains(err.Error(), "terraform import") {
+				t.Errorf("%q: the error should show the usage, got %v", tc.id, err)
+			}
+		}
+	})
+
+	t.Run("the network id reaches the request URL", func(t *testing.T) {
+		var gotPath string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			// EnhancedRouteTable's generated UnmarshalJSON requires id, tunnelIds,
+			// subnets AND propagated. Omitting propagated makes the whole decode
+			// fail, which surfaces as "Unable to find" rather than as a decode
+			// error -- the same strict-required trap API-FINDINGS.md 1.34 records.
+			_, _ = w.Write([]byte(`{"id":"rt-1","subnets":["10.0.0.0/24"],"tunnelIds":["tun-1"],"propagated":false}`))
+		}))
+		defer srv.Close()
+
+		d := schema.TestResourceDataRaw(t, resourceEnhancedRouteTable().Schema, map[string]interface{}{})
+		d.SetId("net-1:rt-1")
+
+		out, err := resourceEnhancedRouteTableImportState(context.Background(), d, newTestUserAPIClient(srv.URL))
+		if err != nil {
+			t.Fatalf("import failed: %v", err)
+		}
+		if len(out) != 1 {
+			t.Fatalf("import returned %d resources, want 1", len(out))
+		}
+		if strings.Contains(gotPath, "//") {
+			t.Errorf("request path %q has an empty segment: the network id did not reach the URL", gotPath)
+		}
+		if !strings.Contains(gotPath, "net-1") {
+			t.Errorf("request path %q does not carry the network id", gotPath)
+		}
+		if got := d.Get("network_id").(string); got != "net-1" {
+			t.Errorf("network_id = %q, want net-1", got)
+		}
+		if d.Id() != "rt-1" {
+			t.Errorf("id = %q, want rt-1 (the composite must be replaced by the route id)", d.Id())
+		}
+	})
 }

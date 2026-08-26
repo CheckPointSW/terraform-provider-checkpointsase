@@ -634,6 +634,29 @@ func resourceEnhancedDynamicTunnelRead(ctx context.Context, d *schema.ResourceDa
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel key_exchange", err)
 		}
+		// description completes ETD-04. Update SENDS it
+		// (buildDynamicTunnelUpdatePayload) and Read did not read it back, so a
+		// description edited in the console was invisible to Terraform: the plan
+		// stayed empty and the local value silently diverged.
+		//
+		// The HasDescription() guard rather than setIfPresent is deliberate. That
+		// helper refuses to overwrite state with an empty value, which is right for
+		// write-once credentials and wrong here — clearing a description server-side
+		// is a legitimate edit that Terraform should surface as drift.
+		//
+		// NOT read back here, and each for its own reason:
+		//   - peak_bandwidth is Deprecated and never sent to v3 at all; it exists
+		//     only for configuration compatibility, so a server value would
+		//     overwrite a local one this resource does not manage.
+		//   - left_asn has no field on EnhancedTunnel to read. It maps to leftASN,
+		//     which exists only on the create type. Update already warns that it
+		//     cannot be changed; there is nothing to compare against.
+		if tunnel.HasDescription() {
+			if err := d.Set("description", tunnel.GetDescription()); err != nil {
+				d.Partial(true)
+				return appendErrorDiags(diags, "Unable to set Enhanced Dynamic Tunnel description", err)
+			}
+		}
 		// ike_life_time / lifetime / dpd_delay / dpd_timeout / phase1 / phase2
 		// come back at the top level of each returned endpoint, not inside an
 		// `advancedSettings` object — see setEnhancedTunnelIPSecState

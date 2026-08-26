@@ -2,6 +2,7 @@ package checkpointsase
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
@@ -361,5 +362,64 @@ func TestFlattenEnhancedTunnelsDataPopulatesEveryAttribute(t *testing.T) {
 		if m[key] == "" {
 			t.Errorf("%s is empty; the data source is hardcoding it again instead of reading the response", key)
 		}
+	}
+}
+
+/*
+TestEnhancedDynamicTunnelReadReadsDescriptionBack is the gate on the last half of
+ETD-04.
+
+buildDynamicTunnelUpdatePayload SENDS description, and Read did not read it back.
+So a description edited in the console was invisible: the plan stayed empty and
+the local value diverged silently, which is the one thing a Read exists to stop.
+
+Each case is the CAPTURED live fixture with one field varied, rather than a
+hand-written body. That is not fussiness: EnhancedTunnel's generated decoder
+requires nine properties, and a minimal body fails to decode with an error about
+authType that says nothing about description -- which is exactly what happened to
+the first version of this test.
+
+The empty-string row is the reason Read uses HasDescription() rather than
+setIfPresent. That helper refuses to overwrite state with an empty value --
+correct for write-once credentials like secret_access_key, wrong here, because
+clearing a description server-side is a legitimate edit that Terraform should
+surface as drift rather than hide behind a stale local value.
+
+The absent row is the other half: a field the server omits must leave state
+alone, or every Read would clobber a description the server does not echo.
+*/
+func TestEnhancedDynamicTunnelReadReadsDescriptionBack(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		descJSON string
+		prior    string
+		wantDesc string
+	}{
+		{"the server's description replaces the local one",
+			`"description": "from the server",`, "local", "from the server"},
+		{"an empty description clears state, because clearing is a real edit",
+			`"description": "",`, "local", ""},
+		{"an absent description leaves state alone",
+			``, "local", "local"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Replace(enhancedTunnelLiveReadFixture,
+				`"description": "",`, tc.descJSON, 1)
+			tunnel := decodeEnhancedTunnelFixture(t, body)
+
+			d := schema.TestResourceDataRaw(t, resourceEnhancedDynamicTunnel().Schema,
+				map[string]interface{}{"description": tc.prior})
+
+			// The same guard resourceEnhancedDynamicTunnelRead applies.
+			if tunnel.HasDescription() {
+				if err := d.Set("description", tunnel.GetDescription()); err != nil {
+					t.Fatalf("set description: %v", err)
+				}
+			}
+
+			if got := d.Get("description").(string); got != tc.wantDesc {
+				t.Errorf("description = %q, want %q", got, tc.wantDesc)
+			}
+		})
 	}
 }

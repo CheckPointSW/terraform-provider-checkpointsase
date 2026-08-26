@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
@@ -234,7 +235,71 @@ resourceEnhancedRouteTableImportState Import an enhanced route table entry by it
 
 @return []*schema.ResourceData, error
 */
+// enhancedRouteTableIDSeparator joins the network id and the route-entry id in a
+// composite import id. A colon, matching resource_group_membership.go and
+// resource_enhanced_region_private_dns.go, both of which chose it over "-"
+// because a hyphen is ambiguous the moment either half contains one.
+const enhancedRouteTableIDSeparator = ":"
+
+/*
+parseEnhancedRouteTableID splits a composite import id into its two halves.
+
+No character-class check is imposed on either half. The API document types both
+ids as bare strings, so any charset this rejected would be this file's invention
+and could refuse an id the server legitimately issued. SplitN with n=2 means only
+the NETWORK id must be colon-free; a colon inside the route id survives.
+
+  - @param id string - the composite resource id
+
+@return (string, string, error) - networkId, routeId, and why the id was rejected
+*/
+func parseEnhancedRouteTableID(id string) (string, string, error) {
+	parts := strings.SplitN(id, enhancedRouteTableIDSeparator, 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("an enhanced route table import id is the network id and the "+
+			"route entry id joined by %q, and %q is not: terraform import "+
+			"checkpointsase_enhanced_route_table.<name> <network_id>%s<route_id>",
+			enhancedRouteTableIDSeparator, id, enhancedRouteTableIDSeparator)
+	}
+	return parts[0], parts[1], nil
+}
+
+/*
+resourceEnhancedRouteTableImportState imports one route entry by composite id.
+
+	terraform import checkpointsase_enhanced_route_table.this <network_id>:<route_id>
+
+WHY THIS NEEDS THE NETWORK ID AT ALL (ERT-I01). Read builds its request from
+d.Get("network_id") and d.Id(), and on import only d.Id() is populated. The
+previous implementation called Read directly, so an import issued
+GET /v3/networks/enhanced//route-table/<routeId> with an EMPTY network segment --
+a different route entirely, not a 404 on this one, and the error told the operator
+nothing about the real problem.
+
+IMPORT IS THE ONLY WAY TO GET ONE OF THESE INTO STATE. API-FINDINGS.md 1.1
+measured that the create endpoint cannot succeed for any tunnel that exists, so
+this resource refuses every configuration at plan time. That makes this importer
+load-bearing rather than a convenience: it is the sole path by which an entry the
+server already holds can be managed here.
+
+  - @param ctx context.Context - for cancellation and deadlines
+  - @param d *schema.ResourceData - the terraform resource data
+  - @param m interface{} - the terraform meta data that contains the client
+
+@return []*schema.ResourceData, error
+*/
 func resourceEnhancedRouteTableImportState(ctx context.Context, d *schema.ResourceData, m interface{}) ([]*schema.ResourceData, error) {
+	networkId, routeId, err := parseEnhancedRouteTableID(d.Id())
+	if err != nil {
+		return nil, err
+	}
+	if err := d.Set("network_id", networkId); err != nil {
+		return nil, fmt.Errorf("could not set network_id from the import id %q: %w", d.Id(), err)
+	}
+	// Read keys on d.Id() for the route entry, so the composite id is replaced by
+	// the route id alone once the network has been lifted out of it.
+	d.SetId(routeId)
+
 	diagnostics := resourceEnhancedRouteTableRead(ctx, d, m)
 	if diagnostics.HasError() {
 		for _, diagnostic := range diagnostics {
