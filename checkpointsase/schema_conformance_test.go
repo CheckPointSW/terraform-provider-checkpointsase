@@ -643,6 +643,42 @@ var listAttributeEmptyPolicy = map[string]struct {
 	// the 4 the two lists above carry, and a MaxItems: 4 copied across would refuse valid config.
 	"resource.checkpointsase_enhanced_region_private_dns.attributes.dns_policy.public.domains":  {mayBeEmpty, "swagger.yaml:4600 uniqueItems + maxItems 100, no minItems; Required inside `public` (swagger.yaml:4595), which is about presence not length -- and the model marshals `domains` without omitempty, so [] satisfies that presence"},
 	"resource.checkpointsase_enhanced_region_private_dns.attributes.dns_policy.private.domains": {mayBeEmpty, "swagger.yaml:4625 uniqueItems + maxItems 100, no minItems; Required inside `private` (swagger.yaml:4609), which is about presence not length -- and the model marshals `domains` without omitempty, so [] satisfies that presence"},
+
+	// --- checkpointsase_split_tunneling: FOUR, and the fourth is the wrapper block ---------------
+	// Count them from the schema rather than from the request body, which is the mistake this
+	// phase has now made three times. The BODY has three arrays; the SCHEMA has four TypeLists,
+	// because `except_data` is a MaxItems-1 wrapper block and walkSchema reports it as an
+	// attribute like any other.
+	//
+	// There is a FIFTH TypeList in this resource -- except_data.exceptions -- and it is absent
+	// from this map ON PURPOSE, not by oversight. The test above skips `s.Computed && !s.Optional`,
+	// and `exceptions` is Computed-only (decision D5, API-FINDINGS.md 1.29): it is never sent, so
+	// it has no empty-array verdict to record. If anyone ever makes it Optional, this test starts
+	// failing with `...except_data.exceptions is a list or set attribute with no entry`, which is
+	// the right way to find out that D5 has been reopened.
+	//
+	// `except_data` itself: mayBeEmpty is a statement about the HCL. Zero blocks cannot occur --
+	// the attribute is Required, so Terraform refuses a configuration without it before any
+	// verdict here applies -- and MinItems: 1 would be redundant rather than protective. On the
+	// wire `exceptData` is an OBJECT and not an array at all (swagger.yaml:7118), named in
+	// SplitTunnelingBase's required list (swagger.yaml:7120-7122) and marked @IsNotEmptyObject()
+	// in the backend DTO, which is about PRESENCE and not about length.
+	"resource.checkpointsase_split_tunneling.except_data": {mayBeEmpty, "MaxItems 1 wrapper block, and Required -- so Terraform already refuses zero blocks and MinItems would add nothing. On the wire exceptData is an object, not an array (swagger.yaml:7118), required by SplitTunnelingBase (swagger.yaml:7120-7122)"},
+	// The three arrays. swagger.yaml:7127-7147 declares each of them with NO minItems, NO maxItems
+	// and NO uniqueItems, and each carries `default: []`.
+	//
+	// AND THE DEFAULT IS A TRAP, WHICH IS WHY THE MEASUREMENT IS QUOTED ON EVERY ONE OF THEM.
+	// `default: []` reads as "you may omit this". Measured 2026-08-26 (API-FINDINGS.md 1.31):
+	// omitting any one of the three returns a 400 whose data.errors names ALL THREE
+	// ("exceptData.cidr must be an array", and the same for the other two). So [] is not merely
+	// tolerated here, it is the only legal way to have none -- which is the strongest possible
+	// form of mayBeEmpty, and makes MinItems: 1 a bug that would remove the ability to clear a
+	// list the server insists on receiving. expandSplitTunneling sends all three as [] for a
+	// configuration that names none, which is what makes Optional-in-HCL and required-on-the-wire
+	// consistent rather than contradictory.
+	"resource.checkpointsase_split_tunneling.except_data.cidr":                 {mayBeEmpty, "swagger.yaml:7127-7133: no minItems, no maxItems, no uniqueItems, `default: []`. MEASURED 2026-08-26 (API-FINDINGS.md 1.31): the key is required on the wire even when empty -- omitting it is a 400 naming all three arrays -- so [] is the prescribed empty value, not a tolerated one"},
+	"resource.checkpointsase_split_tunneling.except_data.address_object_ids":   {mayBeEmpty, "swagger.yaml:7134-7140: no minItems, no maxItems, no uniqueItems, `default: []`. MEASURED 2026-08-26 (API-FINDINGS.md 1.31): omitting it is a 400 (\"exceptData.addressObjectIds must be an array\"), so [] is the prescribed empty value"},
+	"resource.checkpointsase_split_tunneling.except_data.updatable_object_ids": {mayBeEmpty, "swagger.yaml:7141-7147: no minItems, no maxItems, no uniqueItems, `default: []`. MEASURED 2026-08-26 (API-FINDINGS.md 1.31): omitting it is a 400 (\"exceptData.updatableObjectIds must be an array\"), so [] is the prescribed empty value"},
 }
 
 /*

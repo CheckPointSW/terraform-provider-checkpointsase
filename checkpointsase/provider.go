@@ -58,6 +58,7 @@ func Provider() *schema.Provider {
 
 			"checkpointsase_enhanced_network_private_dns": resourceEnhancedNetworkPrivateDNS(),
 			"checkpointsase_enhanced_region_private_dns":  resourceEnhancedRegionPrivateDNS(),
+			"checkpointsase_split_tunneling":              resourceSplitTunneling(),
 		},
 		DataSourcesMap: map[string]*schema.Resource{
 			"checkpointsase_networks":                         dataSourceNetworks(),
