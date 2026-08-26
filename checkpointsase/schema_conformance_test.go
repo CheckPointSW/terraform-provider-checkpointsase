@@ -595,6 +595,54 @@ var listAttributeEmptyPolicy = map[string]struct {
 	// is a legal value for it. Required-and-empty is not a contradiction here.
 	"resource.checkpointsase_enhanced_network_private_dns.attributes.dns_policy.public.domains":  {mayBeEmpty, "swagger.yaml:4600 uniqueItems + maxItems 100, no minItems; Required inside `public`, which is about presence not length"},
 	"resource.checkpointsase_enhanced_network_private_dns.attributes.dns_policy.private.domains": {mayBeEmpty, "swagger.yaml:4625 uniqueItems + maxItems 100, no minItems; Required inside `private`, which is about presence not length"},
+
+	// --- checkpointsase_enhanced_region_private_dns: THE SAME EIGHT, AND THE SAME COUNT ---------
+	// This map is keyed by RESOURCE NAME, so the shared privateDNSSchema cannot supply these and
+	// the region resource needs its own eight. Eight, not four: the four leaf lists plus the four
+	// MaxItems-1 wrapper BLOCKS, which are TypeList too and which walkSchema reports as attributes.
+	// Counting the leaves and forgetting the blocks is the mistake the Phase 5 plan and both task
+	// briefs made; adding the resource without them fails the test above with all eight named.
+	//
+	// EVERY VERDICT BELOW IS SOURCED FROM THE SPEC, AND NONE OF IT FROM A MEASUREMENT OF THIS
+	// ENDPOINT. That distinction is the point of writing them out again rather than aliasing the
+	// network entries. API-FINDINGS.md 1.31's 202 for {"enabled":false,"attributes":{"servers":[],
+	// "searchDomains":[]}} was measured against /v3/networks/enhanced/{networkId}/privateDNS; no
+	// probe has ever touched /regions/{regionId}/privateDNS. What carries over is that both
+	// operations take the SAME request model -- CustomDnsUpdate, hence the same
+	// CustomDnsUpdateAttributes and the same DnsPolicy (openapi.yaml:1121 vs :633) -- so the
+	// schema-level facts below apply verbatim while the live 202 does not.
+	//
+	// `attributes` is the one worth reading twice. mayBeEmpty here is a statement about the HCL
+	// ONLY: zero blocks is a legal configuration. On the WIRE an absent `attributes` object is a
+	// 422 (API-FINDINGS.md 1.31, network path), and the verdict is legal solely because
+	// expandCustomDnsUpdate synthesises {"servers":[],"searchDomains":[]} for a config that names
+	// neither. If that synthesis were ever removed, this entry would become a lie without changing.
+	"resource.checkpointsase_enhanced_region_private_dns.attributes": {mayBeEmpty, "MaxItems 1 wrapper block: ZERO blocks is the legal 'off' CONFIGURATION. It is not a legal BODY -- a PUT with no `attributes` object is a 422 -- and mayBeEmpty holds only because expandCustomDnsUpdate synthesises the two required empty arrays. Also Optional+Computed, so MinItems must be 0 regardless"},
+	// servers: swagger.yaml:4486-4492 (CustomDnsUpdateAttributes.servers) declares uniqueItems and
+	// maxItems 4 and NO minItems. The "must contain at least one entry when enabled is true" in the
+	// description at :4492 is conditional on a SIBLING attribute, which MinItems cannot see, and
+	// MinItems: 1 here would make the only supported way to turn private DNS off unwritable. The
+	// conditional lives in validatePrivateDNSDiff, reached from this resource's own CustomizeDiff.
+	"resource.checkpointsase_enhanced_region_private_dns.attributes.servers": {mayBeEmpty, "swagger.yaml:4489 maxItems 4, uniqueItems, NO minItems. The 'at least one when enabled is true' minimum (swagger.yaml:4492) is CONDITIONAL on a sibling, so it lives in validatePrivateDNSDiff -- MinItems here would make the 'off' body unwritable. The matching 202 was measured on the NETWORK path, not this one"},
+	// search_domains: swagger.yaml:4500's description settles it in words rather than by
+	// decorator -- "Required — send an empty array if you have none. Omitting it on update is
+	// rejected with 400". So [] is not merely tolerated, it is the prescribed way to have none.
+	"resource.checkpointsase_enhanced_region_private_dns.attributes.search_domains": {mayBeEmpty, "swagger.yaml:4500 says so in words: \"Required — send an empty array if you have none\", and omitting the key is a 400. [] is the prescribed empty value, not a tolerated one"},
+	// dns_policy and its two halves: CustomDnsUpdateAttributes.dnsPolicy is not in the required
+	// list (swagger.yaml:4483-4484 names only servers and searchDomains), and the generated model
+	// carries `json:"dnsPolicy,omitempty"` on a pointer -- so zero blocks omits the key rather than
+	// sending null. Same for public/private: DnsPolicy (swagger.yaml:4589) requires neither, and
+	// both are `omitempty` pointers. expandDnsPolicy returns nil when neither half is written,
+	// which is what makes "no blocks" reach the wire as "no key".
+	"resource.checkpointsase_enhanced_region_private_dns.attributes.dns_policy":         {mayBeEmpty, "MaxItems 1 wrapper block; dnsPolicy is absent from CustomDnsUpdateAttributes' required list (swagger.yaml:4483) and is an `omitempty` pointer in the model, so ZERO blocks omits the key entirely rather than sending null"},
+	"resource.checkpointsase_enhanced_region_private_dns.attributes.dns_policy.public":  {mayBeEmpty, "MaxItems 1 wrapper block; DnsPolicy (swagger.yaml:4589) requires neither half and Public is an `omitempty` pointer, so zero blocks omits the key"},
+	"resource.checkpointsase_enhanced_region_private_dns.attributes.dns_policy.private": {mayBeEmpty, "MaxItems 1 wrapper block; DnsPolicy (swagger.yaml:4589) requires neither half and Private is an `omitempty` pointer, so zero blocks omits the key"},
+	// Both domains lists are Required INSIDE their blocks (swagger.yaml:4595, :4609) and carry
+	// maxItems 100 with no minItems -- so once you write the block you must write the key, and []
+	// is a legal value for it. Required-and-empty is not a contradiction. Note the 100: it is NOT
+	// the 4 the two lists above carry, and a MaxItems: 4 copied across would refuse valid config.
+	"resource.checkpointsase_enhanced_region_private_dns.attributes.dns_policy.public.domains":  {mayBeEmpty, "swagger.yaml:4600 uniqueItems + maxItems 100, no minItems; Required inside `public` (swagger.yaml:4595), which is about presence not length -- and the model marshals `domains` without omitempty, so [] satisfies that presence"},
+	"resource.checkpointsase_enhanced_region_private_dns.attributes.dns_policy.private.domains": {mayBeEmpty, "swagger.yaml:4625 uniqueItems + maxItems 100, no minItems; Required inside `private` (swagger.yaml:4609), which is about presence not length -- and the model marshals `domains` without omitempty, so [] satisfies that presence"},
 }
 
 /*

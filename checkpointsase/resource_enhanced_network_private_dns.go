@@ -38,14 +38,23 @@ configuration was last applied. Destroy releases Terraform's claim on it; it doe
 not undo it. If you want private DNS off, apply `enabled = false` first and then
 destroy -- that is the supported way to express it, and it is a different
 operation from removing the resource.
+
+IT IS RENDERED INTO THE REGION RESOURCE'S DESCRIPTION TOO, which is why it no
+longer says "the network". It was written for
+checkpointsase_enhanced_network_private_dns and read correctly there; on
+checkpointsase_enhanced_region_private_dns's registry page "leaves the network
+exactly as it is" describes the wrong object -- destroying a region's private-DNS
+resource leaves that REGION as it is, and says nothing about its network. The
+wording below names neither, which is what a note shared by two resources with
+different objects has to do. Do not put "network" back.
 */
 const privateDNSNoOpDeleteNote = "`terraform destroy` on this resource makes NO API call. " +
-	"It releases Terraform's claim on the setting and leaves the network exactly as it is — " +
-	"whatever private DNS configuration was last applied stays in force. Destroying it " +
-	"deliberately does not write `enabled = false`, because changing how a live network " +
-	"resolves names as a side effect of removing a Terraform resource is not something a " +
-	"destroy should do. If you want private DNS off, apply `enabled = false` first, then " +
-	"destroy."
+	"It releases Terraform's claim on the setting and leaves the configuration exactly as it " +
+	"is — whatever private DNS configuration was last applied stays in force. Destroying it " +
+	"deliberately does not write `enabled = false`, because changing how a live production " +
+	"network resolves names as a side effect of removing a Terraform resource is not " +
+	"something a destroy should do. If you want private DNS off, apply `enabled = false` " +
+	"first, then destroy."
 
 /*
 privateDNSWriteAcceptedButNotCompleted and privateDNSWriteRefused are the two
@@ -70,18 +79,30 @@ an oversight. The policy resources have to name it because a tainted whole-polic
 resource is destroyed before it is recreated, and THEIR destroy empties the
 tenant's policy. This resource's Delete makes no request at all (D9), so a replace
 is harmless here: nothing is lost between the destroy and the create.
+
+BOTH ARE RENDERED BY THE REGION RESOURCE TOO, WHICH IS WHY NEITHER SAYS "network"
+ANY MORE AND WHY THE REFUSAL NO LONGER SAYS "this endpoint". They were written for
+checkpointsase_enhanced_network_private_dns and read correctly there; the moment
+checkpointsase_enhanced_region_private_dns started rendering them, "the network's
+private DNS configuration is unchanged" told an operator about the wrong object,
+and "the two rejections measured on this endpoint" asserted measurements that do
+not exist -- API-FINDINGS.md 1.31's 422 and 400 were both taken against the
+NETWORK path, and no probe has ever touched the region one. The wording below is
+the size of the claim there is evidence for. If the region endpoint is ever
+probed, this is the comment to come back to, not the constants.
 */
 const privateDNSWriteAcceptedButNotCompleted = "The API ACCEPTED this write and then the " +
-	"operation did not complete successfully, so the network may or may not now hold the " +
+	"operation did not complete successfully, so the target may or may not now hold the " +
 	"configuration above — Terraform cannot tell from here. Run `terraform plan` to see what " +
-	"the network actually holds before changing anything; re-applying is safe once you have " +
+	"it actually holds before changing anything; re-applying is safe once you have " +
 	"looked, because the write is a full replacement and cannot be applied twice to different " +
 	"effect. Destroying this resource would NOT undo a partial write: its Delete makes no API " +
 	"call at all."
 
-const privateDNSWriteRefused = "The API REFUSED this write, so the network's private DNS " +
+const privateDNSWriteRefused = "The API REFUSED this write, so the private DNS " +
 	"configuration is unchanged. The message above is the server's own; the two rejections " +
-	"measured on this endpoint are a 422 for a body with no `attributes` object and a 400 " +
+	"measured on the enhanced-network private DNS endpoint, which takes the identical request " +
+	"body, are a 422 for a body with no `attributes` object and a 400 " +
 	"naming an array that arrived as `null` rather than `[]`. Note that the 400 reports every " +
 	"array complaint it has at once, so the field it names first is not necessarily the field " +
 	"you got wrong."
