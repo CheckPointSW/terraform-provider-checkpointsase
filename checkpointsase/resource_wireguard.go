@@ -22,8 +22,10 @@ func resourceWireguard() *schema.Resource {
 	return &schema.Resource{
 		Description: "Manages a WireGuard client tunnel attached to one gateway of a " +
 			"`checkpointsase_network`. After creation, the server returns `vault` and " +
-			"`request_config_token` — opaque values used to retrieve the WireGuard " +
-			"client configuration via the SASE management console. " +
+			"`request_config_token`. **`request_config_token` is a bearer credential " +
+			"that this resource stores in Terraform state**, and the URL built from " +
+			"it needs no authentication for the 6 hours it lives (API-FINDINGS.md " +
+			"1.32) — treat your state file as a secret store. " +
 			"**`network_id`, `region_id`, `gateway_id`, and `tunnel_name` are " +
 			"immutable** — changing any of them forces resource replacement. Only " +
 			"`remote_endpoint` and `remote_subnets` are updatable in place.",
@@ -79,13 +81,13 @@ func resourceWireguard() *schema.Resource {
 				Type:        schema.TypeString,
 				Computed:    true,
 				Sensitive:   true,
-				Description: "Server-assigned opaque identifier for the tunnel's config storage. Used together with `request_config_token` to retrieve the WireGuard client config from the SASE management console.",
+				Description: "Server-assigned opaque identifier for the tunnel's config storage. Its role is not documented by the API and has not been measured; the retrieval path that HAS been measured does not use it (see `request_config_token`).",
 			},
 			"request_config_token": {
 				Type:        schema.TypeString,
 				Computed:    true,
 				Sensitive:   true,
-				Description: "Server-assigned token for retrieving the WireGuard client configuration. Pair with `vault` to fetch the config blob.",
+				Description: "Server-assigned token for retrieving the WireGuard client configuration. **It is a bearer credential and it is in your state file.** The measured retrieval path uses neither `vault` nor the console: `GET /v3/networks/standard/{network_id}/tunnels/wireguard/{id}/config-token` returns a URL of the form `…/api/networks/{network_id}/tunnels/{id}/wireguard-config/{this token}`, that URL needs **no authentication**, it lives 6 hours from tunnel creation (see `request_config_token_expires_at` if present), and it serves an executable shell script carrying the tunnel's key material (API-FINDINGS.md 1.32). Anyone who can read this state can reconstruct that URL. Treat state as a secret store.",
 			},
 			"updated_at": {
 				Type:        schema.TypeString,

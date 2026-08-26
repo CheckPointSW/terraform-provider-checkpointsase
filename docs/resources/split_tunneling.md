@@ -74,7 +74,14 @@ resource "checkpointsase_split_tunneling" "example" {
     # acceptable to the network is the server's decision.
     cidr = ["10.50.0.0/16", "10.51.0.0/16"]
 
-    # Shared address objects, by id.
+    # Shared address objects, by id. NOTHING IS VALIDATED ON THIS LIST BEYOND
+    # UNIQUENESS, and that is deliberate: the spec says these ids are 11
+    # characters (swagger.yaml:7138) while the server's own 400 insists on
+    # exactly 10, so any length check here would refuse ids on evidence that
+    # contradicts itself (API-FINDINGS.md 1.31, addendum). NO PROBE HAS EVER SENT
+    # A REAL ADDRESS-OBJECT ID -- the array was empty in every capture -- so this
+    # line is the one argument in this file with no measurement behind it.
+    # Applying this example once would settle which of the two lengths is real.
     address_object_ids = [checkpointsase_object_addresses.datacentre.id]
 
     # Updatable objects, by UUID -- see the checkpointsase_updatable_objects data
