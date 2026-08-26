@@ -123,13 +123,11 @@ func resourceIpsecSingle() *schema.Resource {
 			},
 			"created_at": {
 				Type:        schema.TypeString,
-				Optional:    true,
 				Computed:    true,
 				Description: "Timestamp when the tunnel was created (server-assigned).",
 			},
 			"updated_at": {
 				Type:        schema.TypeString,
-				Optional:    true,
 				Computed:    true,
 				Description: "Timestamp when the tunnel was last updated server-side.",
 			},

@@ -144,7 +144,12 @@ func TestSchemaServerAssignedTimestampsAreComputedOnly(t *testing.T) {
 		})
 	}
 	if len(writable) > 0 {
-		t.Skipf("KNOWN (deferred to Phase 6): %d server-assigned timestamp(s) are user-writable:\n  %s",
+		// Was a Skipf while this was deferred to Phase 6. Phase 6 fixed the six
+		// offenders (wireguard, openvpn and ipsec_single created_at/updated_at),
+		// so this is now a GATE. A Skipf here would let a regression pass green,
+		// which is the failure mode this file exists to prevent.
+		t.Errorf("%d server-assigned timestamp(s) are user-writable, which lets a "+
+			"user write a value into HCL that is silently ignored:\n  %s",
 			len(writable), strings.Join(writable, "\n  "))
 	}
 }

@@ -39,15 +39,15 @@ resource "checkpointsase_wireguard" "example" {
 
 ### Optional
 
-- `created_at` (String) Timestamp when the tunnel was created (server-assigned).
 - `last_updated` (String) Timestamp of the last update to this resource.
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
-- `updated_at` (String) Timestamp when the tunnel was last updated server-side.
 
 ### Read-Only
 
+- `created_at` (String) Timestamp when the tunnel was created (server-assigned).
 - `id` (String) The ID of this resource.
 - `request_config_token` (String, Sensitive) Server-assigned token for retrieving the WireGuard client configuration. **It is a bearer credential and it is in your state file.** The measured retrieval path uses neither `vault` nor the console: `GET /v3/networks/standard/{network_id}/tunnels/wireguard/{id}/config-token` returns a URL of the form `…/api/networks/{network_id}/tunnels/{id}/wireguard-config/{this token}`, that URL needs **no authentication**, it lives 6 hours from tunnel creation (see `request_config_token_expires_at` if present), and it serves an executable shell script carrying the tunnel's key material (API-FINDINGS.md 1.32). Anyone who can read this state can reconstruct that URL. Treat state as a secret store.
+- `updated_at` (String) Timestamp when the tunnel was last updated server-side.
 - `vault` (String, Sensitive) Server-assigned opaque identifier for the tunnel's config storage. Its role is not documented by the API and has not been measured; the retrieval path that HAS been measured does not use it (see `request_config_token`).
 
 <a id="nestedblock--timeouts"></a>

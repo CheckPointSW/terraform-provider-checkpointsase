@@ -73,15 +73,15 @@ resource "checkpointsase_ipsec_single" "example" {
 
 ### Optional
 
-- `created_at` (String) Timestamp when the tunnel was created (server-assigned).
 - `last_updated` (String) Timestamp of the last update to this resource.
 - `remote_id` (String) Optional remote tunnel ID. Computed if not supplied. Must be alphanumeric or a valid IP address.
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
-- `updated_at` (String) Timestamp when the tunnel was last updated server-side.
 
 ### Read-Only
 
+- `created_at` (String) Timestamp when the tunnel was created (server-assigned).
 - `id` (String) The ID of this resource.
+- `updated_at` (String) Timestamp when the tunnel was last updated server-side.
 
 <a id="nestedblock--phase1"></a>
 ### Nested Schema for `phase1`

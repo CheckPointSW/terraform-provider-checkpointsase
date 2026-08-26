@@ -238,9 +238,14 @@ func resourceObjectAddressesDelete(ctx context.Context, d *schema.ResourceData, 
 	client := m.(*perimeter81Sdk.APIClient)
 
 	// delete the object Addresses and check for errors
-	_, err := client.ObjectsAPI.DeleteAddress(ctx, d.Id()).Execute()
+	resp, err := client.ObjectsAPI.DeleteAddress(ctx, d.Id()).Execute()
 
-	if err != nil {
+	// A 404 means somebody already deleted the address object; destroy has
+	// nothing left to do and reporting a failure would leave the resource stuck
+	// in state forever, needing a manual `terraform state rm` (OA-N02). This is
+	// the same treatment resourceUserDelete and resourceGroupDelete give their
+	// own 404s.
+	if err != nil && !isNotFound(resp, err) {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to delete object addresses", err)
 	}

@@ -3,11 +3,14 @@ package checkpointsase
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
 
@@ -125,4 +128,66 @@ resource "checkpointsase_object_addresses" "oa" {
 }
   `
 	return config
+}
+
+/*
+TestObjectAddressesDeleteSwallowsA404ButNothingElse is the gate on OA-N02.
+
+Before Phase 6, Delete reported any error from the endpoint, including a 404. So
+destroying an address object that somebody had already removed — out of band, or
+on a retried destroy after a partial failure — failed the apply and left the
+resource in state, needing a manual `terraform state rm` to recover. A destroy
+whose goal state is "absent" should treat "already absent" as success.
+
+The 500 row is the half that matters as much: swallowing a 404 must not become
+swallowing everything. A server error still has to fail the destroy, because the
+object may well still be there.
+
+Modelled on TestUserDeleteSwallowsA404ButNothingElse, which pins the same
+contract on the identity resources.
+*/
+func TestObjectAddressesDeleteSwallowsA404ButNothingElse(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		body       string
+		wantErr    bool
+		wantIDGone bool
+	}{
+		{"404 means somebody already deleted it", http.StatusNotFound,
+			`{"message":"address not found"}`, false, true},
+		{"200 is an ordinary destroy", http.StatusOK,
+			`{"id":"addr-1"}`, false, true},
+		{"500 must not be mistaken for success", http.StatusInternalServerError,
+			`{"message":"boom"}`, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotMethod, gotPath string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotMethod, gotPath = r.Method, r.URL.Path
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			d := schema.TestResourceDataRaw(t, resourceObjectAddresses().Schema, map[string]interface{}{})
+			d.SetId("addr-1")
+
+			diags := resourceObjectAddressesDelete(context.Background(), d, newTestUserAPIClient(srv.URL))
+
+			if gotMethod != http.MethodDelete {
+				t.Errorf("request method was %q, want DELETE", gotMethod)
+			}
+			if gotPath == "" {
+				t.Error("no request reached the server; Delete must issue the DELETE")
+			}
+			if diags.HasError() != tc.wantErr {
+				t.Errorf("HasError = %v, want %v: %v", diags.HasError(), tc.wantErr, diags)
+			}
+			if gone := d.Id() == ""; gone != tc.wantIDGone {
+				t.Errorf("id cleared = %v, want %v (id is %q)", gone, tc.wantIDGone, d.Id())
+			}
+		})
+	}
 }
