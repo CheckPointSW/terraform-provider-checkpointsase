@@ -221,7 +221,23 @@ func resourceGatewayRead(ctx context.Context, d *schema.ResourceData, m interfac
 	networkId := d.Get("network_id").(string)
 	regionId := d.Get("region_id").(string)
 
-	networkData, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkFind(ctx, networkId).Execute()
+	networkData, resp, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkFind(ctx, networkId).Execute()
+
+	// A vanished parent network is DRIFT, not a failure (SI-D02). Without this,
+	// deleting the network out of band leaves every gateway under it unreadable:
+	// Read errors, so `plan` cannot even report that the gateway is gone, and the
+	// operator has to `terraform state rm` each one by hand to recover.
+	//
+	// This is safe here for the same reason it is safe on the Phase 5 private-DNS
+	// resources and NOT safe on a collection endpoint: the request addresses a
+	// SINGLE named network, so a 404 means that network is absent. On a
+	// collection, a 404 means the URL was wrong, and treating it as drift cleared
+	// live ids on a misconfiguration -- a defect this project shipped three times
+	// before recognising the distinction.
+	if isNotFound(resp, err) {
+		d.SetId("")
+		return diags
+	}
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to find Network for gateway read", err)
