@@ -113,20 +113,45 @@ What it does assert, and what each one catches:
   - `enabled` is a real boolean. TestCheckResourceAttrSet cannot do this job for a
     bool: "false" is set, so the assertion passes for an attribute that was never
     written.
-  - `attributes.#` is 0 or 1. Both are normal, and `enabled` does not predict
-    which: 1.31 measured an object nobody has configured returning NO
-    `attributes` key, and 1.36 measured a standard REGION nobody has configured
-    returning `attributes` PRESENT with a fully populated `dns_policy`. Anything
-    above 1 means the flattener emitted a list where the API has a single object.
-    DO NOT "TIGHTEN" THIS INTO "disabled means no attributes" — that is the third
-    disabled shape, and it is what the tenant actually returns.
-  - if `enabled` is true then `attributes.#` is 1 and `servers.#` is at least 1.
-    swagger.yaml:4492 makes servers required and non-empty when enabled is true,
-    so this is where a flattener that dropped the block shows up as a
-    contradiction rather than as an empty read nobody notices.
+  - `attributes.#` is 0 or 1. Both are normal. Anything above 1 means the
+    flattener emitted a list where the API has a single object.
   - if `attributes.#` is 1 then both `servers.#` and `search_domains.#` are
     present. A missing COUNT key means the attribute was never set at all, which
     is what a mis-spelled map key produces — silently, and with no error anywhere.
+  - every element of `servers` carries a non-empty `address` and a set `is_tls`.
+    CustomDnsServer (swagger.yaml:4429-4442) requires BOTH, on the READ model, so
+    this holds of every legal body; and it is vacuous for an empty list, so it
+    cannot fire for a configuration reason. This is where a flattener that
+    dropped a key, or set one and mapped nothing into it, shows up. Mutation M10
+    (`flattenCustomDnsServers` dropping `is_tls`) is its offline twin.
+
+`enabled` PREDICTS NOTHING ABOUT THE SHAPE, IN EITHER DIRECTION, AND BOTH HALVES
+OF THAT ARE DELIBERATE.
+
+DO NOT TIGHTEN THIS INTO "disabled means no attributes". 1.31 measured an object
+nobody has configured returning NO `attributes` key, and 1.36 measured a standard
+REGION nobody has configured returning `attributes` PRESENT with a fully populated
+`dns_policy`. That third disabled shape is what the tenant actually returns.
+
+DO NOT TIGHTEN IT THE OTHER WAY EITHER, into "enabled means one `attributes` block
+holding at least one server". This check used to assert exactly that, citing
+swagger.yaml:4492 — and 4492 is `CustomDnsUpdateAttributes.servers`, the
+description on the PUT body (:4471-4492). The standard READ decodes
+CustomDnsResponse (:4419) → CustomDnsAttributesResponse (:4409) → its base
+CustomDnsAttributes (:4387), whose `servers` is an OPTIONAL array with uniqueItems
+and maxItems: 4 and no minimum, conditional or otherwise; and CustomDns (:4376)
+requires `enabled` alone, so `{"enabled": true}` with no `attributes` key is a
+legal response. API-FINDINGS.md 1.35 is why the distinction bites on this family
+and on no other in this repo: the standard pair declares no put, post or patch, so
+the v3 write validator never sees these objects — the console is the only writer,
+and the provider cannot know what wrote the body it is reading. Those two rows
+were offline-green and could only ever have fired LIVE, against a legal response,
+as "the block was dropped on the way into state".
+TestStandardPrivateDNSShapeCheckMatchesTheReadModel now pins both halves.
+
+A failure of any row here is INFORMATION FIRST and a provider defect second, in
+the same words this file gives the region 404: read what the server said before
+changing any code.
 */
 func testAccCheckStandardPrivateDNSShape(address string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
@@ -153,13 +178,6 @@ func testAccCheckStandardPrivateDNSShape(address string) resource.TestCheckFunc 
 				"there is one value", address, count)
 		}
 
-		if enabled == "true" && count != 1 {
-			return fmt.Errorf("%s reports enabled = true with attributes.# = %d. The API "+
-				"requires at least one server when private DNS is enabled "+
-				"(swagger.yaml:4492), so an enabled object with no attributes block means the "+
-				"block was dropped on the way into state", address, count)
-		}
-
 		if count == 1 {
 			for _, key := range []string{"attributes.0.servers.#", "attributes.0.search_domains.#"} {
 				if _, ok := attrs[key]; !ok {
@@ -168,14 +186,17 @@ func testAccCheckStandardPrivateDNSShape(address string) resource.TestCheckFunc 
 						"with no error anywhere", address, key)
 				}
 			}
-			if enabled == "true" {
-				servers, err := dataSourceListLen(attrs, "attributes.0.servers")
-				if err != nil {
-					return fmt.Errorf("%s: %w", address, err)
-				}
-				if servers < 1 {
-					return fmt.Errorf("%s reports enabled = true with %d servers; the API "+
-						"cannot hold that state (swagger.yaml:4492)", address, servers)
+			servers, err := dataSourceListLen(attrs, "attributes.0.servers")
+			if err != nil {
+				return fmt.Errorf("%s: %w", address, err)
+			}
+			for i := 0; i < servers; i++ {
+				if err := checkElemFieldsSet(
+					address, attrs, "attributes.0.servers", i, []string{"address", "is_tls"},
+				); err != nil {
+					return fmt.Errorf("%w. CustomDnsServer requires BOTH address and isTLS on "+
+						"the read model (swagger.yaml:4429-4442), so an element missing one is "+
+						"the flattener rather than the tenant", err)
 				}
 			}
 		}

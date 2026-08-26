@@ -707,8 +707,16 @@ around. Restating it would put a second spelling of `address` and `is_tls` in th
 package, which is exactly what the privateDNSAttr* constants exist to prevent.
 
 Always non-nil, so a network with no servers stores [] rather than null; and it
-preserves the order the API returned, which API-FINDINGS.md 1.31 measured as
-meaningful (the write round-trips byte-exactly, non-alphabetical order kept).
+preserves the order the API returned.
+
+THE ORDERING MEASUREMENT IS THE ENHANCED FAMILY'S, AND THIS FUNCTION IS NOW SHARED,
+so say which is which at the point of sharing. API-FINDINGS.md 1.31 measured order
+as meaningful on the ENHANCED WRITE path -- the write round-trips byte-exactly with
+a non-alphabetical order kept. It does NOT extend to the standard family: 1.36 read
+one standard network with a SINGLE server and one standard region with NONE, so
+standard server order is spec-derived (swagger.yaml:4391 declares an array, and
+arrays are ordered). Preserving order is right on both, but only one of them has
+been measured.
 
   - @param servers []perimeter81Sdk.CustomDnsServer - the servers as read
 

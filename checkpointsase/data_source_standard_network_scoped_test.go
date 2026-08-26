@@ -161,9 +161,15 @@ func TestAccDataSourceStandardNetworkScoped_basic(t *testing.T) {
 					testAccCheckStandardNetworkPrivateDNSIDIsDerived(networkPDNS),
 					testAccCheckStandardPrivateDNSShape(networkPDNS),
 
-					// SPD-02: checkpointsase_standard_region_private_dns. The
-					// first request anything has ever made to this path — see
-					// the doc comment.
+					// SPD-02: checkpointsase_standard_region_private_dns.
+					// NOT the first request anything has made to this path.
+					// API-FINDINGS.md 1.36 read it successfully by hand on
+					// 2026-08-26, and what that read returned is the doc
+					// comment above. What is new here is the read going
+					// through the PROVIDER — no acceptance test has ever run
+					// against this data source — and a bogus region id has
+					// still never been sent to it at all; that is SPD-N02, in
+					// data_source_standard_private_dns_acc_test.go.
 					resource.TestCheckResourceAttrPair(regionPDNS, "network_id", network, "id"),
 					resource.TestCheckResourceAttrPair(
 						regionPDNS, "region_id", network, networkRegion0),

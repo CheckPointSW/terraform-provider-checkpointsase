@@ -669,7 +669,17 @@ Four properties, and the third is the one a naive join fails:
  1. different network ids give different ids;
 
  2. the same arguments give the same id twice, in this process and the next --
-    an id that moved would defeat every downstream reference (L16c);
+    an id that moved would defeat every downstream reference (L16c).
+
+    DO NOT READ THIS ROW AS EVIDENCE. standardNetworkPrivateDNSID is a pure
+    function of its one argument, so it cannot fail; and against the
+    time.Now().Unix() form it names -- the defect the older network-scoped data
+    sources actually ship (L16c) -- it cannot fail either, because two calls one
+    line apart land in the same second. MEASURED 2026-08-26 by mutating the
+    function to strconv.FormatInt(time.Now().Unix(), 10): rows 1 and 4 both
+    failed (two different networks shared the id 1787736062, and the id did not
+    carry a readable base) and this row was silent. It is kept because it
+    documents the property, the same way the public_fallback row above is;
 
  3. two DIFFERENT (network, region) pairs whose halves CONCATENATE to the same
     string still give different ids. That is what the region variant must pass
@@ -832,9 +842,9 @@ requiredProperties UnmarshalJSON for mode, publicFallback AND domains, and the
 server returns all three including `publicFallback: false` explicitly, so the
 whole GET does not fail to decode.
 
-THE STANDARD PATH IS A DIFFERENT SET OF MODELS AND HAS NEVER BEEN MEASURED, so
-this test reads what the generated code actually does rather than assuming 1.34
-carries over:
+THE STANDARD PATH IS A DIFFERENT SET OF MODELS, and until 1.36 had never been
+measured, so this test reads what the generated code actually does rather than
+assuming 1.34 carries over:
 
   - CustomDnsResponse requires `enabled` -- present in every fixture here, and in
     the measured unconfigured body.
@@ -930,12 +940,19 @@ func TestStandardPrivateDNSSpecBodyDecodesThroughTheGeneratedModels(t *testing.T
 TestFlattenDnsPolicyResponsePrivateToleratesWrongTypes pins the three
 AdditionalProperties readers as TOTAL.
 
-Nothing in this project has seen a standard private-DNS body at all, let alone a
-malformed one, so this is not modelling an observed server. It is the deliberate
+THREE STANDARD PRIVATE-DNS BODIES HAVE BEEN CAPTURED AND NONE OF THEM IS
+MALFORMED: P3's {"enabled":false} (API-FINDINGS.md 1.31) and 1.36's two reads --
+measuredStandardPrivateDNSUnconfigured, measuredStandardNetworkPrivateDNSConfigured
+and measuredStandardRegionPrivateDNSUntouched, declared at the top of this file. In
+every one of them `mode` is a string, `publicFallback` a bool and `domains` a list
+of strings.
+
+So this test is NOT modelling an observed server. It is the deliberate TOTALITY
 choice recorded on additionalPropertyString and its siblings: a read-only
 attribute has no user input to reject, and failing an entire plan because one
 field of one record was surprising is worse than surfacing a zero value the
-operator can see in state.
+operator can see in state. Three bodies from one tenant at one moment are not a
+guarantee about every object, which is why the readers stay total.
 
 The domains case asserts SKIPPING rather than substituting: a positional gap in a
 domain list is worse than a shorter list, because domains are matched by value
@@ -972,5 +989,189 @@ func TestFlattenDnsPolicyResponsePrivateToleratesWrongTypes(t *testing.T) {
 	empty := flattenDnsPolicyResponsePrivate(&perimeter81Sdk.DnsPolicyResponseAllOfPrivate{})
 	if got := empty[privateDNSAttrDomains]; len(got.([]string)) != 0 {
 		t.Errorf("domains = %#v for an absent key, want an empty slice", got)
+	}
+}
+
+/*
+TestStandardPrivateDNSShapeCheckMatchesTheReadModel drives
+testAccCheckStandardPrivateDNSShape -- which lives in the acc-test file but is
+ordinary Go -- against hand-built state. It is offline on purpose: the check runs
+live only against a tenant nobody here controls, so the bodies it must tolerate
+cannot be produced on demand, only reasoned about from the model it reads.
+
+WHY IT EXISTS. The check used to fail the step when `enabled` was "true" and
+`attributes.#` was not 1, and again when `servers.#` was 0, citing
+swagger.yaml:4492. THAT LINE IS CustomDnsUpdateAttributes.servers -- the
+description on the PUT body (swagger.yaml:4471-4492). The standard read decodes
+CustomDnsResponse (:4419) -> CustomDnsAttributesResponse (:4409) -> its base
+CustomDnsAttributes (:4387), where `servers` is an OPTIONAL array carrying
+uniqueItems and maxItems: 4 and no minimum of any kind; and CustomDns (:4376)
+requires `enabled` alone, so `{"enabled": true}` with no `attributes` key is a
+legal response body.
+
+API-FINDINGS.md 1.35 is why that difference bites on this family and on no other:
+the standard pair declares no put, post or patch, so the v3 write validator never
+sees these objects at all. The console is the only writer, and 1.36 measured this
+same server populating a REGION's dnsPolicy with defaults nobody set. A write
+model's conditional rule is not evidence about what a read can return.
+
+The rows are two groups. The first is bodies the READ model permits: each one
+would have been reported live as "the block was dropped on the way into state" or
+"the API cannot hold that state" -- a provider defect that does not exist, on the
+one family where the provider cannot even know what wrote the body. The second is
+the defects the check still has to catch, so that dropping two rows did not leave
+a check that cannot fail.
+*/
+func TestStandardPrivateDNSShapeCheckMatchesTheReadModel(t *testing.T) {
+	const address = "data.checkpointsase_standard_network_private_dns.test"
+
+	for _, tc := range []struct {
+		name    string
+		attrs   map[string]string
+		wantErr bool
+	}{
+		// ---- bodies the READ model permits; all of these must pass ----
+		{
+			// API-FINDINGS.md 1.31, verbatim: {"enabled":false}.
+			name:  "the measured unconfigured network body, no attributes key",
+			attrs: map[string]string{"enabled": "false"},
+		},
+		{
+			// API-FINDINGS.md 1.36, the console-configured network.
+			name: "the measured configured network body",
+			attrs: map[string]string{
+				"enabled":                        "true",
+				"attributes.#":                   "1",
+				"attributes.0.servers.#":         "1",
+				"attributes.0.servers.0.address": "13.227.192.28",
+				"attributes.0.servers.0.is_tls":  "false",
+				"attributes.0.search_domains.#":  "0",
+			},
+		},
+		{
+			// API-FINDINGS.md 1.36, the third disabled shape: attributes PRESENT,
+			// servers EMPTY, dnsPolicy populated, on a region nobody configured.
+			name: "the measured untouched region body",
+			attrs: map[string]string{
+				"enabled":                       "false",
+				"attributes.#":                  "1",
+				"attributes.0.servers.#":        "0",
+				"attributes.0.search_domains.#": "0",
+			},
+		},
+		{
+			// CustomDns (:4376) requires `enabled` and nothing else. This is the
+			// SPD-02 scenario: a region under a network somebody enabled from the
+			// console, whose own object carries no attributes.
+			name:  "enabled true with no attributes block at all",
+			attrs: map[string]string{"enabled": "true"},
+		},
+		{
+			// CustomDnsAttributes (:4387) declares no minItems and no conditional
+			// minimum on `servers`. Only the PUT body does.
+			name: "enabled true with an attributes block holding no servers",
+			attrs: map[string]string{
+				"enabled":                       "true",
+				"attributes.#":                  "1",
+				"attributes.0.servers.#":        "0",
+				"attributes.0.search_domains.#": "0",
+			},
+		},
+
+		// ---- defects the check must still catch ----
+		{
+			name:    "no enabled attribute at all",
+			attrs:   map[string]string{"attributes.#": "0"},
+			wantErr: true,
+		},
+		{
+			name:    "enabled is not a boolean",
+			attrs:   map[string]string{"enabled": "yes"},
+			wantErr: true,
+		},
+		{
+			// The API returns one attributes object or none, so a list means the
+			// flattener wrapped a value that was never a list.
+			name:    "attributes flattened into more than one element",
+			attrs:   map[string]string{"enabled": "true", "attributes.#": "2"},
+			wantErr: true,
+		},
+		{
+			// A missing COUNT key is what a mis-spelled flattener key produces.
+			name: "attributes present but servers was never set",
+			attrs: map[string]string{
+				"enabled": "false", "attributes.#": "1",
+				"attributes.0.search_domains.#": "0",
+			},
+			wantErr: true,
+		},
+		{
+			name: "attributes present but search_domains was never set",
+			attrs: map[string]string{
+				"enabled": "false", "attributes.#": "1",
+				"attributes.0.servers.#": "0",
+			},
+			wantErr: true,
+		},
+		{
+			// CustomDnsServer (:4429) requires BOTH address and isTLS, on the read
+			// model. This is the row that replaces the two write-model rows: a
+			// dropped or mis-spelled server key shows up here, on a constraint the
+			// read model really declares.
+			name: "a server element whose address key was never set",
+			attrs: map[string]string{
+				"enabled": "true", "attributes.#": "1",
+				"attributes.0.servers.#":        "1",
+				"attributes.0.servers.0.is_tls": "false",
+				"attributes.0.search_domains.#": "0",
+			},
+			wantErr: true,
+		},
+		{
+			// Mutation M10's live twin: flattenCustomDnsServers dropping is_tls.
+			name: "a server element whose is_tls key was never set",
+			attrs: map[string]string{
+				"enabled": "true", "attributes.#": "1",
+				"attributes.0.servers.#":         "1",
+				"attributes.0.servers.0.address": "10.0.0.53",
+				"attributes.0.search_domains.#":  "0",
+			},
+			wantErr: true,
+		},
+		{
+			// Set but mapped from nothing, which is the other half of the same
+			// defect and the one TestCheckResourceAttrSet cannot see.
+			name: "a server element whose address is empty",
+			attrs: map[string]string{
+				"enabled": "true", "attributes.#": "1",
+				"attributes.0.servers.#":         "1",
+				"attributes.0.servers.0.address": "",
+				"attributes.0.servers.0.is_tls":  "true",
+				"attributes.0.search_domains.#":  "0",
+			},
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// stateWithDataSource is data_source_identity_test.go's helper: the
+			// check reaches state only through dataSourceAttrs, which touches
+			// Primary.Attributes and nothing else, so the Type it fills in is not
+			// read by anything here.
+			err := testAccCheckStandardPrivateDNSShape(address)(stateWithDataSource(address, tc.attrs))
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("the shape check ACCEPTED %v. That body is a defect the live rows "+
+						"exist to catch, and a check that accepts it cannot fail for the "+
+						"reason it claims to", tc.attrs)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("the shape check REJECTED a body the read model permits: %v\n"+
+					"body: %v\nswagger.yaml:4376 requires only `enabled`, and :4387 puts no "+
+					"minimum on `servers`. Live, this reads as a provider defect that does "+
+					"not exist", err, tc.attrs)
+			}
+		})
 	}
 }
