@@ -35,10 +35,27 @@ endpoint alone.
 // 10.96.0.0/22 by TestAccEnhancedNetworkPrivateDNS_basic), because two networks
 // with overlapping subnets are refused and a collision would fail whichever test
 // ran second for a reason that has nothing to do with private DNS.
+//
+// THE TWO DNS SERVER ADDRESSES ARE DELIBERATELY NOT INSIDE THAT SUBNET, and
+// "tidying" them to match it -- 10.97.0.53 for a 10.97.0.0/22 network, which is
+// what they were until 2026-08-26 and which reads as neat -- is what broke this
+// test live. A private DNS server MAY NOT sit inside its own network's subnet:
+// the API refuses it with 400 {"message":"Invalid IP address"} for an address
+// that is perfectly well-formed. Measured three ways on one network,
+// API-FINDINGS.md 1.38. Note what the error says: "Invalid IP address" sends you
+// to check your TYPING when the problem is your ADDRESSING, which is the whole
+// reason this comment exists.
+//
+// 10.201.x satisfies every constraint at once: it is RFC1918 private, outside
+// this network's own 10.97.0.0/22, outside the network test's 10.96.0.0/22 and
+// its 10.200.x servers so the two tests cannot interfere, and outside the two
+// probe networks that live on the test tenant (10.254.0.0/16 and 10.255.0.0/16).
+// The two addresses differ because the step-3 assertions are positional and carry
+// different is_tls values.
 const (
 	testAccEnhancedRegionPrivateDNSSubnet = "10.97.0.0/22"
-	testAccEnhancedRegionPrivateDNSServer = "10.97.0.53"
-	testAccEnhancedRegionPrivateDNSTLSSrv = "10.97.1.53"
+	testAccEnhancedRegionPrivateDNSServer = "10.201.0.53"
+	testAccEnhancedRegionPrivateDNSTLSSrv = "10.201.1.53"
 )
 
 var randNameEnhancedRegionPrivateDNS = randStringBytesRmndr()
