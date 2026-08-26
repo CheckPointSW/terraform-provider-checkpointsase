@@ -560,6 +560,41 @@ var listAttributeEmptyPolicy = map[string]struct {
 	// empty list is legal and is the only way to express "no access groups".
 	"resource.checkpointsase_user.access_groups": {mayBeEmpty, "createUser.dto.ts @IsOptional, no @ArrayMinSize, defaults to []"},
 	"resource.checkpointsase_user.profile_data":  {mayBeEmpty, "MaxItems 1 wrapper block"},
+
+	// --- enhanced network private DNS ----------------------------------------------------------
+	// EIGHT entries, not the four the dispatch predicted or the six the task brief did. Both
+	// counted the arrays that carry DATA (servers, search_domains, and the two domains lists) and
+	// missed that every MaxItems-1 BLOCK in privateDNSSchema is a TypeList too, so walkSchema
+	// reports `attributes`, `dns_policy`, `dns_policy.public` and `dns_policy.private` as well.
+	// Recorded here because the count is a trap for Task 3, which needs the identical eight under
+	// its own resource name -- this map is keyed by resource, so nothing about these carries over.
+	//
+	// EVERY ONE IS mayBeEmpty, and the reasoning below is why none of them can be mustReject:
+	// a mustReject verdict FORCES MinItems: 1 (the test above asserts exactly that), and MinItems
+	// on any of these would refuse a body the server accepts.
+	//
+	// The whole family's verdict rests on one measurement, API-FINDINGS.md 1.31, 2026-08-26:
+	//   PUT {"enabled":false,"attributes":{"servers":[],"searchDomains":[]}}  -> 202
+	// Two empty arrays in the only supported way to turn private DNS off.
+	//
+	// servers deserves the longest note because the brief called it "mustReject when enabled is
+	// true". That is a true statement about the API (swagger.yaml:4492: "must contain at least one
+	// entry when enabled is true") and it is NOT the verdict this map can record: the condition is
+	// on a sibling attribute, MinItems has no access to one, and setting MinItems: 1 to express it
+	// would make the 202 above unwritable -- i.e. would remove the only way to turn the feature
+	// off. The conditional is enforced in validatePrivateDNSDiff (private_dns.go) instead, which is
+	// where a cross-field rule can see both fields.
+	"resource.checkpointsase_enhanced_network_private_dns.attributes":                    {mayBeEmpty, "MaxItems 1 wrapper block; ZERO blocks is the legal 'off' config, and expandCustomDnsUpdate still sends the required empty arrays"},
+	"resource.checkpointsase_enhanced_network_private_dns.attributes.servers":            {mayBeEmpty, "measured: {\"enabled\":false,...\"servers\":[]} is a 202 (API-FINDINGS.md 1.31). The 'at least one when enabled is true' minimum (swagger.yaml:4492) is CONDITIONAL on a sibling, so it lives in validatePrivateDNSDiff -- MinItems here would make the 'off' body unwritable"},
+	"resource.checkpointsase_enhanced_network_private_dns.attributes.search_domains":     {mayBeEmpty, "swagger.yaml:4500 says so in words: \"Required — send an empty array if you have none\""},
+	"resource.checkpointsase_enhanced_network_private_dns.attributes.dns_policy":         {mayBeEmpty, "MaxItems 1 wrapper block; ZERO blocks means no policy and expandDnsPolicy omits the key entirely"},
+	"resource.checkpointsase_enhanced_network_private_dns.attributes.dns_policy.public":  {mayBeEmpty, "MaxItems 1 wrapper block"},
+	"resource.checkpointsase_enhanced_network_private_dns.attributes.dns_policy.private": {mayBeEmpty, "MaxItems 1 wrapper block"},
+	// Both domains lists are Required INSIDE their blocks (swagger.yaml:4595, :4609) and carry
+	// maxItems 100 with no minItems -- so once you write the block you must write the key, and []
+	// is a legal value for it. Required-and-empty is not a contradiction here.
+	"resource.checkpointsase_enhanced_network_private_dns.attributes.dns_policy.public.domains":  {mayBeEmpty, "swagger.yaml:4600 uniqueItems + maxItems 100, no minItems; Required inside `public`, which is about presence not length"},
+	"resource.checkpointsase_enhanced_network_private_dns.attributes.dns_policy.private.domains": {mayBeEmpty, "swagger.yaml:4625 uniqueItems + maxItems 100, no minItems; Required inside `private`, which is about presence not length"},
 }
 
 /*

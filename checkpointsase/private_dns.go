@@ -3,6 +3,7 @@ package checkpointsase
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -39,7 +40,15 @@ Declaring the schema and reading it through the same constants makes the mismatc
 unrepresentable rather than merely unlikely: there is one spelling of each name in
 the package, so a rename is one edit and a typo is a compile error. The residual
 risk -- a NEW attribute added to the schema that no expander reads -- is what
-TestPrivateDNSSchemaDeclaresExactlyTheAttributesTheExpanderReads catches.
+TestPrivateDNSSchemaAndExpanderAgreeOnEveryAttribute is a TRIPWIRE for. Be precise
+about how strong that is, because the first version of this comment overstated it:
+the test compares the schema against privateDNSSchemaPaths, which is a
+HAND-WRITTEN list, so what it guarantees is that nobody adds an attribute without
+also editing that list -- not that the expander was taught to read it. And its
+config synthesiser switches on Bool/String/List only, so a TypeInt, TypeSet or
+TypeMap attribute added to both the schema and the path list would pass green with
+no expander support at all. It fails closed rather than drifting silently, which
+is worth having; it is not automatic.
 
 Tasks 2 and 3 must call privateDNSSchema and add only their own address
 attributes (network_id, plus region_id for the region resource). Restating any of
@@ -58,6 +67,14 @@ const (
 	privateDNSAttrDomains        = "domains"
 	privateDNSAttrMode           = "mode"
 	privateDNSAttrPublicFallback = "public_fallback"
+
+	// network_id is the ADDRESS attribute rather than part of the shared body,
+	// which is why privateDNSSchema does not declare it and each resource adds
+	// it. It is named here anyway, for the same reason as everything above: the
+	// region resource needs the identical attribute alongside its own region_id,
+	// and two string literals in two resource files is exactly the drift the
+	// rest of this block exists to remove.
+	privateDNSAttrNetworkID = "network_id"
 )
 
 /*
@@ -114,8 +131,14 @@ registered resource and fails on a blank one, so writing them here is what stops
 Tasks 2 and 3 inheriting a failure they did not cause.
 
 Tasks 2 and 3 will each still need their own listAttributeEmptyPolicy entries --
-that map is keyed by resource name, so a shared schema cannot supply them. All
-four list attributes below are mayBeEmpty.
+that map is keyed by resource name, so a shared schema cannot supply them. THERE
+ARE EIGHT OF THEM, NOT FOUR: the four leaf lists (servers, search_domains, and
+both domains lists) plus the four MaxItems-1 BLOCKS, which are TypeList too and
+which walkSchema reports as attributes.dns_policy, .dns_policy.public,
+.dns_policy.private and `attributes` itself. Counting the leaves and forgetting the
+blocks is the mistake both the Phase 5 plan and Task 2's brief made. All eight are
+mayBeEmpty; the sourcing for each is on the entries themselves in
+schema_conformance_test.go.
 
 @return map[string]*schema.Schema - `enabled` and `attributes`
 */
@@ -129,10 +152,59 @@ func privateDNSSchema() map[string]*schema.Schema {
 		privateDNSAttrAttributes: {
 			Type:     schema.TypeList,
 			Optional: true,
+			/*
+				COMPUTED AS WELL AS OPTIONAL, AND WITHOUT IT THIS RESOURCE NEVER
+				CONVERGES. Do not "tidy" it away.
+
+				THERE ARE TWO DISABLED READ SHAPES, and API-FINDINGS.md 1.31
+				recorded only one of them. Both are measured, on 2026-08-26:
+
+				  never configured       GET -> {"enabled":false}
+				                                attributes ABSENT
+				  after an explicit off  GET -> {"enabled":false,
+				                                 "attributes":{"servers":[],
+				                                               "searchDomains":[]}}
+				                                attributes PRESENT and empty
+
+				The finding's sentence -- "GET on a network that has never been
+				configured returns exactly {"enabled": false}" -- is true and is
+				incomplete in the way that matters: once ANYTHING has been
+				written, `attributes` comes back. So the configuration this
+				schema's own description recommends, `enabled = false` with no
+				`attributes` block, writes successfully, reads back with
+				`attributes` present, and stores one block against a
+				configuration holding none. Optional alone makes that a diff on
+				every plan for ever, and an apply that re-PUTs the same body
+				every time.
+
+				Computed is the right fix rather than a workaround: `attributes`
+				is REQUIRED on write (an absent one is a 422), so the server can
+				never report "no attributes" for a network Terraform has applied
+				to. "The configuration names none" therefore means "whatever the
+				server holds", which is exactly what Optional+Computed says.
+
+				THE COST, which belongs in the description and is there: removing
+				the block from a configuration no longer clears anything. There is
+				nothing it could clear TO -- the object cannot be absent -- so the
+				way to empty the lists is to write them empty. The nested
+				attributes stay Optional-only, so dropping `dns_policy` or
+				`search_domains` still clears those, and the full-replacement
+				semantics survive where they are expressible.
+
+				Pinned by TestEnhancedNetworkPrivateDNSDisablingDoesNotDiffForever,
+				which drives Read against the measured post-disable body and
+				re-plans the unchanged configuration against the state it
+				produced.
+			*/
+			Computed: true,
 			MaxItems: 1,
 			Description: "Private DNS configuration. May be omitted when `enabled` is false; the " +
 				"provider still sends the empty servers and search domain arrays the API requires " +
-				"on every write.",
+				"on every write. This block is also computed, because the API returns it on every " +
+				"read once anything has been written — so REMOVING the block does not clear the " +
+				"configuration, it leaves whatever the network already holds. To empty a list, " +
+				"write it empty (`search_domains = []`); to turn private DNS off, set " +
+				"`enabled = false`.",
 			Elem: &schema.Resource{
 				Schema: map[string]*schema.Schema{
 					privateDNSAttrServers: {
@@ -394,7 +466,9 @@ resources that call it: `enabled`, and inside a single `attributes` block,
 (`public.domains`, and `private.mode` / `private.public_fallback` /
 `private.domains`). A resource that spells one of them differently sends a zero
 value for it silently -- this cannot tell a renamed key from an unset one.
-testPrivateDNSResourceSchema in private_dns_test.go mirrors them.
+testPrivateDNSResourceSchema in private_dns_test.go returns the REGISTERED
+resource's schema (checkpointsase_enhanced_network_private_dns), so these tests
+drive the declaration that actually ships rather than a copy of it.
 
   - @param d *schema.ResourceData - the resource data
 
@@ -624,4 +698,203 @@ func flattenDnsPolicy(p *perimeter81Sdk.DnsPolicy) []interface{} {
 		return []interface{}{}
 	}
 	return []interface{}{block}
+}
+
+/*
+privateDNSDiffReader is the part of *schema.ResourceDiff the shared plan-time
+validation below needs.
+
+An interface rather than the concrete type so that both enhanced private-DNS
+resources drive the same function from their own CustomizeDiff, and so a test can
+exercise the rules without assembling a diff. NewValueKnown is in it because it
+is the only way to tell "the operator set nothing" from "the operator set
+something Terraform cannot evaluate yet", and confusing those two refuses correct
+configuration -- see the count-key note in validatePrivateDNSDiff.
+*/
+type privateDNSDiffReader interface {
+	Get(key string) interface{}
+	NewValueKnown(key string) bool
+}
+
+/*
+validatePrivateDNSDiff enforces the two rules privateDNSSchema records as
+inexpressible in a schema. Both enhanced private-DNS resources call it; neither
+adds a rule of its own.
+
+RULE 1: servers must be non-empty WHEN enabled is true. swagger.yaml:4492 --
+"Private DNS servers. Required, and must contain at least one entry when enabled
+is true." This is NOT MinItems: 1, because servers may legally be empty when
+enabled is false, and API-FINDINGS.md 1.31 measured that exact body --
+{"enabled": false, "attributes": {"servers": [], "searchDomains": []}} -- as a
+202. MinItems: 1 would make the legal "off" body unwritable, which is the only
+supported way to turn private DNS off.
+
+RULE 2: servers, search_domains and both domains lists are uniqueItems
+(swagger.yaml:4488, :4495, :4600, :4625). helper/schema has no uniqueItems for a
+TypeList, and TypeSet is wrong here: API-FINDINGS.md 1.31 measured the write
+round-tripping byte-exactly with non-alphabetical order preserved, so a set would
+discard ordering the API demonstrably keeps. Plan time is therefore the only place
+uniqueness can be checked.
+
+SERVERS ARE COMPARED BY ADDRESS, NOT BY WHOLE ELEMENT, and that is a reading of
+evidence rather than of the spec. The spec says uniqueItems on an array of
+objects, which literally means whole-object uniqueness -- so two servers with the
+same address and different is_tls would pass. P8 (2026-08-26) points the other
+way: the request sent two servers with DIFFERENT ip values and got
+"attributes.All servers's elements must be unique" back alongside two "property ip
+should not exist" complaints. That message is class-validator's @ArrayUnique, and
+plain @ArrayUnique over two distinct object literals can never fire -- it only
+fires if an identifier function is projecting each element onto one value, and the
+one value both of those elements shared was an ABSENT address. So the server's
+uniqueness is on address. Comparing by address is therefore the narrower and the
+correct rule, it matches the description privateDNSSchema already ships ("Addresses
+must be unique"), and the configuration it refuses -- one address twice with
+different is_tls -- has no meaning to configure.
+
+WHY THE COUNT KEY IS CHECKED AS WELL AS THE PATH. Measured in
+resourceAccessPolicyCustomizeDiff and recorded there: for a list whose elements
+interpolate a resource created in the same apply, NewValueKnown(path) answers true
+while NewValueKnown(path + ".#") answers false. Asking only about the collection
+gets a confident "known" for a list that reads as empty, and Rule 1 would then
+refuse every configuration whose servers come from another resource -- the normal
+case, not an edge one. When either key is unknown these rules pass: a genuinely
+bad configuration still cannot converge and is caught on the next plan, whereas a
+false refusal breaks a correct one now.
+
+  - @param d privateDNSDiffReader - the diff (or anything that can answer for one)
+
+@return error - why the configuration cannot be applied, or nil
+*/
+func validatePrivateDNSDiff(d privateDNSDiffReader) error {
+	serversPath := privateDNSAttrAttributes + ".0." + privateDNSAttrServers
+
+	if d.NewValueKnown(privateDNSAttrEnabled) {
+		if enabled, _ := d.Get(privateDNSAttrEnabled).(bool); enabled {
+			servers, known := privateDNSListAt(d, serversPath)
+			if known && len(servers) == 0 {
+				return fmt.Errorf("%s = true requires at least one %s entry. The API refuses a "+
+					"write that enables private DNS with an empty servers array "+
+					"(swagger.yaml:4492: \"must contain at least one entry when enabled is "+
+					"true\"). This is not a schema minimum because %s MAY be empty when %s is "+
+					"false -- {\"enabled\": false, \"attributes\": {\"servers\": [], "+
+					"\"searchDomains\": []}} is the only supported way to turn private DNS off, "+
+					"and a minimum here would make it unwritable",
+					privateDNSAttrEnabled, serversPath, serversPath, privateDNSAttrEnabled)
+			}
+		}
+	}
+
+	if duplicate, found := privateDNSDuplicateServerAddress(d, serversPath); found {
+		return fmt.Errorf("%s lists the address %q more than once. The API refuses duplicate "+
+			"server addresses (P8, 2026-08-26: \"attributes.All servers's elements must be "+
+			"unique\"), and this cannot be a TypeSet -- the write round-trips byte-exactly with "+
+			"the order sent preserved (API-FINDINGS.md 1.31), so a set would discard ordering "+
+			"the API keeps. Remove the duplicate; %s is priority-ordered, not a set",
+			serversPath, duplicate, privateDNSAttrServers)
+	}
+
+	for _, path := range []string{
+		privateDNSAttrAttributes + ".0." + privateDNSAttrSearchDomains,
+		privateDNSAttrAttributes + ".0." + privateDNSAttrDNSPolicy + ".0." +
+			privateDNSAttrPublic + ".0." + privateDNSAttrDomains,
+		privateDNSAttrAttributes + ".0." + privateDNSAttrDNSPolicy + ".0." +
+			privateDNSAttrPrivate + ".0." + privateDNSAttrDomains,
+	} {
+		if duplicate, found := privateDNSDuplicateString(d, path); found {
+			return fmt.Errorf("%s lists %q more than once, and the API declares it uniqueItems. "+
+				"This cannot be a TypeSet: the write round-trips byte-exactly with the order "+
+				"sent preserved (API-FINDINGS.md 1.31), so a set would discard ordering the API "+
+				"keeps -- which is why the duplicate has to be refused here instead",
+				path, duplicate)
+		}
+	}
+
+	return nil
+}
+
+/*
+privateDNSListAt reads a nested list out of a diff, reporting whether its contents
+are knowable yet.
+
+Both keys are consulted -- the collection and its element count -- because they
+disagree for a list built from another resource's attributes. See
+validatePrivateDNSDiff.
+
+  - @param d privateDNSDiffReader - the diff
+  - @param path string - the attribute path, e.g. attributes.0.servers
+
+@return []interface{} - the elements, nil when nothing is knowable
+@return bool - whether the answer can be relied on
+*/
+func privateDNSListAt(d privateDNSDiffReader, path string) ([]interface{}, bool) {
+	if !d.NewValueKnown(path) || !d.NewValueKnown(path+".#") {
+		return nil, false
+	}
+	items, _ := d.Get(path).([]interface{})
+	return items, true
+}
+
+/*
+privateDNSDuplicateServerAddress finds the first server address that appears twice.
+
+  - @param d privateDNSDiffReader - the diff
+  - @param path string - the `servers` attribute path
+
+@return string - the repeated address
+@return bool - whether one was found
+*/
+func privateDNSDuplicateServerAddress(d privateDNSDiffReader, path string) (string, bool) {
+	items, known := privateDNSListAt(d, path)
+	if !known {
+		return "", false
+	}
+
+	seen := map[string]bool{}
+	for _, item := range items {
+		entry, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		address, _ := entry[privateDNSAttrAddress].(string)
+		// An empty address is not a duplicate to report: it is either not yet
+		// known or already refused as a missing Required argument, and naming ""
+		// twice would send the operator looking for a server they never wrote.
+		if address == "" {
+			continue
+		}
+		if seen[address] {
+			return address, true
+		}
+		seen[address] = true
+	}
+	return "", false
+}
+
+/*
+privateDNSDuplicateString finds the first repeated entry in a list of strings.
+
+  - @param d privateDNSDiffReader - the diff
+  - @param path string - the attribute path
+
+@return string - the repeated value
+@return bool - whether one was found
+*/
+func privateDNSDuplicateString(d privateDNSDiffReader, path string) (string, bool) {
+	items, known := privateDNSListAt(d, path)
+	if !known {
+		return "", false
+	}
+
+	seen := map[string]bool{}
+	for _, item := range items {
+		value, ok := item.(string)
+		if !ok || value == "" {
+			continue
+		}
+		if seen[value] {
+			return value, true
+		}
+		seen[value] = true
+	}
+	return "", false
 }

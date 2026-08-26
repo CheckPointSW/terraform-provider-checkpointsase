@@ -29,24 +29,25 @@ API-FINDINGS.md 1.28 and 1.31, not JSON authored here to fit the code.
 */
 
 /*
-testPrivateDNSResourceSchema is what Tasks 2 and 3 build: the shared schema plus
-the resource's own address.
+testPrivateDNSResourceSchema is the shared schema as a REGISTERED resource
+actually declares it: privateDNSSchema plus that resource's own address.
 
-`network_id` is added here rather than in privateDNSSchema because it is the only
-part that genuinely differs between the two resources -- the region resource adds
-`region_id` alongside it. Everything else comes from privateDNSSchema, so this
-test drives the same declaration the resources will, and no second copy of it
-exists to drift.
+It returns checkpointsase_enhanced_network_private_dns's real schema rather than
+assembling an equivalent one. Task 1 shipped this as a hand-built copy --
+privateDNSSchema() with a locally written `network_id` -- because no resource
+existed yet to take it from. Now that one does, taking it removes the last
+restatement of a schema whose entire reason for being shared is that a second
+copy can drift from the expander silently. If a future resource adds an attribute
+that expandCustomDnsUpdate never reads, these tests are driving the declaration
+that is actually registered when they catch it.
+
+The region resource (Task 3) adds `region_id` on top of the same base. Nothing
+below depends on which of the two is used -- every raw config here sets
+`network_id`, and the extra attribute a region schema would carry is simply left
+unset.
 */
 func testPrivateDNSResourceSchema() map[string]*schema.Schema {
-	s := privateDNSSchema()
-	s["network_id"] = &schema.Schema{
-		Type:        schema.TypeString,
-		Required:    true,
-		ForceNew:    true,
-		Description: "The network this private DNS configuration belongs to.",
-	}
-	return s
+	return resourceEnhancedNetworkPrivateDNS().Schema
 }
 
 // privateDNSSchemaPaths is every attribute privateDNSSchema declares, written out
