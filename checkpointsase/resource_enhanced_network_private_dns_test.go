@@ -67,8 +67,9 @@ The four bodies this resource's Read has to cope with, all measured 2026-08-26.
     {"message":"Region with ID <id> not found.", ...} -- naming the object and
     echoing the id (API-FINDINGS.md 1.37, 2026-08-26).
 
-    All three are 404 with messageCode NOT_FOUND, so nothing in the provider
-    behaves differently and every test that drives this constant is unaffected --
+    All FOUR are 404 with messageCode NOT_FOUND (API-FINDINGS.md 1.37 tabulates
+    them), so nothing in the provider behaves differently and every test that
+    drives this constant is unaffected --
     they assert on the status classification, not on the text. But a test that
     DID assert on the text would have been wrong to reuse this constant across
     families, which is why the standard data sources declare their own

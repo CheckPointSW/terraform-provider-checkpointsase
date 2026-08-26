@@ -119,8 +119,9 @@ privateDNSNoOpDeleteNote). Only one Terraform resource in one configuration
 should own a given network's private DNS; a second would fight the first on every
 apply.
 
-THE WRITE IS ASYNCHRONOUS. The PUT declares only a 202 (swagger.yaml:633), so the
-write has NOT happened when the call returns; putPrivateDNSAndWait polls the
+THE WRITE IS ASYNCHRONOUS. The PUT declares no success response but 202 -- there is
+no 200 in its response map (swagger.yaml:633) -- so the write has NOT happened when
+the call returns; putPrivateDNSAndWait polls the
 operation to completion before this resource reads anything back. Reading
 immediately would store pre-write values as if the apply had succeeded, which is
 the failure putGranularFirewallPolicy's comment records shipping three times.

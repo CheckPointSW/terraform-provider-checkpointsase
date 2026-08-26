@@ -12,14 +12,14 @@ import (
 )
 
 /*
-dataSourceStandardNetworks Query all Standard Networks via the /v2.3/networks/standard endpoint.
+dataSourceStandardNetworks Query all Standard Networks via the /v3/networks/standard endpoint.
 This is an explicit alias that makes it clear the data source returns standard networks only.
 
 @return &schema.Resource
 */
 func dataSourceStandardNetworks() *schema.Resource {
 	return &schema.Resource{
-		Description: "List all standard networks in Check Point SASE. Uses the /v2.3/networks/standard endpoint.",
+		Description: "List all standard networks in Check Point SASE. Uses the /v3/networks/standard endpoint.",
 		ReadContext: dataSourceStandardNetworksRead,
 		Schema: map[string]*schema.Schema{
 			"networks": {

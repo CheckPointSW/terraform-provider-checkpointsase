@@ -3,12 +3,12 @@
 page_title: "checkpointsase_enhanced_static_tunnel Resource - checkpointsase"
 subcategory: ""
 description: |-
-  Manages a static IPsec tunnel attached to a region of a checkpointsase_enhanced_network. A static tunnel terminates at a single remote endpoint identified by remote_public_ip (PSK) or via certificate authentication (auth_type = "cert" + customer_root_ca). The tunnel's route is part of the tunnel: Harmony SASE creates it with the tunnel, and its subnets are this resource's own remote_gateway_subnets, so set the routed subnets there. The checkpointsase_enhanced_route_table resource is rejected during terraform plan and cannot attach a route here; read the resulting route with the checkpointsase_enhanced_route_table data source. network_id and region_id are immutable — changing either forces resource replacement.
+  Manages a static IPsec tunnel attached to a region of a checkpointsase_enhanced_network. A static tunnel terminates at a single remote endpoint identified by remote_public_ip (PSK) or via certificate authentication (auth_type = "cert" + customer_root_ca). The tunnel's route is part of the tunnel: Harmony SASE creates it with the tunnel, and its subnets are this resource's own remote_gateway_subnets, so set the routed subnets there — but never as 0.0.0.0/0, which permanently blocks every subsequent update of the tunnel (see that attribute). The checkpointsase_enhanced_route_table resource is rejected during terraform plan and cannot attach a route here; read the resulting route with the checkpointsase_enhanced_route_table data source. network_id and region_id are immutable — changing either forces resource replacement.
 ---
 
 # checkpointsase_enhanced_static_tunnel (Resource)
 
-Manages a static IPsec tunnel attached to a region of a `checkpointsase_enhanced_network`. A static tunnel terminates at a single remote endpoint identified by `remote_public_ip` (PSK) or via certificate authentication (`auth_type = "cert"` + `customer_root_ca`). The tunnel's route is part of the tunnel: Harmony SASE creates it with the tunnel, and its subnets are this resource's own `remote_gateway_subnets`, so set the routed subnets there. The `checkpointsase_enhanced_route_table` **resource** is rejected during `terraform plan` and cannot attach a route here; read the resulting route with the `checkpointsase_enhanced_route_table` **data source**. **`network_id` and `region_id` are immutable** — changing either forces resource replacement.
+Manages a static IPsec tunnel attached to a region of a `checkpointsase_enhanced_network`. A static tunnel terminates at a single remote endpoint identified by `remote_public_ip` (PSK) or via certificate authentication (`auth_type = "cert"` + `customer_root_ca`). The tunnel's route is part of the tunnel: Harmony SASE creates it with the tunnel, and its subnets are this resource's own `remote_gateway_subnets`, so set the routed subnets there — but **never as `0.0.0.0/0`**, which permanently blocks every subsequent update of the tunnel (see that attribute). The `checkpointsase_enhanced_route_table` **resource** is rejected during `terraform plan` and cannot attach a route here; read the resulting route with the `checkpointsase_enhanced_route_table` **data source**. **`network_id` and `region_id` are immutable** — changing either forces resource replacement.
 
 ## Example Usage
 
@@ -20,6 +20,15 @@ Manages a static IPsec tunnel attached to a region of a `checkpointsase_enhanced
 # (letters/digits/`.`/`_`, 8-64 chars — no hyphens).
 # `p81_gateway_subnets` must equal the parent enhanced network's own subnet
 # (or `0.0.0.0/0` for a default route); arbitrary CIDRs are rejected.
+#
+# `remote_gateway_subnets` IS THE OPPOSITE CASE AND THE TWO ARE EASY TO CONFUSE.
+# Never write `0.0.0.0/0` there. A static tunnel created with
+# `remote_gateway_subnets = ["0.0.0.0/0"]` applies cleanly and can then NEVER be
+# updated -- every later change comes back
+#   404 {"message":"Remote gateway subnets not found"}
+# even for a change that touches neither subnet list. Measured 2026-08-17
+# (API-FINDINGS.md 1.2); the same tunnel with a real CIDR updates fine. The only
+# way out is destroy and re-create.
 resource "checkpointsase_enhanced_static_tunnel" "example" {
   network_id             = "ZwAeo5wqiF"
   region_id              = "K7tEfRm9vQ"
@@ -67,7 +76,7 @@ resource "checkpointsase_enhanced_static_tunnel" "example" {
 - `phase1` (Block List, Min: 1, Max: 1) Phase 1 (IKE) IPSec configuration. (see [below for nested schema](#nestedblock--phase1))
 - `phase2` (Block List, Min: 1, Max: 1) Phase 2 (ESP/IPSec) configuration. (see [below for nested schema](#nestedblock--phase2))
 - `region_id` (String) The target region ID within the enhanced network.
-- `remote_gateway_subnets` (List of String) List of remote gateway subnet CIDR blocks.
+- `remote_gateway_subnets` (List of String) List of remote gateway subnet CIDR blocks. **Do not use the default route `0.0.0.0/0` here.** A static tunnel created with `remote_gateway_subnets = ["0.0.0.0/0"]` can be created and read but can NEVER be updated: every later `PUT` returns `404 Remote gateway subnets not found` — including a change that does not touch either subnet list — so the tunnel is stuck at its created configuration for the rest of its life and the only way out is to destroy and re-create it. Measured 2026-08-17 (`API-FINDINGS.md` §1.2) on three tunnels differing only in this field; the same update returns `202` when the value is a real CIDR. Note this is the OPPOSITE of `p81_gateway_subnets`, where `0.0.0.0/0` is a legal and recommended value. The provider does not refuse `0.0.0.0/0` at plan time, because the API accepts it at create and a validator here would refuse a configuration the server allows.
 - `tunnel_name` (String) The name of the static IPSec tunnel. Must be 15 characters or fewer.
 
 ### Optional

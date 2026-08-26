@@ -33,9 +33,18 @@ EVERY attribute this file exposes is Computed.
 
 WHAT IS SHARED AND WHAT IS NOT. The attribute NAMES are shared -- every one of
 them is a privateDNSAttr* constant from private_dns.go (plus privateDNSAttrRegionID
-from resource_enhanced_region_private_dns.go), because a key spelled differently
-in a flattener than in a schema surfaces a zero value with no error, no diff and
-nothing in the logs. So is flattenCustomDnsServers. What is NOT shared is
+from resource_enhanced_region_private_dns.go). BE PRECISE ABOUT WHY, because an
+earlier version of this paragraph borrowed the expander's argument and this file
+has no expander. A key spelled differently in a FLATTENER than in a schema does
+NOT surface a zero value silently: d.Set rejects an undeclared nested key outright
+with `Invalid address to set: [...]`, and appendErrorDiags surfaces it, so the
+mistake fails loudly at Read. Measured 2026-08-26 by mutating
+flattenDnsPolicyResponsePrivate to emit "dns_mode" (see private_dns.go). The
+silent-zero-value failure mode belongs to d.Get and therefore to the EXPAND
+direction, which this GET-only family does not have. One spelling per package is
+still worth having here -- it turns a runtime diagnostic into a compile error --
+but that is the whole of the argument on this file. So is flattenCustomDnsServers
+shared. What is NOT shared is
 flattenCustomDnsAttributes, and not by choice: the standard family returns
 CustomDnsAttributesResponse where the enhanced family returns CustomDnsAttributes,
 and Go will not let one function take both. See flattenCustomDnsAttributesResponse

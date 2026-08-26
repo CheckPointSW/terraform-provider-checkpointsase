@@ -210,8 +210,9 @@ means stop tracking (D9, see splitTunnelingNoOpDeleteNote). Only one Terraform
 resource in one configuration should own a given network's split tunnelling; a
 second would fight the first on every apply.
 
-THE WRITE IS ASYNCHRONOUS. The PUT declares only a 202 (swagger.yaml:1289), so
-the write has NOT happened when the call returns; putSplitTunnelingAndWait polls
+THE WRITE IS ASYNCHRONOUS. The PUT declares no success response but 202 -- there
+is no 200 in its response map (swagger.yaml:1289) -- so the write has NOT happened
+when the call returns; putSplitTunnelingAndWait polls
 the operation to completion before this resource reads anything back.
 
 @return &schema.Resource

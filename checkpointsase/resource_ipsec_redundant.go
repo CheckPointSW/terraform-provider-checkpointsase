@@ -25,9 +25,20 @@ func resourceIpsecRedundant() *schema.Resource {
 			"distinct remote endpoints for failover; `shared_settings` (gateway subnets) " +
 			"and `advanced_settings` (IKE/IPSec parameters, phase1/phase2 proposals) " +
 			"apply to both tunnels uniformly. " +
-			"**This resource has no in-place update path** — every attribute change " +
-			"forces full replacement (destroy + recreate). Updating in place will be " +
-			"supported in a future version.",
+			"**This resource has no in-place update path.** `region_id`, `network_id` and " +
+			"`tunnel_name` are `ForceNew`, so changing one of those plans a full " +
+			"replacement (destroy + recreate). **Changing anything else fails the apply " +
+			"instead**, with `ipsec-redundant tunnel update is not available yet` — this " +
+			"resource's Update handler makes no API call at all. That covers " +
+			"`last_updated` and, more importantly, every field nested inside " +
+			"`tunnel1`, `tunnel2`, `shared_settings` and `advanced_settings`: those four " +
+			"blocks are marked `ForceNew`, but the SDK does not propagate `ForceNew` from " +
+			"a list into the schema of its element object, so editing a passphrase or an " +
+			"IKE lifetime produces an in-place plan that then errors. **To change any of " +
+			"them, taint or replace the resource explicitly** (`terraform apply " +
+			"-replace=...`). A `PUT` for this tunnel type does exist in the API and is " +
+			"simply not wired up here. Updating in place will be supported in a future " +
+			"version.",
 		CreateContext: resourceIpsecRedundantCreate,
 		ReadContext:   resourceIpsecRedundantRead,
 		UpdateContext: resourceIpsecRedundantUpdate,
@@ -605,7 +616,19 @@ resourceIpsecRedundantUpdate Update a Ipsec Redundant Tunnel
 */
 func resourceIpsecRedundantUpdate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
-	return appendErrorDiags(diags, "Unable to delete ipsec-redundant tunnel", fmt.Errorf("ipsec-redundant tunnel update is not available yet"))
+	// THIS IS REACHABLE. An earlier reading called it dead code on the grounds
+	// that every top-level attribute is ForceNew, and that reading was wrong
+	// twice over. `last_updated` is Optional+Computed and NOT ForceNew; and
+	// helper/schema's diffList propagates the parent's ForceNew only for
+	// `Elem: *Schema` and for the synthetic `<key>.#` count -- for
+	// `Elem: *Resource` it diffs each nested field against that field's OWN
+	// schema, none of which sets ForceNew. Measured against
+	// terraform-plugin-sdk/v2 v2.26.1 on 2026-08-26: changing
+	// tunnel1.0.passphrase on a ForceNew TypeList yields RequiresNew=false, so
+	// Terraform plans an update and lands here. The summary said "Unable to
+	// delete" until then -- a copy-paste from Delete that told an operator
+	// changing a passphrase that the provider could not destroy their tunnel.
+	return appendErrorDiags(diags, "Unable to update ipsec-redundant tunnel", fmt.Errorf("ipsec-redundant tunnel update is not available yet"))
 }
 
 /*

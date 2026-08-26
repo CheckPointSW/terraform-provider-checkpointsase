@@ -27,7 +27,9 @@ func resourceEnhancedStaticTunnel() *schema.Resource {
 			"authentication (`auth_type = \"cert\"` + `customer_root_ca`). " +
 			"The tunnel's route is part of the tunnel: Harmony SASE creates it with the " +
 			"tunnel, and its subnets are this resource's own `remote_gateway_subnets`, so " +
-			"set the routed subnets there. The `checkpointsase_enhanced_route_table` " +
+			"set the routed subnets there — but **never as `0.0.0.0/0`**, which permanently " +
+			"blocks every subsequent update of the tunnel (see that attribute). " +
+			"The `checkpointsase_enhanced_route_table` " +
 			"**resource** is rejected during `terraform plan` and cannot attach a route " +
 			"here; read the resulting route with the " +
 			"`checkpointsase_enhanced_route_table` **data source**. " +
@@ -164,9 +166,26 @@ func resourceEnhancedStaticTunnel() *schema.Resource {
 				},
 			},
 			"remote_gateway_subnets": {
-				Type:        schema.TypeList,
-				Required:    true,
-				Description: "List of remote gateway subnet CIDR blocks.",
+				Type:     schema.TypeList,
+				Required: true,
+				Description: "List of remote gateway subnet CIDR blocks. " +
+					"**Do not use the default route `0.0.0.0/0` here.** A static tunnel " +
+					"created with `remote_gateway_subnets = [\"0.0.0.0/0\"]` can be created " +
+					"and read but can NEVER be updated: every later `PUT` returns " +
+					"`404 Remote gateway subnets not found` — including a change that does " +
+					"not touch either subnet list — so the tunnel is stuck at its created " +
+					"configuration for the rest of its life and the only way out is to " +
+					"destroy and re-create it. Measured 2026-08-17 " +
+					"(`API-FINDINGS.md` §1.2) on three tunnels differing only in this " +
+					"field; the same update returns `202` when the value is a real CIDR. " +
+					"Note this is the OPPOSITE of `p81_gateway_subnets`, where `0.0.0.0/0` " +
+					"is a legal and recommended value. The provider does not refuse " +
+					"`0.0.0.0/0` at plan time, because the API accepts it at create and a " +
+					"validator here would refuse a configuration the server allows.",
+				// NOT validated with validation.IsCIDR, unlike p81_gateway_subnets:
+				// the 0.0.0.0/0 trap above is a well-formed CIDR, so a format check
+				// would not catch it, and refusing it outright would refuse a create
+				// the server accepts. Documented rather than enforced.
 				Elem: &schema.Schema{
 					Type: schema.TypeString,
 				},

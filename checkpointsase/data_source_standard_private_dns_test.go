@@ -51,8 +51,9 @@ CAPTURE-DERIVED (one of them):
     IT IS NOT THE SAME BODY AS THE ENHANCED PATH'S, and the difference is why
     this constant exists instead of a reference to measuredPrivateDNSNetworkGone
     in resource_enhanced_network_private_dns_test.go. That constant's comment
-    says it was "verified by probe P10 on all three Phase 5 paths"; the STATUS
-    was, the BODY was not. P10 captured three different spellings:
+    once said it was "verified by probe P10 on all three Phase 5 paths"; the
+    STATUS was, the BODY was not, and that comment now says so. P10 captured
+    three different spellings:
 
     enhanced privateDNS   {"message":"Network doesn't exist.", ...}
     standard privateDNS   {"message":"network doesnt exists", ...}
@@ -63,8 +64,10 @@ CAPTURE-DERIVED (one of them):
     {"message":"Region with ID <id> not found.", ...} -- naming the object and
     echoing the id (API-FINDINGS.md 1.37, 2026-08-26).
 
-    All three are 404 with messageCode NOT_FOUND, so nothing in the provider
-    behaves differently -- but a test asserting on the text would.
+    All FOUR are 404 with messageCode NOT_FOUND (API-FINDINGS.md 1.37 tabulates
+    them), so nothing in the provider behaves differently -- but a test asserting
+    on the text would. The count is four, not three: anything still saying three
+    predates Task 6's fix round.
 
   - measuredStandardNetworkPrivateDNSConfigured is the standard NETWORK read of a
     network configured OUT OF BAND FROM THE CONSOLE, measured 2026-08-26 and

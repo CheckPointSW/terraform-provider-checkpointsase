@@ -63,7 +63,8 @@ It is the sibling of checkpointsase_enhanced_network_private_dns and everything
 that file's header says applies here: it is a SETTING on an object that already
 exists rather than an object, so "create" is adopt-and-write, "update" is the
 identical call, "destroy" makes no request (D9), and the write is ASYNCHRONOUS --
-the PUT declares only a 202 (swagger.yaml:699), so the write has not happened when
+the PUT declares no success response but 202 -- there is no 200 in its response map
+(swagger.yaml:699) -- so the write has not happened when
 the call returns. The body, the schema, the expander, the flattener, the diff
 rules and the async wait are all in private_dns.go, shared verbatim; this file is
 this resource's ADDRESS and its CRUD wiring and nothing else.
@@ -84,8 +85,13 @@ region. So the "third disabled read shape" is a property of REGIONS and not of
 the standard family: both region endpoints return it and neither NETWORK endpoint
 does. `attributes` being Optional AND Computed is what makes this converge, and
 it is not optional-with-a-shrug -- see resourceEnhancedRegionPrivateDNSRead.
-The region-level 404 was measured in the same run and is a THIRD spelling
-("Region with ID <id> not found.", which echoes the id) -- see the Read comment.
+The region-level 404 was measured in the same run and is a DISTINCT spelling
+("Region with ID <id> not found.", which echoes the id) -- one of the FOUR that
+API-FINDINGS.md 1.37 now inventories, not one of three. It was the third
+DISCOVERED; the standard network privateDNS spelling ("network doesnt exists",
+with the trailing s) was added to that table afterwards. Every one is 404 with
+messageCode NOT_FOUND, so nothing that classifies on status is affected -- which
+is everything in this provider. See the Read comment.
 
 WHAT IS STILL UNMEASURED ON THIS PATH, and it is most of the write half: the 422
 for a body with no `attributes`, the 400 for a null array, the byte-exact round
