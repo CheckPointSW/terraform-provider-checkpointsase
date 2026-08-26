@@ -78,10 +78,12 @@ WHAT EACH STEP IS FOR. THE ORDER IS LOAD-BEARING for steps 1 and 2.
     the `cidr` step 1 wrote, because those three lists are a full replacement.
  4. An empty re-plan over the via_tunnel shape.
  5. Back to `out_of_tunnel` with TWO cidr entries, asserted BY INDEX in the order
-    written. Nothing has been measured about whether this endpoint preserves the
-    order of these arrays, which is exactly why the assertion is here: it is a
-    TypeList, and if the server sorts or deduplicates then this is where that
-    surfaces as a diff rather than in a customer's plan.
+    written. That assertion is now backed by a measurement rather than by caution:
+    API-FINDINGS.md 1.31 sent three cidr entries deliberately non-ascending and got
+    them back in the order sent, so `cidr` is known to preserve order on an
+    ENHANCED network. This step is the STANDARD-family half of the same question,
+    which that probe did not cover -- so it is still the place a sorting or
+    deduplicating server surfaces, rather than a customer's plan.
  6. An empty re-plan over that shape.
  7. SPT-I01: import by network id, verified against the state the apply produced.
     Both sides come from the same Read, so any difference is an importer defect.
@@ -391,11 +393,18 @@ resource "checkpointsase_split_tunneling" "spt" {
 testAccSplitTunnelingConfigTwoDestinations writes two destinations, and their ORDER
 is the point.
 
-Nothing has been measured about whether this endpoint preserves the order of the
-three exceptData arrays. That is why they are TypeList rather than TypeSet -- a set
-would discard an ordering nobody has shown the server discards -- and why step 5
-asserts both entries by index. If the API sorts or deduplicates them, this is the
-step that fails, and the answer is a finding rather than a code change.
+MEASURED, AND NARROWLY. API-FINDINGS.md 1.31 sent three cidr entries in
+deliberately non-ascending order -- "10.80.0.0/16", "10.10.0.0/16", "10.50.0.0/16"
+-- and read them back unchanged, so a sorting server would have put 10.80 last and
+did not. That settles `cidr` on an ENHANCED network and nothing else: the other two
+exceptData arrays were sent EMPTY in that probe, and the STANDARD family -- which
+is what this test builds -- was not covered at all.
+
+So the index assertions in step 5 do two jobs at once. For `cidr` they are a
+regression check on behaviour that has been measured. For the standard family they
+are still the open question, and if the API sorts or deduplicates here, this is the
+step that fails and the answer is a finding rather than a code change. TypeList is
+right under either outcome, which is why it did not wait for the probe.
 */
 func testAccSplitTunnelingConfigTwoDestinations() string {
 	return testAccSplitTunnelingNetwork() + fmt.Sprintf(`

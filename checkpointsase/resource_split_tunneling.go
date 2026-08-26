@@ -303,16 +303,34 @@ EVERY LIMIT AND EVERY ABSENCE OF ONE IS SOURCED:
 
   - defaultTunnelingMode and exceptData are both in SplitTunnelingBase's required
     list (swagger.yaml:7120-7122), so both are Required here.
+
   - cidr, addressObjectIds and updatableObjectIds carry NO minItems, NO maxItems
     and NO uniqueItems (swagger.yaml:7127-7147). Each carries `default: []`. So
     no MaxItems is declared, MinItems stays 0, and TypeList is right -- there is
-    no uniqueness rule to make a set worth its cost, and nothing has been measured
-    about whether the server preserves order.
+    no uniqueness rule to make a set worth its cost.
+
+  - ORDER IS PRESERVED, AND THAT IS NOW MEASURED RATHER THAN ASSUMED. These
+    shipped as TypeList while nothing had been measured about ordering, on the
+    reasoning that a set discards an ordering nobody has shown the server
+    discards. API-FINDINGS.md 1.31 has since settled it: three cidr entries sent
+    deliberately non-ascending -- "10.80.0.0/16", "10.10.0.0/16", "10.50.0.0/16"
+    -- came back in exactly that order, and a sorting server would have moved
+    10.80 to the end.
+
+    BE PRECISE ABOUT HOW FAR ONE PROBE REACHES. It measured `cidr`, on ONE
+    network, of the ENHANCED family. addressObjectIds and updatableObjectIds were
+    sent EMPTY in that probe, so their ordering is still unmeasured, and so is the
+    whole question on the STANDARD family. TypeList is right for all three either
+    way -- it is the conservative choice under both outcomes -- but only the first
+    of them has evidence behind it, and a comment that generalised this to "the
+    three arrays" would be claiming two measurements that do not exist.
+
   - MEASURED 2026-08-26 (API-FINDINGS.md 1.31): all three arrays are REQUIRED ON
     THE WIRE even when empty, `default: []` notwithstanding. Omitting any one
     returns a 400 whose data.errors names all three. They are Optional in HCL and
     always sent as [] by expandSplitTunneling; see there for why that is not a
     contradiction.
+
   - cidr's items carry an IPv4 CIDR pattern (swagger.yaml:7131). validation.IsCIDR
     is WIDER than that pattern -- it accepts IPv6 too -- which is the safe
     direction: the provider never refuses something the server accepts, and a

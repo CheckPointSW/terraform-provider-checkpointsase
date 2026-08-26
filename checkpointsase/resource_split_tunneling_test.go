@@ -595,10 +595,14 @@ func TestExpandSplitTunnelingSendsTheModeAndEveryDestination(t *testing.T) {
 	if decoded.DefaultTunnelingMode != "out_of_tunnel" {
 		t.Errorf("defaultTunnelingMode = %q, want %q", decoded.DefaultTunnelingMode, "out_of_tunnel")
 	}
-	// Order is asserted as sent. Nothing has been measured about whether this
-	// endpoint preserves it, which is why the schema uses TypeList rather than
-	// TypeSet -- a set would discard an ordering nobody has shown the server
-	// discards.
+	// Order is asserted as sent, and for cidr that is now backed by a measurement
+	// rather than by caution: API-FINDINGS.md 1.31 sent three cidr entries
+	// non-ascending and read them back in the order sent, on an ENHANCED network.
+	// Only cidr was exercised -- the other two arrays were empty in that probe and
+	// the standard family was not covered -- so this assertion is evidence-backed
+	// for cidr and conservative for the rest. TypeSet would be wrong under either
+	// reading: a set discards an ordering the server is now known to keep on at
+	// least one of these arrays.
 	if got := decoded.ExceptData.GetCidr(); len(got) != 2 ||
 		got[0] != "10.99.0.0/16" || got[1] != "10.98.0.0/16" {
 		t.Errorf("exceptData.cidr = %v, want the two CIDRs in the order written", got)
