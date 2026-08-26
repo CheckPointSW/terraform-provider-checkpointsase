@@ -226,6 +226,16 @@ func testAccCheckStandardNetworkPrivateDNSIDIsDerived(address string) resource.T
 		if networkId == "" {
 			return fmt.Errorf("%s holds no network_id, so its id cannot be checked", address)
 		}
+		// COMPUTED WITH THE PRODUCTION HELPER, AND THAT LIMITS WHAT THIS PROVES.
+		// The id is a SHA-256 digest of length-prefixed arguments, so there is no
+		// independent literal to compare against -- rebuilding the digest by hand
+		// here would just be a second copy of the same function, and hardcoding a
+		// hex string would pin the tenant's ids rather than the derivation. So this
+		// row catches an id that is CONSTANT, EMPTY or built from the wrong
+		// attribute; it CANNOT catch a change to the digest itself. The derivation
+		// is pinned offline instead, by
+		// TestStandardPrivateDNSIdsAreDerivedFromTheArguments, which is where a
+		// digest change shows up.
 		if want := standardNetworkPrivateDNSID(networkId); rs.Primary.ID != want {
 			return fmt.Errorf("%s has id %q, want %q — the id must derive from network_id, "+
 				"not be a constant and not be a timestamp", address, rs.Primary.ID, want)
@@ -246,6 +256,8 @@ func testAccCheckStandardRegionPrivateDNSIDIsDerived(address string) resource.Te
 			return fmt.Errorf("%s holds network_id=%q region_id=%q; both are needed to rebuild "+
 				"its id", address, networkId, regionId)
 		}
+		// Same limit as the network check above: digest in, digest out, so this
+		// catches a constant or a wrong-attribute id and not a digest change.
 		if want := standardRegionPrivateDNSID(networkId, regionId); rs.Primary.ID != want {
 			return fmt.Errorf("%s has id %q, want %q — the id must derive from BOTH arguments, "+
 				"so that two regions of one network do not share an identity",

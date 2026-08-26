@@ -115,6 +115,13 @@ They do NOT cover, and these therefore remain spec-derived on this family:
     TypeList decision rests on. Its values come from the ENHANCED captures
     (API-FINDINGS.md 1.31, 1.34) so they are realistic; the SHAPE is
     swagger.yaml:4419/:4409/:4632.
+
+    ITS private.domains WAS WIDENED FROM ONE ENTRY TO TWO, DESCENDING, on
+    2026-08-26. Being spec-derived rather than captured is what makes that legal:
+    no measurement is being edited. With one entry the ordering assertion could
+    not fail -- sorting additionalPropertyStrings left the whole suite green --
+    and private.domains is read out of AdditionalProperties rather than off a
+    typed field, so it is the one list whose order passes through a map lookup.
 */
 const (
 	measuredStandardPrivateDNSUnconfigured = `{"enabled":false}`
@@ -138,7 +145,7 @@ const (
 		`"dnsPolicy":{` +
 		`"public":{"domains":["pub-b.example.com","pub-a.example.com"]},` +
 		`"private":{"mode":"matchPattern","publicFallback":false,` +
-		`"domains":["priv.example.com"],"forwardDNSUpdate":true}}}}`
+		`"domains":["priv-b.example.com","priv-a.example.com"],"forwardDNSUpdate":true}}}}`
 )
 
 /*
@@ -464,8 +471,16 @@ func TestStandardPrivateDNSReadStoresTheSpecShape(t *testing.T) {
 				// The three D3 fields, read out of AdditionalProperties.
 				{"attributes.0.dns_policy.0.private.0.mode", "matchPattern"},
 				{"attributes.0.dns_policy.0.private.0.public_fallback", false},
-				{"attributes.0.dns_policy.0.private.0.domains.#", 1},
-				{"attributes.0.dns_policy.0.private.0.domains.0", "priv.example.com"},
+				// TWO entries, DESCENDING, both indices asserted. One entry
+				// could not tell preserved from sorted from reversed: sorting
+				// additionalPropertyStrings left the whole offline suite green
+				// (mutation-proven 2026-08-26) because this list held a single
+				// element. private.domains comes out of AdditionalProperties, so
+				// it is the one list here whose order survives a MAP lookup on
+				// the way to state -- which is exactly why it is worth pinning.
+				{"attributes.0.dns_policy.0.private.0.domains.#", 2},
+				{"attributes.0.dns_policy.0.private.0.domains.0", "priv-b.example.com"},
+				{"attributes.0.dns_policy.0.private.0.domains.1", "priv-a.example.com"},
 			} {
 				assertStandardPrivateDNSAttr(t, d, want.path, want.val)
 			}

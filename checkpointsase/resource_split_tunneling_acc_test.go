@@ -25,9 +25,21 @@ summary as 21 skipped acceptance tests and as zero offline coverage.
 // acceptance test's network -- but they are deliberately NOT 10.99.0.0/16, which
 // is what the leftover probe network's configuration holds (LEFTOVERS.md L33), so
 // that nothing here can be confused with that state while reading a failure.
+//
+// THEY ARE DESCENDING, AND THAT IS THE WHOLE POINT OF THE PAIR. 10.97.1.0/24 is
+// written first and 10.97.0.0/24 second. Until 2026-08-26 the pair was ascending,
+// and step 5's doc comment claimed it was "where a server that sorts or
+// deduplicates would show" -- which was false for SORTING: an ascending pair
+// asserted by index passes identically against a sorting server. With the pair
+// descending, a server that sorts `cidr` moves index 0 and step 5 goes red, which
+// is what that comment always meant to say.
+//
+// Being exception DESTINATIONS rather than subnets is what makes this reordering
+// free: no network is created from these values, so there is no collision risk
+// and no in-subnet constraint (API-FINDINGS.md 1.38) to worry about.
 const (
-	testAccSplitTunnelingCidr      = "10.97.0.0/24"
-	testAccSplitTunnelingCidrExtra = "10.97.1.0/24"
+	testAccSplitTunnelingCidr      = "10.97.1.0/24"
+	testAccSplitTunnelingCidrExtra = "10.97.0.0/24"
 )
 
 var randNameSplitTunneling = randStringBytesRmndr()
@@ -173,8 +185,10 @@ func TestAccSplitTunneling_basic(t *testing.T) {
 				Config:   testAccSplitTunnelingConfigViaTunnel(),
 				PlanOnly: true,
 			},
-			// 5. Two destinations, asserted BY INDEX. See the doc comment: this
-			//    is where a server that sorts or deduplicates would show.
+			// 5. Two destinations, asserted BY INDEX, and the pair is DESCENDING
+			//    (see the const block) so this genuinely is where a server that
+			//    sorts, reverses or deduplicates `cidr` shows up. An ascending
+			//    pair could only have caught deduplication.
 			{
 				Config: testAccSplitTunnelingConfigTwoDestinations(),
 				Check: resource.ComposeTestCheckFunc(
@@ -400,11 +414,24 @@ did not. That settles `cidr` on an ENHANCED network and nothing else: the other 
 exceptData arrays were sent EMPTY in that probe, and the STANDARD family -- which
 is what this test builds -- was not covered at all.
 
+EXTENDED 2026-08-26: the standard family IS now covered. Probe p16 sent
+["10.88.0.0/16","10.11.0.0/16","10.44.0.0/16"] non-ascending on a STANDARD network
+and read them back in order, so the sentence above that says the standard family
+"was not covered at all" describes the state before that probe. What remains
+uncovered on either family is `addressObjectIds` and `updatableObjectIds`, which
+were sent EMPTY in every probe.
+
 So the index assertions in step 5 do two jobs at once. For `cidr` they are a
-regression check on behaviour that has been measured. For the standard family they
-are still the open question, and if the API sorts or deduplicates here, this is the
-step that fails and the answer is a finding rather than a code change. TypeList is
-right under either outcome, which is why it did not wait for the probe.
+regression check on behaviour that has been measured on both families. For a
+future server change they are a tripwire, and if the API sorts or deduplicates
+here this is the step that fails and the answer is a finding rather than a code
+change. TypeList is right under either outcome, which is why it did not wait for
+the probe.
+
+THAT TRIPWIRE CLAIM ONLY BECAME TRUE WHEN THE PAIR WAS MADE DESCENDING. While the
+two constants were ascending, a sorting server produced exactly the order this
+step asserts, so the step could catch deduplication but NOT sorting -- the defect
+its own comment named first. See the const block.
 */
 func testAccSplitTunnelingConfigTwoDestinations() string {
 	return testAccSplitTunnelingNetwork() + fmt.Sprintf(`

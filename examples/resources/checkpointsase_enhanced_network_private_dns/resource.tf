@@ -46,12 +46,23 @@ resource "checkpointsase_enhanced_network_private_dns" "example" {
     # At most four servers, and at least one whenever `enabled = true`. Addresses
     # must be unique; the provider refuses a duplicate during `plan` rather than
     # letting the apply fail.
+    #
+    # THESE ADDRESSES ARE DELIBERATELY NOT INSIDE THE NETWORK'S OWN SUBNET
+    # (10.120.0.0/22 above), and "tidying" them to match it -- 10.120.0.53, which
+    # reads as neat -- is what this example did until it was corrected. A private
+    # DNS server MAY NOT sit inside its own network's subnet: the API refuses it
+    # with 400 {"message":"Invalid IP address"} for an address that is perfectly
+    # well-formed (API-FINDINGS.md 1.38). Neither `terraform validate` nor `plan`
+    # can catch it, because checking it means reading a different resource's
+    # subnet -- so the network is CREATED first and the apply then fails half
+    # done. Note what the error says: "Invalid IP address" sends you to check your
+    # TYPING when the problem is your ADDRESSING.
     servers {
-      address = "10.120.0.53"
+      address = "10.200.0.53"
       is_tls  = false
     }
     servers {
-      address = "10.120.1.53"
+      address = "10.200.1.53"
       is_tls  = true # DNS over TLS for this server only
     }
 

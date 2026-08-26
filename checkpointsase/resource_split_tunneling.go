@@ -182,10 +182,13 @@ apply is the failure the whole helper exists to prevent.
 
 The cost is a false failure if the server ever legitimately returns a 202 with no
 statusUrl for a write that did land. Every async 202 measured on this endpoint on
-2026-08-26 carried one (API-FINDINGS.md 1.28, 1.29, 1.31): EIGHT writes, six of
-them on ONE network (the p5b sequence) plus p4b-control and the p13 ordering
-probe. The count in this comment used to read "six writes across the two probe
-networks", which understated the evidence and misdescribed how it was spread.
+2026-08-26 carried one (API-FINDINGS.md 1.28, 1.29, 1.31): NINE writes, six of
+them on ONE network (the p5b sequence) plus p4b-control, the p13 ordering probe
+and p16-std-order -- the standard-family ordering probe, captured after this
+comment was first written. This count has now been wrong twice in the same
+direction: it read "six writes across the two probe networks", then "EIGHT". Both
+understated the evidence, which is the safe direction and still worth fixing.
+Recount from `grep -l statusUrl probes/*.json` rather than trusting this number.
 If a 202 without a statusUrl ever appears, revisit this as the decision it is.
 */
 var errSplitTunnelingNoStatusUrl = errors.New(
@@ -256,13 +259,22 @@ func resourceSplitTunneling() *schema.Resource {
 		ReadContext:   resourceSplitTunnelingRead,
 		UpdateContext: resourceSplitTunnelingUpdate,
 		DeleteContext: resourceSplitTunnelingDelete,
+		CustomizeDiff: resourceSplitTunnelingCustomizeDiff,
 		/*
-			THERE IS DELIBERATELY NO CustomizeDiff, and this is a decision with a
-			measurement behind it rather than an omission.
+			THE ONLY RULE CustomizeDiff ENFORCES IS UNIQUENESS, and the rule it
+			deliberately does NOT enforce is the interesting one. See
+			validateSplitTunnelingDiff for the first; the rest of this note is the
+			second, and it is a decision with a measurement behind it rather than
+			an omission.
+
+			(Until 2026-08-26 this resource had NO CustomizeDiff at all and this
+			note said so in its heading. That was correct about the via_tunnel rule
+			and wrong as a whole: the three exceptData arrays are @ArrayUnique() on
+			the wire and nothing refused a duplicate before the apply.)
 
 			The rule a validator would enforce is "exceptions are not supported in
 			via_tunnel mode". The v3 document asserts it; this repo's own
-			V3-TERRAFORM-TEST-PLAN.md:1055 withdrew the claim after reading the
+			V3-TERRAFORM-TEST-PLAN.md withdrew the claim after reading the
 			backend and concluding no cross-field validator exists. THE WIRE
 			DISAGREES WITH THAT READING. Measured 2026-08-26 (API-FINDINGS.md 1.30):
 
@@ -315,10 +327,24 @@ EVERY LIMIT AND EVERY ABSENCE OF ONE IS SOURCED:
   - defaultTunnelingMode and exceptData are both in SplitTunnelingBase's required
     list (swagger.yaml:7120-7122), so both are Required here.
 
-  - cidr, addressObjectIds and updatableObjectIds carry NO minItems, NO maxItems
-    and NO uniqueItems (swagger.yaml:7127-7147). Each carries `default: []`. So
-    no MaxItems is declared, MinItems stays 0, and TypeList is right -- there is
-    no uniqueness rule to make a set worth its cost.
+  - cidr, addressObjectIds and updatableObjectIds carry NO minItems and NO
+    maxItems (swagger.yaml:7127-7147). Each carries `default: []`. So no MaxItems
+    is declared and MinItems stays 0.
+
+    SWAGGER ALSO OMITS uniqueItems ON ALL THREE, AND THE BACKEND ENFORCES IT
+    ANYWAY. This comment used to conclude from that omission that "there is no
+    uniqueness rule to make a set worth its cost". The citation was right and the
+    conclusion was wrong: probes/p4-via-tunnel.json -- the eleven-error body this
+    resource's test file already quotes byte-for-byte -- contains
+    "exceptData.All cidr's elements must be unique" and the same message for the
+    other two arrays, so @ArrayUnique() is declared on all three. Duplicates are
+    now refused at plan time by validateSplitTunnelingDiff instead of failing on
+    the PUT one async write later.
+
+    TypeList IS STILL RIGHT, and for the reason below rather than for the absent
+    uniqueItems: order is meaningful and measured, and a TypeSet would discard it.
+    A uniqueness rule is a diff-time check here exactly as it is for private DNS
+    (validatePrivateDNSDiff), which is the sibling this resource had drifted from.
 
   - ORDER IS PRESERVED, AND THAT IS NOW MEASURED RATHER THAN ASSUMED. These
     shipped as TypeList while nothing had been measured about ordering, on the
@@ -330,11 +356,19 @@ EVERY LIMIT AND EVERY ABSENCE OF ONE IS SOURCED:
 
     BE PRECISE ABOUT HOW FAR ONE PROBE REACHES. It measured `cidr`, on ONE
     network, of the ENHANCED family. addressObjectIds and updatableObjectIds were
-    sent EMPTY in that probe, so their ordering is still unmeasured, and so is the
-    whole question on the STANDARD family. TypeList is right for all three either
-    way -- it is the conservative choice under both outcomes -- but only the first
-    of them has evidence behind it, and a comment that generalised this to "the
-    three arrays" would be claiming two measurements that do not exist.
+    sent EMPTY in that probe, so their ordering is still unmeasured on either
+    family. TypeList is right for all three either way -- it is the conservative
+    choice under both outcomes -- but only `cidr` has evidence behind it, and a
+    comment that generalised this to "the three arrays" would be claiming two
+    measurements that do not exist.
+
+    THE STANDARD FAMILY IS NO LONGER THE OPEN QUESTION IT WAS. An earlier version
+    of this paragraph said the whole ordering question was unmeasured on the
+    standard family; probe p16 then sent
+    ["10.88.0.0/16","10.11.0.0/16","10.44.0.0/16"] non-ascending on a STANDARD
+    network and read them back in order (API-FINDINGS.md 1.31, extended). So
+    `cidr` ordering is measured on BOTH families now. What is still unmeasured is
+    only the other two arrays.
 
   - MEASURED 2026-08-26: all three arrays are REQUIRED ON THE WIRE even when
     empty, `default: []` notwithstanding. THE VALIDATOR NAMES EXACTLY THE ARRAYS
@@ -649,7 +683,11 @@ THE statusUrl IS NOT FOLLOWED, AND THAT IS THE POINT. Measured 2026-08-26
 (API-FINDINGS.md 1.28), including on this endpoint: the statusUrl in a 202 body is
 absolute, names a host the request did not go to, and carries an /api/rest/v2.3/
 path rather than /v3/. Only its last path segment is used, resolved against the
-configured client, exactly as getIdFromUrl does at the other twelve call sites.
+configured client, exactly as getIdFromUrl does at the other THIRTY call sites --
+31 non-test call sites of the getIdFromUrl(...GetStatusUrl()) form across 15
+files, counted at this commit. This comment said "twelve", which understated it by
+about 2.5x and weakened the very point it was making: following statusUrl
+literally would be a lone exception to a house pattern used everywhere.
 Following the field literally would leave the operator's configured BASE_URL --
 which exists so a non-US tenant talks to its own region -- and poll whatever
 tenant lives at the other host. It would do so INVISIBLY, because that deployment
@@ -1090,4 +1128,74 @@ func resourceSplitTunnelingImportState(ctx context.Context, d *schema.ResourceDa
 	}
 
 	return []*schema.ResourceData{d}, nil
+}
+
+/*
+resourceSplitTunnelingCustomizeDiff is the resource's CustomizeDiff hook.
+
+It exists for ONE rule -- uniqueness -- and the reasoning for why that rule cannot
+live in the schema, plus the reasoning for the rule this hook deliberately does
+NOT enforce, is at the CustomizeDiff line in resourceSplitTunneling.
+
+  - @param ctx context.Context - unused; the check is local to the diff
+  - @param d *schema.ResourceDiff - the diff
+  - @param meta interface{} - unused
+
+@return error - non-nil to refuse the plan
+*/
+func resourceSplitTunnelingCustomizeDiff(
+	_ context.Context, d *schema.ResourceDiff, _ interface{}) error {
+
+	return validateSplitTunnelingDiff(d)
+}
+
+/*
+validateSplitTunnelingDiff refuses duplicates in the three exceptData arrays.
+
+WHY THIS IS NOT uniqueItems IN THE SCHEMA: helper/schema has no uniqueItems for a
+TypeList, and these cannot be TypeSet because their ORDER IS MEANINGFUL and
+measured -- API-FINDINGS.md 1.31 sent `cidr` non-ascending on both families and
+read it back unchanged. A set would discard an ordering the API demonstrably
+keeps. So uniqueness has to be a diff-time check, exactly as it is for the
+private-DNS pair (validatePrivateDNSDiff), and the helper is shared with it rather
+than reimplemented.
+
+WHY IT IS ENFORCED AT ALL, given swagger omits uniqueItems: the backend declares
+@ArrayUnique() on all three. probes/p4-via-tunnel.json returns
+"exceptData.All cidr's elements must be unique" and the same for
+addressObjectIds and updatableObjectIds.
+
+THE HONEST LIMIT OF THAT EVIDENCE: those errors fired on ABSENT arrays, so they
+prove the DECORATOR exists. That a present array containing a duplicate is refused
+follows from class-validator's semantics for @ArrayUnique(), not from a capture --
+no probe has ever sent a real duplicate. The residual risk is therefore that this
+refuses something the server would have accepted, which is the direction this file
+otherwise avoids (see validation.IsCIDR's note). It is accepted here because a
+duplicate entry in an exception list is meaningless under either outcome: the same
+destination bypassing the tunnel twice is the same configuration as once. If a
+probe ever shows duplicates accepted, delete this and keep the comment.
+
+  - @param d privateDNSDiffReader - the diff; the interface is shared with the
+    private-DNS validator because both need exactly Get and NewValueKnown
+
+@return error - non-nil to refuse the plan
+*/
+func validateSplitTunnelingDiff(d privateDNSDiffReader) error {
+	base := splitTunnelingAttrExceptData + ".0."
+	for _, path := range []string{
+		base + splitTunnelingAttrCidr,
+		base + splitTunnelingAttrAddressObjectIds,
+		base + splitTunnelingAttrUpdatableObjectIds,
+	} {
+		if duplicate, found := privateDNSDuplicateString(d, path); found {
+			return fmt.Errorf("%s lists %q more than once, and the API declares "+
+				"@ArrayUnique() on it (probes/p4-via-tunnel.json). This cannot be a TypeSet: "+
+				"the order these are sent in is preserved by the API (API-FINDINGS.md 1.31, "+
+				"measured on both families), so a set would discard ordering the API keeps -- "+
+				"which is why the duplicate has to be refused here instead of fifteen minutes "+
+				"into an apply", path, duplicate)
+		}
+	}
+
+	return nil
 }

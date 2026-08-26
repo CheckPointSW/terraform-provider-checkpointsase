@@ -33,20 +33,31 @@ privateDNSRegionIDSeparator joins the two path parameters into one Terraform id.
 
 ":" rather than "-", and that is a correction to the test plan rather than a
 preference. Row EPD-I01 writes the id as `<network_id>-<region_id>`, and a "-"
-separator is ambiguous the moment either half contains one -- which network ids
-demonstrably do (`net-0123...`). SplitN on the FIRST "-" of "net-abc-reg-def"
-yields ("net", "abc-reg-def"), so the resource would issue a request against a
-network id that never existed and report the 404 as drift.
+separator is unsafe because NOTHING RULES A HYPHEN OUT of either half: the v3
+document types both networkId and regionId as bare `type: string` with no pattern
+(openapi.yaml:1136). SplitN on the FIRST "-" of a network id that contained one
+would yield a prefix, so the resource would issue a request against a network id
+that never existed and report the 404 as drift.
 
-":" is the checkpointsase_group_membership precedent (Pattern D), and the
-argument there is stronger than the one available here: group and user ids are
-EnglishNumericId in the API document, `^[a-zA-Z0-9_\-]*$`, so a colon PROVABLY
-cannot occur inside one. The v3 document types both networkId and regionId as
-bare `type: string` with no pattern (openapi.yaml:1136), so no such proof exists
-for this resource, and none is claimed. What is claimed is weaker and sufficient:
-the split takes the FIRST colon, so only network_id has to be colon-free for the
-parse to be unambiguous, and every network id this provider has ever seen is
-`net-` followed by a UUID.
+AN EARLIER VERSION OF THIS PARAGRAPH ARGUED THAT FROM A NETWORK-ID SHAPE THAT DOES
+NOT EXIST. It said network ids "demonstrably do" contain a hyphen, `net-0123...`,
+and that "every network id this provider has ever seen is `net-` followed by a
+UUID". Both are contradicted by every id the provider has in fact seen: all 115
+captures in the phase's probe set carry 10-character alphanumeric ids with no
+prefix and no hyphen -- P8wUbdsuU8, SxCQbUdkiL, WSDDCKoVfZ, eKBn3Xxdxj,
+gNDrpveF4N, sG14j5VPLM. "demonstrably" was the strongest word in the paragraph and
+it was backing the weakest claim in it.
+
+THE DECISION IS UNAFFECTED AND IS BETTER SUPPORTED THAN ITS OLD ARGUMENT. Real ids
+are colon-free AND hyphen-free, so SplitN on the first colon is unambiguous under
+the observed shape as well as under the imagined one. ":" is also the
+checkpointsase_group_membership precedent (Pattern D), where the argument is
+stronger still: group and user ids are EnglishNumericId in the API document,
+`^[a-zA-Z0-9_\-]*$`, so a colon PROVABLY cannot occur inside one. No such proof
+exists here and none is claimed. What is claimed is weaker and sufficient: the
+split takes the FIRST colon, so only network_id has to be colon-free; the spec
+gives it no pattern, so nothing is provably absent; and every id observed to date
+is 10 alphanumerics, which is colon-free.
 
 If a network id containing a colon ever turns up, this is the one constant to
 change -- and parseEnhancedRegionPrivateDNSID's error message is what the
@@ -93,19 +104,31 @@ with the trailing s) was added to that table afterwards. Every one is 404 with
 messageCode NOT_FOUND, so nothing that classifies on status is affected -- which
 is everything in this provider. See the Read comment.
 
-WHAT IS STILL UNMEASURED ON THIS PATH, and it is most of the write half: the 422
-for a body with no `attributes`, the 400 for a null array, the byte-exact round
-trip and every ordering claim all come from captures against the NETWORK path
-(API-FINDINGS.md 1.31, 1.34). Nothing has ever been WRITTEN to
-`/regions/{regionId}/privateDNS`. What justifies reusing all of it is the SPEC:
-the two paths share the request model (CustomDnsUpdate), the response model
-(CustomDns), the response map (202 only) and the operation description, word for
-word. That is a good reason to expect the same behaviour and it is not evidence
-of it -- and the one read that HAS happened differed from the network path, which
-is a reason to hold the remaining assumptions loosely rather than tightly. The
-write fixtures in resource_enhanced_region_private_dns_test.go stay labelled
-spec-derived, and TestAccEnhancedRegionPrivateDNS_basic is the first thing that
-will find out.
+WHAT IS STILL UNMEASURED ON THIS PATH, and it is still most of the write half: the
+422 for a body with no `attributes`, the 400 for an array the request leaves OUT,
+the byte-exact round trip and every ordering claim all come from captures against
+the NETWORK path (API-FINDINGS.md 1.31, 1.34). No PROBE has ever written to
+`/regions/{regionId}/privateDNS`, and no capture of a write to it exists. What
+justifies reusing all of it is the SPEC: the two paths share the request model
+(CustomDnsUpdate), the response model (CustomDns), the response map (202 only) and
+the operation description, word for word. That is a good reason to expect the same
+behaviour and it is not evidence of it -- and the one read that HAS happened
+differed from the network path, which is a reason to hold the remaining
+assumptions loosely rather than tightly. The write fixtures in
+resource_enhanced_region_private_dns_test.go stay labelled spec-derived.
+
+BUT THIS PATH HAS NOW BEEN WRITTEN TO, and an earlier version of this paragraph
+said it never had. TestAccEnhancedRegionPrivateDNS_basic RAN LIVE on 2026-08-26
+and PASSED, 860.95s, completing all eight steps -- so writes did reach this route,
+they were accepted, and the round trip held well enough for every positional
+assertion in that test to pass. API-FINDINGS.md 1.38 is itself downstream of it:
+the constraint was found because this test's PUT was refused for an in-subnet
+server address. What remains true is the narrow thing: no write to this route was
+captured as a PROBE artefact, so the specific error bodies above are still network
+-path captures and are still labelled as such. Do not restore "nothing has ever
+been written" -- it is false. Do not widen this to "the region write path is
+measured" either; one green acceptance run is evidence the happy path works, not a
+capture of what each rejection looks like here.
 
 A REGION IS SCOPED INSIDE A NETWORK, and the API says nothing about how the two
 configurations interact -- whether a region's private DNS overrides the network's,
@@ -490,7 +513,7 @@ func resourceEnhancedRegionPrivateDNSUpdate(ctx context.Context, d *schema.Resou
 		// appendErrorDiagsWithGuidance, not appendErrorDiags: the latter promotes
 		// the server's body into Detail and discards the caller's wrapper, so
 		// guidance attached any other way never reaches the operator. See its doc
-		// comment (utils.go:1252).
+		// comment (utils.go:1283).
 		if accepted {
 			return appendErrorDiagsWithGuidance(diags,
 				"The enhanced region private DNS update was accepted but did not complete",

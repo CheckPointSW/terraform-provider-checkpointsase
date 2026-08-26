@@ -34,9 +34,16 @@
 # -- was measured against the enhanced-NETWORK private-DNS path
 # (/v3/networks/enhanced/{networkId}/privateDNS; API-FINDINGS.md 1.31 and 1.34).
 # That path takes the identical request and response models and the same spec
-# covers both, so this is the documented contract and not a guess -- but this
-# REGION route has never been probed directly. If the two ever diverge, this file
-# is describing the network's behaviour.
+# covers both, so this is the documented contract and not a guess.
+#
+# THIS REGION ROUTE HAS BEEN READ, ONCE, AND IT DIFFERED. A GET of an unconfigured
+# region came back with `attributes` PRESENT and a fully populated `dnsPolicy`,
+# where an unconfigured NETWORK returns `{"enabled": false}` and nothing else
+# (API-FINDINGS.md 1.37). So the region route is not unprobed -- it is probed for
+# reads and unprobed for WRITES, and the one read there is diverged from the
+# network. Everything above about what the API REJECTS is still the network's
+# behaviour. If the two ever diverge further, this file is describing the
+# network's.
 #
 # HOW A REGION'S PRIVATE DNS COMBINES WITH ITS NETWORK'S IS NOT DOCUMENTED, and
 # this provider does not model any relationship between the two. Using this
@@ -74,12 +81,26 @@ resource "checkpointsase_enhanced_region_private_dns" "example" {
     # At most four servers, and at least one whenever `enabled = true`. Addresses
     # must be unique; the provider refuses a duplicate during `plan` rather than
     # letting the apply fail.
+    #
+    # THESE ADDRESSES ARE DELIBERATELY NOT INSIDE THE NETWORK'S OWN SUBNET
+    # (10.121.0.0/22 above), and "tidying" them to match it -- 10.121.0.53, which
+    # reads as neat -- is what this example did until it was corrected. A private
+    # DNS server MAY NOT sit inside its own network's subnet: the API refuses it
+    # with 400 {"message":"Invalid IP address"} for an address that is perfectly
+    # well-formed. Measured on the enhanced-NETWORK route only
+    # (API-FINDINGS.md 1.38); that this REGION route enforces the same rule is
+    # inferred from the shared request model, the same inference the acceptance
+    # tests were moved on. Neither `terraform validate` nor `plan` can catch it,
+    # because checking it means reading a different resource's subnet -- so the
+    # network is CREATED first and the apply then fails half done. Note what the
+    # error says: "Invalid IP address" sends you to check your TYPING when the
+    # problem is your ADDRESSING.
     servers {
-      address = "10.121.0.53"
+      address = "10.201.0.53"
       is_tls  = false
     }
     servers {
-      address = "10.121.1.53"
+      address = "10.201.1.53"
       is_tls  = true # DNS over TLS for this server only
     }
 

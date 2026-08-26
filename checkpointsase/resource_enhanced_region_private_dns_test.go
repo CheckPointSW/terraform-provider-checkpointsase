@@ -464,9 +464,9 @@ func TestEnhancedRegionPrivateDNSCreateAdoptsWritesWaitsAndReadsBack(t *testing.
 		getBody:         measuredPrivateDNSUnconfigured,
 		getBodyAfterPut: measuredPrivateDNSConfigured,
 		statusBodies: []string{
-			`{"completed":false}`,
-			`{"completed":false}`,
-			`{"completed":true,"result":{"statusCode":200}}`,
+			syntheticAsyncNotCompleted,
+			syntheticAsyncNotCompleted,
+			syntheticAsyncCompleted200,
 		},
 	})
 
@@ -657,7 +657,7 @@ the error with. Errors out of putPrivateDNSAndWait are exactly that shape, so a
 call site that used appendErrorDiags would compile, would produce a perfectly
 reasonable-looking diagnostic, and would drop every word of guidance. That was
 measured on the SWG policies and is why appendErrorDiagsWithGuidance exists
-(utils.go:1252).
+(utils.go:1283).
 
 The two cases carry DIFFERENT guidance because they send an operator to different
 places, and putPrivateDNSAndWait's `accepted` return is the only thing that
@@ -697,7 +697,7 @@ func TestEnhancedRegionPrivateDNSUpdateGuidanceReachesTheDiagnostic(t *testing.T
 			name: "the API accepted the write and the operation then failed",
 			fake: &enhancedPrivateDNSFake{
 				statusBodies: []string{
-					`{"completed":true,"result":{"statusCode":409,"reason":["private DNS is being updated by another operation"]}}`,
+					syntheticAsyncCompleted409,
 				},
 			},
 			wantSummary:  "enhanced region private DNS update was accepted but did not complete",

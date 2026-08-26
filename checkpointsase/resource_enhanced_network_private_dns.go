@@ -72,7 +72,7 @@ errors out of putPrivateDNSAndWait are GenericOpenAPIErrors or wrap one, and
 appendErrorDiags promotes the server's body into Detail and DISCARDS whatever the
 caller wrapped it with -- so guidance attached any other way never reaches the
 wire. That was measured on the SWG policies and is why the helper exists
-(utils.go:1252).
+(utils.go:1283).
 
 Neither mentions `terraform untaint`, and that omission is deliberate rather than
 an oversight. The policy resources have to name it because a tainted whole-policy
@@ -87,9 +87,28 @@ checkpointsase_enhanced_region_private_dns started rendering them, "the network'
 private DNS configuration is unchanged" told an operator about the wrong object,
 and "the two rejections measured on this endpoint" asserted measurements that do
 not exist -- API-FINDINGS.md 1.31's 422 and 400 were both taken against the
-NETWORK path, and no probe has ever touched the region one. The wording below is
-the size of the claim there is evidence for. If the region endpoint is ever
-probed, this is the comment to come back to, not the constants.
+NETWORK path. The wording below is the size of the claim there is evidence for.
+
+STALE NEGATIVE CORRECTED: this used to add "and no probe has ever touched the
+region one". Probe p14 has -- probes/p14-enh-region.json is a GET of
+/regions/{regionId}/privateDNS, and it is the capture that revealed the third
+disabled read shape (API-FINDINGS.md 1.37). What no probe has done is WRITE to the
+region path, so the two REJECTIONS quoted in the constant are still
+network-path-only, which is the claim the family-neutral wording protects.
+
+THE REFUSAL PARAGRAPH SAID `null` AND IT WAS WRONG TWICE, corrected 2026-08-26.
+It used to describe "an array that arrived as `null` rather than `[]`" and to warn
+that "the field it names first is not necessarily the field you got wrong".
+Neither is what was measured. probes/p7-off-noservers.request.json is
+`{"enabled":false,"attributes":{"searchDomains":[]}}` -- `servers` OMITTED, not
+null; no request capture in the whole phase contains a JSON `null` at all, and
+there is no way to write one in HCL, so an operator was being sent to look for a
+shape they could not have produced. And all three errors in the response name
+`servers`, which IS the omitted field, so telling them to distrust the field name
+pointed away from the fastest route to the fix. This is the same generalisation
+API-FINDINGS.md 1.37 retired for split tunnelling; commit 8b554df fixed it in
+splitTunnelingWriteRefused in five places and left this twin standing. The wording
+now mirrors that one deliberately -- if you change one, change both.
 */
 const privateDNSWriteAcceptedButNotCompleted = "The API ACCEPTED this write and then the " +
 	"operation did not complete successfully, so the target may or may not now hold the " +
@@ -100,12 +119,14 @@ const privateDNSWriteAcceptedButNotCompleted = "The API ACCEPTED this write and 
 	"call at all."
 
 const privateDNSWriteRefused = "The API REFUSED this write, so the private DNS " +
-	"configuration is unchanged. The message above is the server's own; the two rejections " +
-	"measured on the enhanced-network private DNS endpoint, which takes the identical request " +
-	"body, are a 422 for a body with no `attributes` object and a 400 " +
-	"naming an array that arrived as `null` rather than `[]`. Note that the 400 reports every " +
-	"array complaint it has at once, so the field it names first is not necessarily the field " +
-	"you got wrong."
+	"configuration is unchanged. The message above is the server's own. Three rejections have " +
+	"been measured on the enhanced-network private DNS endpoint, which takes the identical " +
+	"request body: a `422` for a body with no `attributes` object; a `400` naming an array the " +
+	"request left OUT (the complaints cluster on the array that is actually missing, so the " +
+	"field they name is the field to add — it may raise several complaints about one array, so " +
+	"count the distinct array names rather than the messages); and a `400` reading " +
+	"`{\"message\":\"Invalid IP address\"}` for a `servers` address that sits inside the " +
+	"network's own subnet, which is about your ADDRESSING and not your typing."
 
 /*
 resourceEnhancedNetworkPrivateDNS manages the private DNS configuration of one
@@ -434,7 +455,7 @@ func resourceEnhancedNetworkPrivateDNSUpdate(ctx context.Context, d *schema.Reso
 		// appendErrorDiagsWithGuidance, not appendErrorDiags: the latter promotes
 		// the server's body into Detail and discards the caller's wrapper, so
 		// guidance attached any other way never reaches the operator. See its doc
-		// comment (utils.go:1252).
+		// comment (utils.go:1283).
 		if accepted {
 			return appendErrorDiagsWithGuidance(diags,
 				"The enhanced network private DNS update was accepted but did not complete",

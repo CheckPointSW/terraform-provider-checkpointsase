@@ -22,7 +22,9 @@ offline coverage.
 */
 
 // The network this test builds. 10.96.0.0/22 is chosen to avoid every subnet
-// already used by an acceptance test in this package (10.90-10.95 are taken),
+// already used by an acceptance test in this package (10.90, 10.91, 10.93, 10.94
+// and 10.95 are taken -- ENUMERATED rather than given as a range, because
+// "10.90-10.95" includes 10.92, which nothing uses),
 // because two networks with overlapping subnets are refused and a collision
 // would fail whichever test ran second for a reason that has nothing to do with
 // private DNS.
@@ -37,6 +39,18 @@ offline coverage.
 // to check your TYPING when the problem is your ADDRESSING, which is the whole
 // reason this comment exists.
 //
+// THE FIRST SERVER IS THE LEXICALLY LARGER ADDRESS, AND THAT IS THE POINT.
+// 10.200.1.53 is sent at index 0 and 10.200.0.53 at index 1, so the pair is
+// DESCENDING. Until 2026-08-26 it was ascending, and an ascending pair makes
+// every positional assertion below pass just as well against a server that
+// SORTS `servers` -- mutation-proven: sorting the flattener left the entire
+// offline suite green. `servers` is documented as priority-ordered, so a
+// silent reordering changes which DNS server the tenant consults first. With
+// the pair descending, a sorting or reordering server moves index 0 and this
+// test goes red. The differing is_tls values (false at index 0, true at
+// index 1) independently catch a reversal and a dropped field. Do not
+// "tidy" these back into numeric order.
+//
 // 10.200.x satisfies every constraint at once: it is RFC1918 private, outside
 // this network's own 10.96.0.0/22, outside the region test's 10.97.0.0/22 so the
 // two tests cannot interfere, and outside the two probe networks that live on the
@@ -44,8 +58,9 @@ offline coverage.
 // the step-6 assertions are positional and carry different is_tls values.
 const (
 	testAccEnhancedNetworkPrivateDNSSubnet = "10.96.0.0/22"
-	testAccEnhancedNetworkPrivateDNSServer = "10.200.0.53"
-	testAccEnhancedNetworkPrivateDNSTLSSrv = "10.200.1.53"
+	// DESCENDING ON PURPOSE -- .1 BEFORE .0. See the paragraph above.
+	testAccEnhancedNetworkPrivateDNSServer = "10.200.1.53"
+	testAccEnhancedNetworkPrivateDNSTLSSrv = "10.200.0.53"
 )
 
 var randNameEnhancedNetworkPrivateDNS = randStringBytesRmndr()

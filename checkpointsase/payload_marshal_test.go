@@ -1709,6 +1709,67 @@ func TestPayloadMarshalCustomDnsUpdate(t *testing.T) {
 			}`,
 		},
 		{
+			// NOT MEASURED, AND AUTHORED FOR THIS TEST. Every other row here is a
+			// captured body; this one is not, and it is labelled so nobody reads
+			// it as evidence about the API.
+			//
+			// It exists because the measured row above sends its two servers in
+			// ASCENDING address order, so it passes just as well against an
+			// expander that sorts -- proven by mutation on 2026-08-26: sorting the
+			// `servers` array that expandCustomDnsUpdate sends left the whole
+			// offline suite green. `servers` is priority-ordered, so reordering it
+			// on the WRITE path changes which server the tenant consults first,
+			// silently.
+			//
+			// Everything below is strictly DESCENDING, so a sort moves every
+			// element of every array rather than one element of one. assertMarshalsTo
+			// compares with reflect.DeepEqual over the decoded body, and DeepEqual
+			// on a []interface{} is element-wise and ordered, so array order really
+			// is asserted here and not merely set membership.
+			name: "AUTHORED, NOT MEASURED: descending arrays must reach the wire descending",
+			raw: map[string]interface{}{
+				"network_id": "fake-net-1",
+				"enabled":    true,
+				"attributes": []interface{}{map[string]interface{}{
+					"servers": []interface{}{
+						map[string]interface{}{"address": "10.0.2.53", "is_tls": true},
+						map[string]interface{}{"address": "10.0.1.53", "is_tls": false},
+						map[string]interface{}{"address": "10.0.0.53", "is_tls": true},
+					},
+					"search_domains": []interface{}{"c.example.com", "b.example.com", "a.example.com"},
+					"dns_policy": []interface{}{map[string]interface{}{
+						"public": []interface{}{map[string]interface{}{
+							"domains": []interface{}{"z.example.com", "m.example.com", "a.example.com"},
+						}},
+						"private": []interface{}{map[string]interface{}{
+							"mode":            "resolveAllViaPrivate",
+							"public_fallback": false,
+							"domains":         []interface{}{"z.corp.example.com", "a.corp.example.com"},
+						}},
+					}},
+				}},
+			},
+			want: `{
+				"enabled": true,
+				"attributes": {
+					"servers": [
+						{"address": "10.0.2.53", "isTLS": true},
+						{"address": "10.0.1.53", "isTLS": false},
+						{"address": "10.0.0.53", "isTLS": true}
+					],
+					"searchDomains": ["c.example.com", "b.example.com", "a.example.com"],
+					"dnsPolicy": {
+						"public": {"domains": ["z.example.com", "m.example.com", "a.example.com"]},
+						"private": {
+							"mode": "resolveAllViaPrivate",
+							"publicFallback": false,
+							"domains": ["z.corp.example.com", "a.corp.example.com"]
+						}
+					}
+				}
+			}`,
+		},
+		{
 			// dnsPolicy is *DnsPolicy with omitempty, so an absent block keeps
 			// the key off the wire entirely -- which is what "any field omitted
 			// from attributes is cleared, not preserved" means for a resource

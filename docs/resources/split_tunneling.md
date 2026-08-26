@@ -204,5 +204,5 @@ The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/c
 #
 # A network id the API does not know is refused with "no such network" rather than
 # silently importing an empty resource.
-terraform import checkpointsase_split_tunneling.example net-01234567-89ab-cdef-0123-456789abcdef
+terraform import checkpointsase_split_tunneling.example sG14j5VPLM
 ```

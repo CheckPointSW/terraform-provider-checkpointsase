@@ -29,6 +29,18 @@ tests in the summary and as zero offline coverage, which is what Phase 4 shipped
 
 The fixture bodies are the ones measured on 2026-08-26 and recorded in
 API-FINDINGS.md 1.28 and 1.31, not JSON authored here to fit the code.
+
+EXCEPT THE ASYNC STATUS BODIES, WHICH ARE CONSTRUCTIONS. Every
+`{"completed":...}` body in this file -- with a `result` and without one -- is
+built from async.go's documented envelope, NOT captured. `grep -l completed` over
+all 115 files in the phase's probe set returns NOTHING: not one async status body
+was ever observed from any endpoint in this phase (LEFTOVERS.md L37). That
+includes the bare `{"completed":false}`, which API-FINDINGS.md 1.28 quotes as
+though it were a wire body and which has no capture behind it either -- so the
+exception covers ALL of them and not merely the result-bearing ones. They are
+named with a `synthetic` prefix so the distinction survives a reader who skips
+this header. Do not cite any of them as evidence of the wire shape; that is the
+precise reasoning error API-FINDINGS.md 1.34 exists to record.
 */
 
 /*
@@ -845,6 +857,107 @@ func TestFlattenCustomDnsAttributesRoundTripsAConfiguredNetwork(t *testing.T) {
 	}
 }
 
+/*
+syntheticPrivateDNSDescendingServers IS NOT A CAPTURE, AND THAT IS THE POINT.
+
+Every other private-DNS body fixture in this package is a measured one. This one
+is AUTHORED, and it exists because the measured one cannot do this job: the
+captured round trip (p8b, API-FINDINGS.md 1.31) happens to have sent its two
+servers in ASCENDING address order, so every positional assertion built on it
+passes just as well against a flattener that sorts. That was proven by mutation on
+2026-08-26 -- adding a sort to flattenCustomDnsServers left the entire offline
+suite green -- which is a test suite that cannot fail against the one defect the
+TypeList decision exists to guard.
+
+`servers` IS DOCUMENTED AS PRIORITY-ORDERED, so silently reordering it changes
+which DNS server is consulted first. That is a real behaviour change and it must
+not be a silent one.
+
+The three addresses are in strictly DESCENDING order, which is what makes this
+fixture discriminating: an ascending sort moves every element, a reversal moves
+every element, and a rotation moves every element. The differing is_tls values are
+kept so that a flattener which dropped the field is also caught. The durable
+answer is to re-run the round-trip probe with non-ascending server addresses --
+the same trick the probe already applied to searchDomains and forgot to apply to
+servers -- and when that capture exists this fixture should be replaced by it.
+*/
+const syntheticPrivateDNSDescendingServers = `{"enabled":true,"attributes":{` +
+	`"servers":[{"address":"10.0.2.53","isTLS":true},{"address":"10.0.1.53","isTLS":false},` +
+	`{"address":"10.0.0.53","isTLS":true}],` +
+	`"searchDomains":["c.example.com","b.example.com","a.example.com"]}}`
+
+/*
+TestFlattenCustomDnsAttributesPreservesServerOrderAgainstASortingServer is the
+test the measured round trip could not be.
+
+flattenCustomDnsServers is the ONE function every private-DNS read passes through
+-- both enhanced resources and the standard data source share it -- so a sort
+introduced here reorders `servers` for all five objects at once. This is the site
+the mutation proof used.
+
+WHAT WOULD MAKE THIS FAIL, stated so nobody has to guess whether it is a
+tautology: a sort.Strings or sort.Slice anywhere in flattenCustomDnsServers or
+flattenCustomDnsAttributes; a server that returns the array sorted; an SDK regen
+that changes an allOf merge order; or a refactor that rebuilds the list from a
+map. Every one of those moves index 0, and index 0 is asserted.
+*/
+func TestFlattenCustomDnsAttributesPreservesServerOrderAgainstASortingServer(t *testing.T) {
+	var configured perimeter81Sdk.CustomDns
+	if err := json.Unmarshal([]byte(syntheticPrivateDNSDescendingServers), &configured); err != nil {
+		t.Fatalf("CustomDns could not decode the descending-order fixture: %v", err)
+	}
+
+	got := flattenCustomDnsAttributes(configured.Attributes)
+	if len(got) != 1 {
+		t.Fatalf("flattenCustomDnsAttributes() = %#v, want exactly one attributes block", got)
+	}
+	block, ok := got[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("attributes block is %T, want map[string]interface{}", got[0])
+	}
+
+	servers, ok := block["servers"].([]interface{})
+	if !ok {
+		t.Fatalf("servers is %T, want []interface{}", block["servers"])
+	}
+
+	// Descending, so a sorted result differs at EVERY index rather than at one.
+	wantAddresses := []string{"10.0.2.53", "10.0.1.53", "10.0.0.53"}
+	wantTLS := []bool{true, false, true}
+	if len(servers) != len(wantAddresses) {
+		t.Fatalf("servers = %#v, want %d entries", servers, len(wantAddresses))
+	}
+	for i := range wantAddresses {
+		entry, ok := servers[i].(map[string]interface{})
+		if !ok {
+			t.Fatalf("servers[%d] is %T, want map[string]interface{}", i, servers[i])
+		}
+		if entry["address"] != wantAddresses[i] {
+			t.Errorf("servers[%d].address = %#v, want %q.\n"+
+				"The fixture sends these DESCENDING on purpose. If this reads back ascending, "+
+				"something between the wire and state is sorting a list the API documents as "+
+				"priority-ordered, which silently changes which DNS server is consulted first.",
+				i, entry["address"], wantAddresses[i])
+		}
+		if entry["is_tls"] != wantTLS[i] {
+			t.Errorf("servers[%d].is_tls = %#v, want %v (asserted so a dropped field is caught "+
+				"as well as a reordered one)", i, entry["is_tls"], wantTLS[i])
+		}
+	}
+
+	// search_domains descending too, for the same reason and at no extra cost.
+	wantSearch := []string{"c.example.com", "b.example.com", "a.example.com"}
+	switch domains := block["search_domains"].(type) {
+	case []string:
+		if !testComparableArraiesEq(domains, wantSearch) {
+			t.Errorf("search_domains = %#v, want %#v -- descending, so a sort moves every "+
+				"element", domains, wantSearch)
+		}
+	default:
+		t.Errorf("search_domains is %T, want []string", block["search_domains"])
+	}
+}
+
 // fakePrivateDNSAPI is one tenant's v3 API: the PUT that starts the async
 // operation, and the status endpoint that reports on it.
 //
@@ -897,7 +1010,8 @@ func newFakePrivateDNSAPI(t *testing.T, putResponse string, statusBodies ...stri
 			return
 		}
 
-		body := `{"completed":true,"result":{"statusCode":200}}`
+		// SYNTHETIC, like every status body here -- see syntheticAsyncCompleted200.
+		body := syntheticAsyncCompleted200
 		if len(fake.statusBodies) > 0 {
 			index := statusCalls - 1
 			if index < 0 {
@@ -972,6 +1086,34 @@ func usePrivateDNSTestPollInterval(t *testing.T) {
 	t.Cleanup(func() { privateDNSPollInterval = original })
 }
 
+/*
+THE ASYNC STATUS BODIES, ALL OF THEM SYNTHETIC.
+
+Named rather than inlined so that the one thing a reader must know about them
+travels with every use: NONE OF THESE WAS EVER CAPTURED. `grep -l completed` over
+all 115 files in the phase's probe set returns nothing, so no async status body
+has been observed from any endpoint in this phase (LEFTOVERS.md L37). They are
+constructed from async.go's documented envelope.
+
+That includes syntheticAsyncNotCompleted. API-FINDINGS.md 1.28 quotes
+`{"completed":false}` as though it were a wire body, and it has no capture behind
+it either -- which is why the `synthetic` prefix covers the whole family and not
+only the result-bearing members. An earlier review of this file scoped the problem
+to the `result`-bearing bodies and had to withdraw that; the prefix is deliberately
+wider than that first reading.
+
+WHAT THEY ARE STILL GOOD FOR: pinning what the PROVIDER does with each envelope
+shape. isSuccessStatus(0) treating a missing `result` as success is the defect
+these drive, and that is a fact about async.go, not about the server. What they
+must never be cited for is the wire shape.
+*/
+const (
+	syntheticAsyncNotCompleted = `{"completed":false}`
+	syntheticAsyncCompleted200 = `{"completed":true,"result":{"statusCode":200}}`
+	syntheticAsyncCompleted409 = `{"completed":true,"result":{"statusCode":409,` +
+		`"reason":["private DNS is being updated by another operation"]}}`
+)
+
 // measuredPrivateDNSAccepted is the 202 body captured on 2026-08-26 from
 // PUT /v3/networks/enhanced/{id}/privateDNS with the legal "off" payload
 // (API-FINDINGS.md 1.28 and 1.31). Both fields are as measured: the statusUrl is
@@ -996,9 +1138,9 @@ func TestPutPrivateDNSAndWaitPollsBeforeReturning(t *testing.T) {
 	usePrivateDNSTestPollInterval(t)
 
 	fake := newFakePrivateDNSAPI(t, measuredPrivateDNSAccepted,
-		`{"completed":false}`,
-		`{"completed":false}`,
-		`{"completed":true,"result":{"statusCode":200}}`,
+		syntheticAsyncNotCompleted,
+		syntheticAsyncNotCompleted,
+		syntheticAsyncCompleted200,
 	)
 	client := fake.client()
 
@@ -1036,13 +1178,13 @@ func TestPutPrivateDNSAndWaitResolvesStatusUrlAgainstTheConfiguredClient(t *test
 	usePrivateDNSTestPollInterval(t)
 
 	decoy := newFakePrivateDNSAPI(t, measuredPrivateDNSAccepted,
-		`{"completed":true,"result":{"statusCode":200}}`)
+		syntheticAsyncCompleted200)
 
 	// The same shape as the measured statusUrl -- absolute, different host, a
 	// v2.3 path -- but pointed at a server this test can count hits on.
 	statusUrl := decoy.server.URL + "/api/rest/v2.3/networks/status/exu7TTfsPg"
 	fake := newFakePrivateDNSAPI(t, `{"statusUrl":"`+statusUrl+`","samplingTime":120}`,
-		`{"completed":true,"result":{"statusCode":200}}`)
+		syntheticAsyncCompleted200)
 	client := fake.client()
 
 	if _, err := putPrivateDNSAndWait(context.Background(), client, sendPrivateDNSPut(client)); err != nil {
@@ -1083,7 +1225,7 @@ func TestPutPrivateDNSAndWaitFailsOnNon2xxCompletion(t *testing.T) {
 	usePrivateDNSTestPollInterval(t)
 
 	fake := newFakePrivateDNSAPI(t, measuredPrivateDNSAccepted,
-		`{"completed":true,"result":{"statusCode":409,"reason":["private DNS is being updated by another operation"]}}`)
+		syntheticAsyncCompleted409)
 	client := fake.client()
 
 	accepted, err := putPrivateDNSAndWait(context.Background(), client, sendPrivateDNSPut(client))
@@ -1186,5 +1328,61 @@ func TestPutPrivateDNSAndWaitReturnsNotAcceptedWhenThePutItselfFails(t *testing.
 	if accepted {
 		t.Error("putPrivateDNSAndWait() accepted = true, want false: the API refused the request, " +
 			"so the caller must not tell the operator the update was accepted and then failed")
+	}
+}
+
+/*
+TestPutPrivateDNSAndWaitSurvivesANullStatusBody pins the poll closure's nil
+guard, and it is the async twin of
+TestEnhancedNetworkPrivateDNSReadSurvivesANullBody.
+
+A 200 carrying the literal `null` decodes without error and leaves the
+*AsyncOperationStatus pointer NIL: encoding/json sets a pointer to nil for `null`
+before it consults any Unmarshaler, and the generated client decodes with a plain
+json.Unmarshal into the return value. GetCompleted() is generated nil-safe, so it
+is not the hazard; status.Result is a DIRECT FIELD ACCESS and dereferences the
+receiver. Removing the `status == nil` guard makes this test PANIC rather than
+fail -- verified by mutation on 2026-08-26, at private_dns.go:479 -- and a panic
+is the one failure mode Terraform cannot report as a diagnostic: no summary, no
+statusId, and no statement of whether the write landed.
+
+WHAT THE RIGHT ANSWER IS, since "does not panic" does not choose one: a null
+status body says nothing completed, so the closure reports "not completed yet"
+and lets the deadline decide. It must NOT be treated as a completion, because
+isSuccessStatus(0) is true and a completion with no result is a green apply --
+which would turn an empty response into a successful write. So the assertion is
+that the call FAILS on the deadline, not merely that it returns.
+
+This is the sibling of TestPutSplitTunnelingAndWaitSurvivesANullStatusBody, and
+the guard is the same three lines. Both are unmeasured: no async status body has
+ever been captured from any endpoint in this phase (LEFTOVERS.md L37), which is
+equally true of every other null-body guard this branch ships.
+*/
+func TestPutPrivateDNSAndWaitSurvivesANullStatusBody(t *testing.T) {
+	usePrivateDNSTestPollInterval(t)
+
+	fake := newFakePrivateDNSAPI(t, measuredPrivateDNSAccepted, `null`)
+	client := fake.client()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("putPrivateDNSAndWait PANICKED on a 200 with a null status body: %v.\n"+
+				"status.Result is a direct field access on a pointer json sets to nil for "+
+				"`null`, so the poll closure has to check the pointer before reaching for it.", r)
+		}
+	}()
+
+	accepted, err := putPrivateDNSAndWait(ctx, client, sendPrivateDNSPut(client))
+	if !accepted {
+		t.Error("putPrivateDNSAndWait() accepted = false: the PUT itself returned 202, so " +
+			"the caller must say \"accepted but did not complete\", not \"refused\"")
+	}
+	if err == nil {
+		t.Fatal("putPrivateDNSAndWait() error = nil for a status endpoint that only ever " +
+			"answered `null`: an empty body is not a completion, and reporting it as one makes " +
+			"isSuccessStatus(0) turn nothing at all into a successful apply")
 	}
 }

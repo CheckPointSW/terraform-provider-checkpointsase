@@ -2,11 +2,12 @@
 #
 #     <network_id>:<region_id>
 #
-# THE SEPARATOR IS ":", NOT "-", AND THAT MATTERS. Network ids contain hyphens of
-# their own -- "net-01234567-89ab-..." -- so a hyphen-separated id could not be
-# split unambiguously: the first "-" of "net-abc-reg-def" falls inside the network
-# id, and the import would go looking for a network called "net". Only the FIRST
-# colon separates, so a region id containing one is still fine.
+# THE SEPARATOR IS ":", NOT "-", AND THAT MATTERS. Nothing in the API rules a
+# hyphen out of either id -- both are typed as bare strings with no pattern -- so a
+# hyphen-separated id could not be split unambiguously: a network id containing one
+# would be cut short and the import would go looking for a network that never
+# existed. Only the FIRST colon separates, so a region id containing one is still
+# fine. Real ids to date are 10 alphanumeric characters, which contain neither.
 #
 # `region_id` IS THE REGION'S OWN ID, NOT the `harmony_sase_region_id` from the
 # enhanced_regions catalogue that the region was created from. The two are
@@ -24,4 +25,4 @@
 # state and changes nothing. The first apply afterwards writes your configuration
 # over it, and that write is a FULL REPLACEMENT: anything your HCL omits from
 # `attributes` is cleared. Run `terraform plan` and read it before applying.
-terraform import checkpointsase_enhanced_region_private_dns.example net-01234567-89ab-cdef-0123-456789abcdef:reg-fedcba98-7654-3210-fedc-ba9876543210
+terraform import checkpointsase_enhanced_region_private_dns.example sG14j5VPLM:eKBn3Xxdxj

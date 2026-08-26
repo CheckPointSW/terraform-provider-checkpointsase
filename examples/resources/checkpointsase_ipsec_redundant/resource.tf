@@ -6,7 +6,7 @@
 resource "checkpointsase_ipsec_redundant" "example" {
   network_id  = "ZwAeo5wqiF"
   region_id   = "K7tEfRm9vQ"
-  tunnel_name = "ipsecRedundant01"
+  tunnel_name = "ipsecRedundant"
 
   shared_settings {
     p81_gateway_subnets    = ["10.99.0.0/24"]

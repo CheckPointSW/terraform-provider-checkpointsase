@@ -29,6 +29,25 @@ resource_enhanced_network_private_dns_acc_test.go and genuinely is one.
 
 The body fixtures are the ones measured on 2026-08-26 and recorded in
 API-FINDINGS.md 1.28 and 1.31, not JSON authored here to fit the code.
+
+TWO EXCEPTIONS, BOTH NAMED SO THEY CANNOT BE MISREAD.
+
+  - The async status bodies are CONSTRUCTIONS. Every `{"completed":...}` body in
+    this package, with a `result` and without one, is built from async.go's
+    documented envelope rather than captured: `grep -l completed` over all 115
+    files in the phase's probe set returns nothing, so not one async status body
+    has ever been observed from any endpoint here (LEFTOVERS.md L37). That
+    includes the bare syntheticAsyncNotCompleted that API-FINDINGS.md 1.28 quotes as a
+    wire body. They carry a `synthetic` prefix.
+
+  - syntheticPrivateDNSDescendingServers (private_dns_test.go) is AUTHORED, and
+    deliberately so: the measured round trip sends its two servers in ASCENDING
+    order, which makes every positional assertion built on it pass equally against
+    a flattener that sorts. It is the one fixture in this package written to prove
+    something the captures cannot.
+
+Neither may be cited as evidence about the API. Reading a construction as a
+measurement is the precise error API-FINDINGS.md 1.34 exists to record.
 */
 
 /*
@@ -146,7 +165,7 @@ func startEnhancedPrivateDNSFake(t *testing.T, f *enhancedPrivateDNSFake) *enhan
 		f.putBody = measuredPrivateDNSAccepted
 	}
 	if len(f.statusBodies) == 0 {
-		f.statusBodies = []string{`{"completed":true,"result":{"statusCode":200}}`}
+		f.statusBodies = []string{syntheticAsyncCompleted200}
 	}
 
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -480,9 +499,9 @@ func TestEnhancedNetworkPrivateDNSCreateAdoptsWritesWaitsAndReadsBack(t *testing
 		getBody:         measuredPrivateDNSUnconfigured,
 		getBodyAfterPut: measuredPrivateDNSConfigured,
 		statusBodies: []string{
-			`{"completed":false}`,
-			`{"completed":false}`,
-			`{"completed":true,"result":{"statusCode":200}}`,
+			syntheticAsyncNotCompleted,
+			syntheticAsyncNotCompleted,
+			syntheticAsyncCompleted200,
 		},
 	})
 
@@ -655,7 +674,7 @@ the error with. Errors out of putPrivateDNSAndWait are exactly that shape, so a
 call site that used appendErrorDiags would compile, would produce a perfectly
 reasonable-looking diagnostic, and would drop every word of guidance. That was
 measured on the SWG policies and is why appendErrorDiagsWithGuidance exists
-(utils.go:1252).
+(utils.go:1283).
 
 The two cases carry DIFFERENT guidance because they send an operator to different
 places, and putPrivateDNSAndWait's `accepted` return is the only thing that
@@ -691,7 +710,7 @@ func TestEnhancedNetworkPrivateDNSUpdateGuidanceReachesTheDiagnostic(t *testing.
 			name: "the API accepted the write and the operation then failed",
 			fake: &enhancedPrivateDNSFake{
 				statusBodies: []string{
-					`{"completed":true,"result":{"statusCode":409,"reason":["private DNS is being updated by another operation"]}}`,
+					syntheticAsyncCompleted409,
 				},
 			},
 			wantSummary:  "accepted but did not complete",
@@ -959,24 +978,36 @@ func TestEnhancedNetworkPrivateDNSPlanRefusesDuplicates(t *testing.T) {
 TestEnhancedNetworkPrivateDNSPlanAcceptsLegalConfigurations is what stops the two
 tests above from being satisfied by a CustomizeDiff that refuses everything.
 
-Each row is a configuration measured or documented as legal, and each would be
-refused by a plausible over-tightening:
+BE PRECISE ABOUT WHAT THIS TEST CAN SEE, because an earlier version of this
+comment was not. It drives Resource.Diff, which runs CustomizeDiff and does NOT
+enforce MinItems or MaxItems -- those are schemaMap.Validate's job. So the rows
+below cannot defend against `MinItems: 1` on servers or `MaxItems: 4` on a domains
+list, whatever a plausible over-tightening would do. WHAT THEY PIN IS ONE THING:
+that validatePrivateDNSDiff does not OVER-REFUSE. Every row is legal, and a
+diff-time rule that rejected any of them would be caught here and nowhere else.
 
-  - the "off" body: refused by MinItems: 1 on servers, which is the obvious way to
-    express the conditional minimum and would remove the only way to turn private
-    DNS off.
-  - non-alphabetical search domains: refused by nothing, but reordered by a
-    TypeSet -- included because the round trip that motivates TypeList
-    (API-FINDINGS.md 1.31) must keep planning cleanly.
-  - four servers and four search domains: the maxItems the spec actually declares
-    for those two lists.
-  - more than four domains in a dns_policy list: maxItems there is 100, NOT 4. The
-    task brief's own table exists because the two 4s above invite the wrong
-    inference, and a MaxItems: 4 on either domains list would refuse valid
-    configuration at plan time.
-  - the same string in DIFFERENT lists: uniqueness is per list, and a check that
-    shared one seen-set across them would refuse a domain that is legitimately
-    both a search domain and a private domain.
+The schema limits themselves are pinned separately, and by tests that drive the
+registered resource's Validate: TestPrivateDNSSchemaPinsEveryListMaximum and
+TestPrivateDNSValidationEnforcesTheLimitsAndTheModeEnum. Mutating MaxItems 4 -> 100
+on servers turns those red, not this.
+
+Each row and the diff-time over-refusal it rules out:
+
+  - the "off" body, and the same body with both arrays explicitly empty: ruled out
+    is a CustomizeDiff that demanded a non-empty servers list unconditionally,
+    which would remove the only way to turn private DNS off. (MinItems: 1 in the
+    SCHEMA would do the same damage and is refused elsewhere.)
+  - non-alphabetical search domains: ruled out is a diff rule that normalised or
+    sorted; the round trip that motivates TypeList (API-FINDINGS.md 1.31) must
+    keep planning cleanly.
+  - four servers and four search domains: ruled out is a diff-time count check
+    stricter than the spec's maxItems for those two lists.
+  - more than four domains in a dns_policy list: those lists allow 100, NOT 4, and
+    ruled out is a diff rule that carried the 4 over from the two lists above --
+    which is the wrong inference the task brief's own table exists to prevent.
+  - the same string in DIFFERENT lists: uniqueness is per list, and ruled out is a
+    duplicate check sharing one seen-set across lists, which would refuse a domain
+    that is legitimately both a search domain and a private domain.
 */
 func TestEnhancedNetworkPrivateDNSPlanAcceptsLegalConfigurations(t *testing.T) {
 	for _, tt := range []struct {

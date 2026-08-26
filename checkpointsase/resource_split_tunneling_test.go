@@ -34,6 +34,18 @@ resource_split_tunneling_acc_test.go and genuinely is one.
 Every body fixture below is either a capture from 2026-08-26 or an example lifted
 verbatim from the spec, and each says which it is. None was authored to fit the
 code.
+
+EXCEPT THE ASYNC STATUS BODIES, WHICH ARE CONSTRUCTIONS. Every
+`{"completed":...}` body in this file -- with a `result` and without one -- is
+built from async.go's documented envelope, NOT captured. `grep -l completed` over
+all 115 files in the phase's probe set returns NOTHING: not one async status body
+was ever observed from any endpoint in this phase (LEFTOVERS.md L37). That
+includes the bare syntheticAsyncNotCompleted, which API-FINDINGS.md 1.28 quotes as
+though it were a wire body and which has no capture behind it either -- so the
+exception covers ALL of them and not merely the result-bearing ones. They are
+named with a `synthetic` prefix so the distinction survives a reader who skips
+this header. Do not cite any of them as evidence of the wire shape; that is the
+precise reasoning error API-FINDINGS.md 1.34 exists to record.
 */
 
 /*
@@ -70,9 +82,15 @@ The bodies this resource has to cope with.
     fixture trimmed to fit the claim it was quoted for, in a file whose header
     promises the opposite. Two things are only visible in the full body: ONE
     missing array produces SEVERAL complaints (five of the eleven are about
-    addressObjectIds), and two of those five are the mutually contradictory
-    length rules that 1.31's addendum records -- which is why no length
-    validator ships on the id lists.
+    addressObjectIds), and two of those five are the pair that pins the length to
+    EXACTLY 10 -- "shorter than or equal to 10" and "longer than or equal to 10"
+    are not contradictory with each other, they jointly describe a fixed-length
+    id. THE CONTRADICTION IS BETWEEN THE SPEC AND THE SERVER: swagger.yaml:7138
+    declares addressObjectIds as ^[a-zA-Z0-9]{11}$, eleven characters, while the
+    server's own 400 insists on ten. That is 1.31's addendum, it is what
+    resource_split_tunneling.go states correctly, and it is why no length
+    validator ships on the id lists -- any check here would refuse ids on
+    evidence that disagrees with itself.
 
     WHAT THIS BODY DOES NOT SHOW is what a request that omits only ONE array
     gets. That was measured separately on 2026-08-26 (API-FINDINGS.md 1.37,
@@ -197,7 +215,7 @@ func startSplitTunnelingFake(t *testing.T, f *splitTunnelingFake) *splitTunnelin
 		f.putBody = measuredSplitTunnelingAccepted
 	}
 	if len(f.statusBodies) == 0 {
-		f.statusBodies = []string{`{"completed":true,"result":{"statusCode":200}}`}
+		f.statusBodies = []string{syntheticAsyncCompleted200}
 	}
 
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -308,7 +326,10 @@ func useSplitTunnelingTestPollInterval(t *testing.T) {
 TestPutSplitTunnelingAndWaitPollsBeforeReturning pins the reason this write is
 polled at all.
 
-The PUT declares ONLY a 202 (swagger.yaml:1289) and the SDK returns
+The PUT declares NO 200 IN ITS RESPONSE MAP -- swagger.yaml:1289 is the '202' key
+and seven responses are declared in all (202/400/401/403/404/409/429), so "only a
+202" was the wrong quantifier for a right pointer; the resource file's own phrasing
+is the accurate one. The SDK returns
 *AsyncOperationResponse, so returning as soon as the PUT succeeds means the write
 has not happened yet: Create then reads back pre-write values and stores them as
 applied. That is the failure putGranularFirewallPolicy's comment records shipping
@@ -323,9 +344,9 @@ func TestPutSplitTunnelingAndWaitPollsBeforeReturning(t *testing.T) {
 
 	fake := startSplitTunnelingFake(t, &splitTunnelingFake{
 		statusBodies: []string{
-			`{"completed":false}`,
-			`{"completed":false}`,
-			`{"completed":true,"result":{"statusCode":200}}`,
+			syntheticAsyncNotCompleted,
+			syntheticAsyncNotCompleted,
+			syntheticAsyncCompleted200,
 		},
 	})
 
@@ -770,6 +791,67 @@ func TestSplitTunnelingReadStoresTheConfigurationAsReturned(t *testing.T) {
 }
 
 /*
+syntheticSplitTunnelingDescendingCidr IS NOT A CAPTURE. It is AUTHORED, and it is
+named and commented that way because every other body fixture in this file is a
+capture or a spec example.
+
+It exists because the measured body this file reads
+(measuredSplitTunnelingWithException) carries exactly ONE cidr, so every
+`except_data.0.cidr.0` assertion built on it is order-blind by construction.
+Proven by mutation on 2026-08-26: sorting flattenSplitTunnelingData's cidr slice
+left the whole offline suite green, and so did REVERSING it. A one-element list
+cannot distinguish preserved from sorted from reversed.
+
+Ordering is the stated reason `cidr` is a TypeList and not a TypeSet, and
+API-FINDINGS.md 1.31 measured that the API preserves send order on both families.
+The three CIDRs below are strictly DESCENDING so that a sort, a reversal and a
+rotation each move every element.
+*/
+const syntheticSplitTunnelingDescendingCidr = `{"defaultTunnelingMode":"out_of_tunnel","exceptData":` +
+	`{"cidr":["10.99.0.0/16","10.50.0.0/16","10.10.0.0/16"],"addressObjectIds":[],` +
+	`"updatableObjectIds":[],"exceptions":[]}}`
+
+/*
+TestSplitTunnelingReadPreservesCidrOrderAgainstASortingServer is the test the
+measured single-element body could not be.
+
+WHAT WOULD MAKE THIS FAIL: a sort in flattenSplitTunnelingData, a server that
+begins returning `cidr` sorted, or a refactor that rebuilds the list through a
+map. Every one of those moves index 0, and every index is asserted.
+
+WHAT IT DOES NOT CLAIM: nothing here says the API preserves order -- that is
+API-FINDINGS.md 1.31's measurement, on both families. This asserts only that the
+PROVIDER does not reorder what the API returned, which is the half a test can own.
+*/
+func TestSplitTunnelingReadPreservesCidrOrderAgainstASortingServer(t *testing.T) {
+	fake := startSplitTunnelingFake(t, &splitTunnelingFake{
+		getBody: syntheticSplitTunnelingDescendingCidr,
+	})
+
+	d := testSplitTunnelingData(t, map[string]interface{}{"network_id": "net-1"})
+	d.SetId("net-1")
+
+	if diags := resourceSplitTunnelingRead(context.Background(), d, fake.client()); diags.HasError() {
+		t.Fatalf("the read failed: %s", diagsText(diags))
+	}
+
+	want := []string{"10.99.0.0/16", "10.50.0.0/16", "10.10.0.0/16"}
+	if got := d.Get("except_data.0.cidr.#").(int); got != len(want) {
+		t.Fatalf("except_data.0.cidr.# = %d, want %d", got, len(want))
+	}
+	for i, w := range want {
+		key := fmt.Sprintf("except_data.0.cidr.%d", i)
+		if got := d.Get(key).(string); got != w {
+			t.Errorf("%s = %q, want %q.\n"+
+				"The fixture is DESCENDING on purpose: if this reads back ascending, something "+
+				"between the wire and state is reordering a list whose order the API preserves "+
+				"and which the schema models as a TypeList precisely because order matters.",
+				key, got, w)
+		}
+	}
+}
+
+/*
 TestSplitTunnelingReadOnViaTunnelStoresNoExceptions drives Read against the P1
 capture, which has NO `exceptions` key at all.
 
@@ -951,8 +1033,8 @@ func TestSplitTunnelingCreateAdoptsWritesWaitsAndReadsBack(t *testing.T) {
 		getBody:         measuredSplitTunnelingViaTunnel,
 		getBodyAfterPut: measuredSplitTunnelingWithException,
 		statusBodies: []string{
-			`{"completed":false}`,
-			`{"completed":true,"result":{"statusCode":200}}`,
+			syntheticAsyncNotCompleted,
+			syntheticAsyncCompleted200,
 		},
 	})
 
@@ -1047,6 +1129,12 @@ drives Create rather than the helper directly.
 func TestSplitTunnelingCreateFailsOnANon2xxCompletion(t *testing.T) {
 	useSplitTunnelingTestPollInterval(t)
 
+	// BOTH ENVELOPES ARE SYNTHETIC -- see syntheticAsyncCompleted200 for why every
+	// status body in this package is. The `reason` strings inside them ARE measured
+	// (API-FINDINGS.md 1.30 for the 400, 1.31 for the 409 code); what is
+	// constructed is the envelope that carries them, because no status body has
+	// ever been captured. Kept inline rather than named because each is used once
+	// and the status code is the variable under test.
 	for _, tt := range []struct {
 		name   string
 		status string
@@ -1114,7 +1202,7 @@ Two things are asserted and both are in the row:
 */
 func TestSplitTunnelingCreateTimesOutWithoutWritingAnId(t *testing.T) {
 	fake := startSplitTunnelingFake(t, &splitTunnelingFake{
-		statusBodies: []string{`{"completed":false}`},
+		statusBodies: []string{syntheticAsyncNotCompleted},
 	})
 
 	d := testSplitTunnelingData(t, map[string]interface{}{
@@ -1234,6 +1322,8 @@ func TestSplitTunnelingUpdateGuidanceReachesTheDiagnostic(t *testing.T) {
 			name: "the API accepts it and the operation then fails",
 			fake: &splitTunnelingFake{
 				statusBodies: []string{
+					// SYNTHETIC envelope; no 500 has been captured from this
+					// endpoint and no status body of any kind has.
 					`{"completed":true,"result":{"statusCode":500,"reason":["internal"]}}`,
 				},
 			},
@@ -1827,4 +1917,143 @@ func TestSplitTunnelingImportRejectsAnUnknownNetwork(t *testing.T) {
 				"/v3/networks//split-tunneling -- a different route, not a 404 on this one", calls)
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// The uniqueness rule
+// ---------------------------------------------------------------------------
+
+/*
+planSplitTunneling drives the REGISTERED resource's Diff, which is the only way to
+reach a CustomizeDiff. Mirrors planEnhancedRegionPrivateDNS.
+*/
+func planSplitTunneling(t *testing.T, configJSON string) error {
+	t.Helper()
+
+	r := resourceSplitTunneling()
+	config, err := ctyjson.Unmarshal([]byte(configJSON), r.CoreConfigSchema().ImpliedType())
+	if err != nil {
+		t.Fatalf("the test's own configuration does not match the resource schema: %v\nconfig: %s",
+			err, configJSON)
+	}
+
+	_, diffErr := r.Diff(
+		context.Background(),
+		&terraform.InstanceState{RawConfig: config},
+		terraform.NewResourceConfigShimmed(config, r.CoreConfigSchema()),
+		nil,
+	)
+	return diffErr
+}
+
+/*
+TestSplitTunnelingPlanRefusesDuplicatesInEveryExceptDataArray closes the gap
+between what this file's schema comment used to claim and what the wire says.
+
+THE COMMENT SAID "there is no uniqueness rule to make a set worth its cost", cited
+swagger.yaml:7127-7147, and the citation is accurate -- swagger genuinely omits
+uniqueItems on all three arrays. The CONCLUSION was wrong, and it is contradicted
+by a capture this same file already quotes byte-for-byte at the top
+(probes/p4-via-tunnel.json, measuredSplitTunnelingArraysMissing):
+
+	exceptData.All cidr's elements must be unique
+	exceptData.All addressObjectIds's elements must be unique
+	exceptData.All updatableObjectIds's elements must be unique
+
+@ArrayUnique() is declared on all three. Before this test, duplicates in all three
+arrays passed `plan` clean and failed on the PUT fifteen minutes and one async
+write later -- which is exactly the cost validatePrivateDNSDiff was built to avoid
+for the sibling resource, on WEAKER evidence than this.
+
+BE PRECISE ABOUT WHAT THE CAPTURE PROVES. Those three errors fired on ABSENT
+arrays, so they prove the decorator EXISTS; that a PRESENT array containing a
+duplicate is refused follows from class-validator's semantics for @ArrayUnique(),
+not from a capture. One PUT with a real duplicate would settle it. The direction of
+the residual risk is stated in the refusal message itself.
+*/
+func TestSplitTunnelingPlanRefusesDuplicatesInEveryExceptDataArray(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		config    string
+		wantParts []string
+	}{
+		{
+			name: "the same cidr twice",
+			config: `{"network_id":"net-1","default_tunneling_mode":"out_of_tunnel",` +
+				`"except_data":[{"cidr":["10.0.0.0/8","10.1.0.0/16","10.0.0.0/8"]}]}`,
+			wantParts: []string{"except_data.0.cidr", "10.0.0.0/8"},
+		},
+		{
+			name: "the same address object id twice",
+			config: `{"network_id":"net-1","default_tunneling_mode":"out_of_tunnel",` +
+				`"except_data":[{"address_object_ids":["abcdefghij","abcdefghij"]}]}`,
+			wantParts: []string{"except_data.0.address_object_ids", "abcdefghij"},
+		},
+		{
+			name: "the same updatable object id twice",
+			config: `{"network_id":"net-1","default_tunneling_mode":"out_of_tunnel",` +
+				`"except_data":[{"updatable_object_ids":` +
+				`["6f9619ff-8b86-d011-b42d-00c04fc964ff","6f9619ff-8b86-d011-b42d-00c04fc964ff"]}]}`,
+			wantParts: []string{"except_data.0.updatable_object_ids",
+				"6f9619ff-8b86-d011-b42d-00c04fc964ff"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := planSplitTunneling(t, tt.config)
+			if err == nil {
+				t.Fatalf("the plan SUCCEEDED for %s. The API declares @ArrayUnique() on all "+
+					"three exceptData arrays (probes/p4-via-tunnel.json), so this config fails "+
+					"on the PUT instead -- fifteen minutes and one async write later, which is "+
+					"the cost a plan-time check exists to avoid\nconfig: %s", tt.name, tt.config)
+			}
+			for _, part := range tt.wantParts {
+				if !strings.Contains(err.Error(), part) {
+					t.Errorf("the error does not mention %q, so it does not tell the operator "+
+						"what to change.\ngot: %v", part, err)
+				}
+			}
+		})
+	}
+}
+
+/*
+TestSplitTunnelingPlanAcceptsLegalExceptDataConfigurations is what stops the test
+above from being satisfied by a CustomizeDiff that refuses everything.
+
+Each row is legal per the spec and must survive: all three arrays absent (they are
+Optional in HCL and sent as [] by the expander), all three empty, and all three
+populated with DISTINCT values in NON-ASCENDING order -- the last row also pinning
+that the duplicate check does not quietly sort or dedupe what it inspects.
+*/
+func TestSplitTunnelingPlanAcceptsLegalExceptDataConfigurations(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		config string
+	}{
+		{
+			name: "no arrays at all",
+			config: `{"network_id":"net-1","default_tunneling_mode":"via_tunnel",` +
+				`"except_data":[{}]}`,
+		},
+		{
+			name: "all three arrays empty",
+			config: `{"network_id":"net-1","default_tunneling_mode":"out_of_tunnel",` +
+				`"except_data":[{"cidr":[],"address_object_ids":[],"updatable_object_ids":[]}]}`,
+		},
+		{
+			name: "all three populated, distinct, non-ascending",
+			config: `{"network_id":"net-1","default_tunneling_mode":"out_of_tunnel",` +
+				`"except_data":[{"cidr":["10.99.0.0/16","10.10.0.0/16"],` +
+				`"address_object_ids":["bbbbbbbbbb","aaaaaaaaaa"],` +
+				`"updatable_object_ids":["6f9619ff-8b86-d011-b42d-00c04fc964ff",` +
+				`"1f9619ff-8b86-d011-b42d-00c04fc964ff"]}]}`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := planSplitTunneling(t, tt.config); err != nil {
+				t.Errorf("the plan REFUSED a legal configuration: %v\nconfig: %s",
+					err, tt.config)
+			}
+		})
+	}
 }

@@ -9,4 +9,4 @@
 #
 # A network id the API does not know is refused with "no such enhanced network"
 # rather than silently importing an empty resource.
-terraform import checkpointsase_enhanced_network_private_dns.example net-01234567-89ab-cdef-0123-456789abcdef
+terraform import checkpointsase_enhanced_network_private_dns.example sG14j5VPLM

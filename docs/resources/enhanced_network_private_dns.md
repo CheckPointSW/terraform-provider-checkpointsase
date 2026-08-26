@@ -61,12 +61,23 @@ resource "checkpointsase_enhanced_network_private_dns" "example" {
     # At most four servers, and at least one whenever `enabled = true`. Addresses
     # must be unique; the provider refuses a duplicate during `plan` rather than
     # letting the apply fail.
+    #
+    # THESE ADDRESSES ARE DELIBERATELY NOT INSIDE THE NETWORK'S OWN SUBNET
+    # (10.120.0.0/22 above), and "tidying" them to match it -- 10.120.0.53, which
+    # reads as neat -- is what this example did until it was corrected. A private
+    # DNS server MAY NOT sit inside its own network's subnet: the API refuses it
+    # with 400 {"message":"Invalid IP address"} for an address that is perfectly
+    # well-formed (API-FINDINGS.md 1.38). Neither `terraform validate` nor `plan`
+    # can catch it, because checking it means reading a different resource's
+    # subnet -- so the network is CREATED first and the apply then fails half
+    # done. Note what the error says: "Invalid IP address" sends you to check your
+    # TYPING when the problem is your ADDRESSING.
     servers {
-      address = "10.120.0.53"
+      address = "10.200.0.53"
       is_tls  = false
     }
     servers {
-      address = "10.120.1.53"
+      address = "10.200.1.53"
       is_tls  = true # DNS over TLS for this server only
     }
 
@@ -180,7 +191,7 @@ Required:
 
 Required:
 
-- `address` (String) IP address of the DNS server.
+- `address` (String) IP address of the DNS server. MUST NOT be an address inside the network's own subnet: the API refuses one with `400 {"message":"Invalid IP address"}` even though the address is perfectly well-formed, so read that error as being about your ADDRESSING and not your typing. Neither `terraform validate` nor `plan` can catch it, because checking it means reading another resource's subnet -- the network is created first and the apply then fails half done. Measured on the enhanced-network route (API-FINDINGS.md 1.38); the region route is assumed to behave the same way because it takes the identical request model.
 
 Optional:
 
@@ -214,5 +225,5 @@ The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/c
 #
 # A network id the API does not know is refused with "no such enhanced network"
 # rather than silently importing an empty resource.
-terraform import checkpointsase_enhanced_network_private_dns.example net-01234567-89ab-cdef-0123-456789abcdef
+terraform import checkpointsase_enhanced_network_private_dns.example sG14j5VPLM
 ```

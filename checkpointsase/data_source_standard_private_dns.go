@@ -186,9 +186,47 @@ func standardPrivateDNSSchema() map[string]*schema.Schema {
 						Elem: &schema.Resource{
 							Schema: map[string]*schema.Schema{
 								privateDNSAttrAddress: {
-									Type:        schema.TypeString,
-									Computed:    true,
-									Description: "IP address of the DNS server.",
+									Type:     schema.TypeString,
+									Computed: true,
+									// SCOPED DELIBERATELY NARROWER THAN THE
+									// ENHANCED RESOURCES' VERSION OF THIS
+									// DESCRIPTION. API-FINDINGS.md 1.38's
+									// in-subnet rejection is a WRITE constraint,
+									// and these standard endpoints are GET-only
+									// (1.35), so nothing an operator does here can
+									// trip it and no probe could measure it on this
+									// route. It is mentioned only because someone
+									// comparing a standard network's configuration
+									// against an enhanced one needs to know the
+									// rule exists; it is not claimed for this
+									// endpoint.
+									//
+									// THIS TEXT DOES NOT REACH THE DOCS PAGE, AND
+									// THAT IS L29 RATHER THAN AN OVERSIGHT.
+									// tfplugindocs renders `servers` on a DATA
+									// SOURCE page as `(List of Object)` and drops
+									// every nested attribute's description --
+									// verified after regeneration: the page shows a
+									// bare "- `address` (String)". The identical
+									// description on the two enhanced RESOURCE
+									// pages DOES render, because there `servers` is
+									// a nested BLOCK. So this paragraph is for
+									// whoever reads the schema, not for the
+									// operator. If the constraint ever needs to be
+									// operator-visible here, the only channel that
+									// works is the data source's TOP-LEVEL
+									// Description -- which is where 1.36's
+									// forward_dns_update caveat had to go for the
+									// same reason. It is deliberately NOT there
+									// today: a write constraint on a GET-only
+									// endpoint has no action attached to it.
+									Description: "IP address of the DNS server, as the API " +
+										"returned it. Read-only. Note for the writable " +
+										"enhanced-network route, where this rule was measured: a " +
+										"private DNS server may not sit inside its network's own " +
+										"subnet (API-FINDINGS.md 1.38). Nothing here can be " +
+										"written, so the rule cannot be tripped through this data " +
+										"source.",
 								},
 								privateDNSAttrIsTLS: {
 									Type:        schema.TypeBool,

@@ -255,9 +255,33 @@ func privateDNSSchema() map[string]*schema.Schema {
 						Elem: &schema.Resource{
 							Schema: map[string]*schema.Schema{
 								privateDNSAttrAddress: {
-									Type:        schema.TypeString,
-									Required:    true,
-									Description: "IP address of the DNS server.",
+									Type:     schema.TypeString,
+									Required: true,
+									// THE CONSTRAINT IN THIS DESCRIPTION IS THE
+									// ONLY MITIGATION AVAILABLE. A provider cannot
+									// validate it at plan time without reading the
+									// network's subnet, which belongs to a
+									// different resource, so the operator has to
+									// be told. API-FINDINGS.md 1.38 measured it
+									// three ways after this exact mistake cost two
+									// acceptance tests and ~22 minutes of a live
+									// run, and its own conclusion is that
+									// documenting the error string is the remedy:
+									// "Invalid IP address" sends an operator to
+									// check their typing rather than their
+									// addressing.
+									Description: "IP address of the DNS server. MUST NOT be an " +
+										"address inside the network's own subnet: the API refuses " +
+										"one with `400 {\"message\":\"Invalid IP address\"}` even " +
+										"though the address is perfectly well-formed, so read that " +
+										"error as being about your ADDRESSING and not your typing. " +
+										"Neither `terraform validate` nor `plan` can catch it, " +
+										"because checking it means reading another resource's " +
+										"subnet -- the network is created first and the apply then " +
+										"fails half done. Measured on the enhanced-network route " +
+										"(API-FINDINGS.md 1.38); the region route is assumed to " +
+										"behave the same way because it takes the identical " +
+										"request model.",
 								},
 								privateDNSAttrIsTLS: {
 									Type:     schema.TypeBool,
@@ -406,7 +430,10 @@ THE statusUrl IS NOT FOLLOWED, AND THAT IS THE POINT. Measured 2026-08-26
 (API-FINDINGS.md 1.28): the statusUrl in a 202 body is absolute, names a host the
 request did not go to, and carries an /api/rest/v2.3/ path rather than /v3/. Only
 its last path segment is used, resolved against the configured client, exactly as
-getIdFromUrl does at the other twelve call sites. Following the field literally
+getIdFromUrl does at the other THIRTY call sites -- 31 non-test call sites of the
+getIdFromUrl(...GetStatusUrl()) form across 15 files, counted at this commit; this
+comment said "twelve", which understated a house pattern by about 2.5x.
+Following the field literally
 would leave the operator's configured BASE_URL -- which exists so a non-US tenant
 talks to its own region -- and poll whatever tenant lives at the other host. It
 would do so invisibly, because that deployment answers with a well-formed
@@ -475,6 +502,25 @@ func putPrivateDNSAndWait(
 		// this endpoint should force a failing write and record whether `result` is
 		// present. Until then, do not read a green apply here as proof the server
 		// finished the work.
+		//
+		// status IS CHECKED FOR NIL, and that is not defensive noise. A 200
+		// carrying the literal `null` decodes without error and leaves the pointer
+		// nil -- encoding/json sets a pointer to nil for `null` before it consults
+		// any Unmarshaler -- and status.Result is a DIRECT FIELD ACCESS, so it
+		// dereferences the receiver and panics. GetCompleted() is nil-safe; Result
+		// is not. This is the same reasoning that put the nil guard in both
+		// resources' Read and in the data source's shared setter, and a panic is
+		// the one failure mode Terraform cannot report as a diagnostic. Pinned by
+		// TestPutPrivateDNSAndWaitSurvivesANullStatusBody. The guard is identical
+		// to putSplitTunnelingAndWait's (resource_split_tunneling.go:733); do not
+		// let the two shapes drift. async.go's two sibling pollers still have the
+		// unguarded shape, which is a house pattern to fix in one pass and is part
+		// of L37.
+		if status == nil {
+			// Nothing completed and nothing to report: treat it as another
+			// not-yet-finished poll rather than inventing a result.
+			return asyncResult{}, resp, nil
+		}
 		out := asyncResult{Completed: status.GetCompleted()}
 		if r := status.Result; r != nil {
 			out.StatusCode = int(r.GetStatusCode())
@@ -508,10 +554,19 @@ tells you to do. The legal "off" body is
 EVERY ARRAY IS EMPTY, NEVER NIL. Servers and SearchDomains are declared without
 omitempty (model_custom_dns_update_attributes.go:23), as are
 DnsPolicyPublic.Domains and DnsPolicyPrivate.Domains, so a nil slice reaches the
-wire as `"servers": null` -- not an array, and the endpoint's @IsArray answers 400
-`attributes.servers must be an array`. Both variants compile and both marshal
+wire as `"servers": null` -- not an array. Both variants compile and both marshal
 without error, which is why payload_marshal_test.go pins the body and not the
 struct.
+
+BE PRECISE ABOUT WHICH INPUT WAS MEASURED. The 400
+`attributes.servers must be an array` was captured for an OMITTED key, not a null
+one: probes/p7-off-noservers.request.json is
+`{"enabled":false,"attributes":{"searchDomains":[]}}`, and NO request capture in
+this phase contains a JSON `null` anywhere. That a null fails the same way is an
+inference from the endpoint's @IsArray decorator -- a sound one, since @IsArray
+rejects null and absent alike -- but it is an inference, and the previous version
+of this paragraph read as though the null case had been measured. Same
+conflation, and the same correction, as privateDNSWriteRefused.
 
 The attribute keys read here are the contract between this file and the two
 resources that call it: `enabled`, and inside a single `attributes` block,
@@ -724,6 +779,16 @@ package, which is exactly what the privateDNSAttr* constants exist to prevent.
 
 Always non-nil, so a network with no servers stores [] rather than null; and it
 preserves the order the API returned.
+
+THAT SECOND CLAIM IS NOW PINNED, AND UNTIL 2026-08-26 IT WAS NOT. Adding a sort
+here left the whole offline suite green, because every positional assertion in the
+package was built on the measured round trip -- whose two servers happen to be in
+ASCENDING address order, so sorted and preserved are indistinguishable on it.
+TestFlattenCustomDnsAttributesPreservesServerOrderAgainstASortingServer closes
+that with a deliberately DESCENDING authored fixture, and the write half is pinned
+by the descending row in TestPayloadMarshalCustomDnsUpdate. Do not add a sort
+here: `servers` is priority-ordered and reordering it changes which DNS server the
+tenant consults first.
 
 THE ORDERING MEASUREMENT IS THE ENHANCED FAMILY'S, AND THIS FUNCTION IS NOW SHARED,
 so say which is which at the point of sharing. API-FINDINGS.md 1.31 measured order
