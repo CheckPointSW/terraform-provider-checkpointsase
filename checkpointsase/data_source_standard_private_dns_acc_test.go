@@ -56,13 +56,13 @@ ON THE SECOND TERM ALONE, READ THE BODY IT REPORTS AND WIDEN THAT TERM — do no
 remove the summary anchor.
 
 The ids are shaped like real ones rather than like obvious junk, so the server
-reaches its lookup rather than rejecting the format. THE REGION STEP IS THE FIRST
-REQUEST ANYTHING HAS EVER MADE TO THE STANDARD REGION PRIVATE-DNS ENDPOINT, in
-any state: no probe in Phase 5's measurement run or any run before it has touched
-/v3/networks/standard/{networkId}/regions/{regionId}/privateDNS. A failure there
-is INFORMATION FIRST and a provider defect second — including a failure of this
-very assertion, because whether a wrong region id inside a real network answers
-404 at all is unknown. Read what the server said before changing any code.
+reaches its lookup rather than rejecting the format. THE REGION STEP IS STILL THE
+FIRST NEGATIVE REQUEST ANYTHING HAS MADE TO THE STANDARD REGION PRIVATE-DNS
+ENDPOINT. That path has now been read successfully once (API-FINDINGS.md 1.36,
+2026-08-26) but never with an id that names nothing, so whether a wrong region id
+inside a real network answers 404 at all — or is distinguishable from a wrong
+network id — is unknown. A failure here is INFORMATION FIRST and a provider defect
+second. Read what the server said before changing any code.
 */
 func TestAccDataSourceStandardPrivateDNS_notFound(t *testing.T) {
 	t.Parallel()
@@ -113,10 +113,13 @@ What it does assert, and what each one catches:
   - `enabled` is a real boolean. TestCheckResourceAttrSet cannot do this job for a
     bool: "false" is set, so the assertion passes for an attribute that was never
     written.
-  - `attributes.#` is 0 or 1. Both are normal — API-FINDINGS.md 1.31 measured an
-    object nobody has configured returning NO `attributes` key and one that has
-    been written to returning it with empty arrays — and anything above 1 means
-    the flattener emitted a list where the API has a single object.
+  - `attributes.#` is 0 or 1. Both are normal, and `enabled` does not predict
+    which: 1.31 measured an object nobody has configured returning NO
+    `attributes` key, and 1.36 measured a standard REGION nobody has configured
+    returning `attributes` PRESENT with a fully populated `dns_policy`. Anything
+    above 1 means the flattener emitted a list where the API has a single object.
+    DO NOT "TIGHTEN" THIS INTO "disabled means no attributes" — that is the third
+    disabled shape, and it is what the tenant actually returns.
   - if `enabled` is true then `attributes.#` is 1 and `servers.#` is at least 1.
     swagger.yaml:4492 makes servers required and non-empty when enabled is true,
     so this is where a flattener that dropped the block shows up as a

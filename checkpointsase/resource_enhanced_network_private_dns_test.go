@@ -39,17 +39,36 @@ The four bodies this resource's Read has to cope with, all measured 2026-08-26.
     `attributes` key. This is the ordinary state, not an edge case -- it is what
     every Read before the first apply sees -- and it decodes to a nil
     *CustomDnsAttributes.
+
   - measuredPrivateDNSOff is the same network AFTER a write that turned private
     DNS off. Note the difference from the line above: once written, `attributes`
     is present with two empty arrays. The read shape depends on history, which is
     why both are here.
+
   - measuredPrivateDNSConfigured is the byte-exact round trip from the same
     finding: two servers with DIFFERENT isTLS values, and two search domains sent
     in deliberately non-alphabetical order (b before a) that came back in the
     order sent. Ordering is the contract, which is why this resource's lists are
     TypeList and not TypeSet.
-  - measuredPrivateDNSNetworkGone is what a bogus networkId gets, verified by
-    probe P10 on all three Phase 5 paths.
+
+  - measuredPrivateDNSNetworkGone is what a bogus networkId gets on THE ENHANCED
+    PATH, verified by probe P10 on 2026-08-26.
+
+    THE STATUS WAS VERIFIED ON ALL THREE PHASE 5 PATHS; THE BODY WAS NOT, and an
+    earlier version of this line said otherwise. P10 captured three different
+    message strings for the same 404:
+
+    enhanced privateDNS   {"message":"Network doesn't exist.", ...}
+    standard privateDNS   {"message":"network doesnt exists", ...}
+    split-tunneling       {"message":"network doesnt exist",  ...}
+
+    All three are 404 with messageCode NOT_FOUND, so nothing in the provider
+    behaves differently and every test that drives this constant is unaffected --
+    they assert on the status classification, not on the text. But a test that
+    DID assert on the text would have been wrong to reuse this constant across
+    families, which is why the standard data sources declare their own
+    (measuredStandardPrivateDNSNetworkGone in
+    data_source_standard_private_dns_test.go).
 */
 const (
 	measuredPrivateDNSUnconfigured = `{"enabled":false}`

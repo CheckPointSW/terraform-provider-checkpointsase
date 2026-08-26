@@ -4,11 +4,17 @@ page_title: "checkpointsase_standard_region_private_dns Data Source - checkpoint
 subcategory: ""
 description: |-
   Read the private DNS configuration of a single region inside a standard checkpointsase_network. This is READ-ONLY because the API is: the standard family exposes GET and nothing else on this path, unlike the enhanced family, which has the checkpointsase_enhanced_region_private_dns resource.
+  EXPECT A dns_policy BLOCK EVEN FOR A REGION NOBODY HAS CONFIGURED. Measured 2026-08-26: a region that had never been touched returned enabled = false together with a complete dns_policy — mode resolveAllViaPrivate, public_fallback = true — whose defaults did not even match those of its own network. That is what the server holds, not evidence that anyone configured it, and it is not something this data source could suppress without hiding values the API really returns. Read enabled to find out whether private DNS is in force; do not infer it from the presence of attributes or of dns_policy.
+  attributes.dns_policy.private.forward_dns_update reads false on every body anyone has captured, because neither standard endpoint returned the key at all. That is the absence of the field, not a value the server stated.
 ---
 
 # checkpointsase_standard_region_private_dns (Data Source)
 
 Read the private DNS configuration of a single region inside a standard `checkpointsase_network`. This is READ-ONLY because the API is: the standard family exposes `GET` and nothing else on this path, unlike the enhanced family, which has the `checkpointsase_enhanced_region_private_dns` resource.
+
+**EXPECT A `dns_policy` BLOCK EVEN FOR A REGION NOBODY HAS CONFIGURED.** Measured 2026-08-26: a region that had never been touched returned `enabled = false` together with a complete `dns_policy` — mode `resolveAllViaPrivate`, `public_fallback = true` — whose defaults did not even match those of its own network. That is what the server holds, not evidence that anyone configured it, and it is not something this data source could suppress without hiding values the API really returns. Read `enabled` to find out whether private DNS is in force; do not infer it from the presence of `attributes` or of `dns_policy`.
+
+`attributes.dns_policy.private.forward_dns_update` reads `false` on every body anyone has captured, because neither standard endpoint returned the key at all. That is the absence of the field, not a value the server stated.
 
 ## Example Usage
 
@@ -50,7 +56,7 @@ output "example_region_dns_enabled" {
 
 ### Read-Only
 
-- `attributes` (List of Object) Private DNS configuration, as the API returned it. This list holds either one element or none: the API omits `attributes` entirely for an object nothing has ever configured, and returns it — with empty arrays when private DNS is off — for one that has been written to. Both shapes are normal. (see [below for nested schema](#nestedatt--attributes))
+- `attributes` (List of Object) Private DNS configuration, as the API returned it. This list holds either one element or none, and `enabled` does not predict which: the API omits `attributes` entirely for an object nothing has ever configured, and returns it — sometimes with a populated `dns_policy` — for an object that is switched off. All of those are normal. (see [below for nested schema](#nestedatt--attributes))
 - `enabled` (Boolean) Whether private DNS is enabled for this network or region.
 - `id` (String) The ID of this resource.
 

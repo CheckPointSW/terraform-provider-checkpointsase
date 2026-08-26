@@ -30,7 +30,18 @@ THE ATTRIBUTE NAMES ARE CONSTANTS, AND privateDNSSchema DECLARES THEM.
 
 Both are here for one reason: expandCustomDnsUpdate reads the resource's
 attributes by name, and a name it reads that the schema does not declare returns
-a zero value with no error, no diff and nothing in the logs. This codebase has
+a zero value with no error, no diff and nothing in the logs.
+
+BE PRECISE ABOUT WHICH DIRECTION THAT IS TRUE OF, because an earlier version of
+this paragraph claimed it of both and it is not. It is true of the EXPAND
+direction, which is what this block exists for: d.Get on an undeclared key
+answers a zero value silently. In the FLATTEN direction d.Set on a nested block
+REJECTS an undeclared key -- `Invalid address to set: [...]` -- and
+appendErrorDiags surfaces it, so a mis-spelled flattener key fails loudly rather
+than silently. Measured 2026-08-26 by mutating flattenDnsPolicyResponsePrivate to
+emit "dns_mode". The constants are still right for both directions -- one
+spelling per package is worth having either way -- but only the expander half of
+the argument is about silence. This codebase has
 shipped that exact class of defect repeatedly -- a flattener that never assigned
 routingType and sent `""` against a required enum, a flattener that dropped an
 unknown bucket, a diagnostic whose guidance never reached the wire. Every one

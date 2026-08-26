@@ -38,12 +38,13 @@ var randNameDataSourceNetwork string = randStringBytesRmndr()
 // checkpointsase_standard_region_private_dns; the negative rows SPD-N01/SPD-N02
 // need no network and live in data_source_standard_private_dns_acc_test.go.
 //
-// SPD-02 IS THE FIRST REQUEST ANYTHING HAS EVER MADE to
-// /v3/networks/standard/{networkId}/regions/{regionId}/privateDNS. No probe in
-// Phase 5's measurement run, or any run before it, has touched that path in any
-// state. A failure of that read is INFORMATION FIRST and a provider defect
-// second: read what the server said and record it in API-FINDINGS.md 1.31, which
-// today describes the network paths alone.
+// THE STANDARD REGION PATH HAS BEEN READ EXACTLY ONCE, and the one read was a
+// surprise (API-FINDINGS.md 1.36, 2026-08-26): a region nobody had configured
+// returned `enabled = false` with `attributes` PRESENT and a fully populated
+// `dns_policy`. So SPD-02 must NOT assert "disabled means no attributes" — that
+// is the third disabled shape, and testAccCheckStandardPrivateDNSShape is
+// written to accept it. A failure here is still INFORMATION FIRST: one read of
+// one region on one tenant is not a contract.
 //
 // The private-DNS assertions are SHAPE assertions, not content assertions, and
 // testAccCheckStandardPrivateDNSShape's comment says why: the standard family

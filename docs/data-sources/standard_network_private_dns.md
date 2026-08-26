@@ -4,11 +4,14 @@ page_title: "checkpointsase_standard_network_private_dns Data Source - checkpoin
 subcategory: ""
 description: |-
   Read the private DNS configuration of a single standard checkpointsase_network. This is READ-ONLY because the API is: the standard family exposes GET and nothing else on this path, unlike the enhanced family, which has the checkpointsase_enhanced_network_private_dns resource.
+  attributes.dns_policy.private.forward_dns_update reads false on every body anyone has captured, because neither standard endpoint returned the key at all. That is the absence of the field, not a value the server stated.
 ---
 
 # checkpointsase_standard_network_private_dns (Data Source)
 
 Read the private DNS configuration of a single standard `checkpointsase_network`. This is READ-ONLY because the API is: the standard family exposes `GET` and nothing else on this path, unlike the enhanced family, which has the `checkpointsase_enhanced_network_private_dns` resource.
+
+`attributes.dns_policy.private.forward_dns_update` reads `false` on every body anyone has captured, because neither standard endpoint returned the key at all. That is the absence of the field, not a value the server stated.
 
 ## Example Usage
 
@@ -41,7 +44,7 @@ output "first_network_dns_servers" {
 
 ### Read-Only
 
-- `attributes` (List of Object) Private DNS configuration, as the API returned it. This list holds either one element or none: the API omits `attributes` entirely for an object nothing has ever configured, and returns it — with empty arrays when private DNS is off — for one that has been written to. Both shapes are normal. (see [below for nested schema](#nestedatt--attributes))
+- `attributes` (List of Object) Private DNS configuration, as the API returned it. This list holds either one element or none, and `enabled` does not predict which: the API omits `attributes` entirely for an object nothing has ever configured, and returns it — sometimes with a populated `dns_policy` — for an object that is switched off. All of those are normal. (see [below for nested schema](#nestedatt--attributes))
 - `enabled` (Boolean) Whether private DNS is enabled for this network or region.
 - `id` (String) The ID of this resource.
 

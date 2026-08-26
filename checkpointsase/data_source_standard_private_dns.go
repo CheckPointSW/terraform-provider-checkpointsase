@@ -87,9 +87,10 @@ measured a bogus networkId against THIS endpoint on 2026-08-26:
 	-> 404 {"message":"network doesnt exists","messageCode":"NOT_FOUND","status":404}
 
 That body names the network. A bogus REGION id has never been sent to the region
-endpoint -- no probe has ever hit the standard region path in any state -- so
-whether a wrong region_id is distinguishable from a wrong network_id is UNKNOWN,
-and this text does not pretend otherwise.
+endpoint: the standard region path has now been read successfully once
+(API-FINDINGS.md 1.36) but never with an id that names nothing, so whether a wrong
+region_id is distinguishable from a wrong network_id -- or answers a 404 at all --
+is UNKNOWN, and this text does not pretend otherwise.
 */
 const standardPrivateDNSNotFoundGuidance = "The API answered 404: the network, or the region " +
 	"within it, does not exist. A data source cannot report this as drift the way a resource " +
@@ -112,14 +113,26 @@ Optional+Computed that API-FINDINGS.md 1.31 forces on the ENHANCED resources'
 against a server that returns `attributes` once anything has been written, and a
 data source never plans a change at all.
 
-THE TWO DISABLED READ SHAPES STILL APPLY (API-FINDINGS.md 1.31, corrected
-2026-08-26). A never-configured object reads back as exactly `{"enabled": false}`
-with NO `attributes` key; an object something has written to reads back with
-`attributes` present and its arrays empty. A reader that assumed the first shape
-was the only disabled shape would be wrong about every object anyone has ever
-configured. Here that costs nothing beyond `attributes.#` being 0 in the first
-case and 1 in the second, which is what flattenCustomDnsAttributesResponse
-produces and what the data source's own description says.
+THERE ARE THREE DISABLED READ SHAPES, not the two API-FINDINGS.md 1.31 recorded.
+All three are measured:
+
+	never configured (enhanced)     {"enabled":false}
+	                                attributes ABSENT, dnsPolicy ABSENT
+	after an explicit disable       {"enabled":false,"attributes":{
+	  (enhanced, 1.31)               "servers":[],"searchDomains":[]}}
+	                                attributes PRESENT and empty, dnsPolicy ABSENT
+	standard region, NEVER TOUCHED  {"enabled":false,"attributes":{"dnsPolicy":{
+	  (1.36, 2026-08-26)             ...populated...},"servers":[],
+	                                 "searchDomains":[]}}
+	                                attributes PRESENT, dnsPolicy PRESENT AND
+	                                POPULATED
+
+The third is the one nobody predicted and the one this family actually returns:
+a region nobody configured comes back carrying a complete dnsPolicy whose
+defaults do not even match its own network's. So `enabled` says nothing about
+whether `attributes` or `dns_policy` will be there, in either direction, and
+nothing here may shortcut on it. Pinned by
+TestStandardRegionPrivateDNSReadStoresTheThirdDisabledShape.
 
 NO MaxItems, NO MinItems, ANYWHERE. Both are constraints on what a CONFIGURATION
 may contain, and nothing here is configurable; helper/schema's InternalValidate
@@ -141,9 +154,10 @@ func standardPrivateDNSSchema() map[string]*schema.Schema {
 			Type:     schema.TypeList,
 			Computed: true,
 			Description: "Private DNS configuration, as the API returned it. This list holds " +
-				"either one element or none: the API omits `attributes` entirely for an object " +
-				"nothing has ever configured, and returns it — with empty arrays when private " +
-				"DNS is off — for one that has been written to. Both shapes are normal.",
+				"either one element or none, and `enabled` does not predict which: the API " +
+				"omits `attributes` entirely for an object nothing has ever configured, and " +
+				"returns it — sometimes with a populated `dns_policy` — for an object that is " +
+				"switched off. All of those are normal.",
 			Elem: &schema.Resource{
 				Schema: map[string]*schema.Schema{
 					privateDNSAttrServers: {
@@ -223,9 +237,13 @@ func standardPrivateDNSSchema() map[string]*schema.Schema {
 												Type:     schema.TypeBool,
 												Computed: true,
 												Description: "Whether DNS updates (RFC 2136) are forwarded " +
-													"to the private DNS servers. Read-only, and returned " +
-													"only by the standard network family — the enhanced " +
-													"private-DNS resources have no equivalent.",
+													"to the private DNS servers. Read-only, and declared " +
+													"only on the standard family — the enhanced " +
+													"private-DNS resources have no equivalent. NOTE: " +
+													"neither standard endpoint returned this key in the " +
+													"only reads anyone has captured, so in practice it " +
+													"reads `false` — which is the absence of the field, " +
+													"not a value the server stated.",
 											},
 										},
 									},
@@ -258,7 +276,10 @@ func dataSourceStandardNetworkPrivateDNS() *schema.Resource {
 		Description: "Read the private DNS configuration of a single standard " +
 			"`checkpointsase_network`. This is READ-ONLY because the API is: the standard " +
 			"family exposes `GET` and nothing else on this path, unlike the enhanced family, " +
-			"which has the `checkpointsase_enhanced_network_private_dns` resource.",
+			"which has the `checkpointsase_enhanced_network_private_dns` resource." +
+			"\n\n`attributes.dns_policy.private.forward_dns_update` reads `false` on every " +
+			"body anyone has captured, because neither standard endpoint returned the key " +
+			"at all. That is the absence of the field, not a value the server stated.",
 		ReadContext: dataSourceStandardNetworkPrivateDNSRead,
 		Schema:      s,
 	}
@@ -291,7 +312,19 @@ func dataSourceStandardRegionPrivateDNS() *schema.Resource {
 		Description: "Read the private DNS configuration of a single region inside a standard " +
 			"`checkpointsase_network`. This is READ-ONLY because the API is: the standard " +
 			"family exposes `GET` and nothing else on this path, unlike the enhanced family, " +
-			"which has the `checkpointsase_enhanced_region_private_dns` resource.",
+			"which has the `checkpointsase_enhanced_region_private_dns` resource.\n\n" +
+			"**EXPECT A `dns_policy` BLOCK EVEN FOR A REGION NOBODY HAS CONFIGURED.** " +
+			"Measured 2026-08-26: a region that had never been touched returned " +
+			"`enabled = false` together with a complete `dns_policy` — mode " +
+			"`resolveAllViaPrivate`, `public_fallback = true` — whose defaults did not even " +
+			"match those of its own network. That is what the server holds, not evidence " +
+			"that anyone configured it, and it is not something this data source could " +
+			"suppress without hiding values the API really returns. Read `enabled` to find " +
+			"out whether private DNS is in force; do not infer it from the presence of " +
+			"`attributes` or of `dns_policy`." +
+			"\n\n`attributes.dns_policy.private.forward_dns_update` reads `false` on every " +
+			"body anyone has captured, because neither standard endpoint returned the key " +
+			"at all. That is the absence of the field, not a value the server stated.",
 		ReadContext: dataSourceStandardRegionPrivateDNSRead,
 		Schema:      s,
 	}
@@ -399,12 +432,18 @@ func dataSourceStandardNetworkPrivateDNSRead(ctx context.Context, d *schema.Reso
 dataSourceStandardRegionPrivateDNSRead reads one region's private DNS inside a
 standard network.
 
-NOTHING HAS EVER PROBED THIS ENDPOINT, in any state. Every captured private-DNS
-body in this project came from the network paths -- the standard network path for
-the unconfigured shape (API-FINDINGS.md 1.31) and the ENHANCED network path for
-every populated one (1.31, 1.34). So the shape this function flattens is what the
-spec declares (swagger.yaml:1752 -> CustomDnsResponse), not what anything has been
-observed to return. If a live read here disagrees, that divergence is the finding.
+THIS ENDPOINT HAS NOW BEEN READ ONCE, and the one read was a surprise
+(API-FINDINGS.md 1.36, 2026-08-26). A region nobody had configured -- only its
+network was touched -- returned `enabled: false` with `attributes` PRESENT and a
+fully populated `dnsPolicy` carrying different defaults from its own network's.
+That is the THIRD disabled read shape and it is covered by
+TestStandardRegionPrivateDNSReadStoresTheThirdDisabledShape.
+
+WHAT THAT ONE READ DOES NOT COVER, and these remain spec-derived here: any
+populated `servers` or `searchDomains` on a region, a non-empty `domains` list in
+either policy half, `forwardDNSUpdate` in any form (the key was not returned),
+and the 404 branch -- P10's 404 is the standard NETWORK path, and a bogus REGION
+id has still never been sent to anything.
 
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
@@ -600,27 +639,43 @@ user configuration". A data source that exposed only forward_dns_update would
 report three empty fields for values the API declares it returns, with no error
 anywhere.
 
-THE PROBE DID NOT DECIDE THIS, AND THE BRIEF SAID IT WOULD. Task 4's step 1 says
-to decide from P3's captured body. P3's captured body is `{"enabled": false}` --
-seventeen bytes, no `attributes` key, and therefore no `dnsPolicy` key either. It
-is silent on the question. The decision is made on the spec plus the asymmetry of
-the two errors: reading a key the server never sends yields the same zero value
-omitting it would, whereas omitting a key the server does send is the 2.1 failure
-and is invisible.
+THE PROBE DID NOT DECIDE THIS AND THE BRIEF SAID IT WOULD; A LATER CAPTURE DID.
+Task 4's step 1 said to decide from P3's body. P3's body is `{"enabled": false}` --
+seventeen bytes, no `attributes` key and therefore no `dnsPolicy` key -- so it was
+silent on the question, and this function was originally written on the spec plus
+the asymmetry of the two errors: reading a key the server never sends yields the
+same zero value omitting it would, whereas omitting a key the server does send is
+the 2.1 failure and is invisible.
 
-SO THIS FUNCTION'S THREE AdditionalProperties FIELDS ARE SPEC-DERIVED, NOT
-CAPTURE-DERIVED. No standard endpoint has ever been observed returning a
-populated private-DNS body, at network or region level. The nearest measurement is
-API-FINDINGS.md 1.34, which round-tripped a full dnsPolicy on the ENHANCED network
-path, where the typed model has all three fields and none of this applies.
+IT IS NOW MEASURED (API-FINDINGS.md 1.36, 2026-08-26). Because 1.35 established
+that v3 has NO write method on this family, the standard network was configured
+out of band from the console and both paths were read. Decoded with the real
+generated types:
 
-An absent key and a key whose value is false are indistinguishable here, because
-the schema is Computed and Terraform has no null. That is stated rather than
-worked around: it costs a reader nothing on a read-only attribute, and inventing a
-tri-state would be inventing information.
+	Private typed : &{ForwardDNSUpdate:<nil>
+	                  AdditionalProperties:map[domains:[checkpoint.com]
+	                                           mode:matchPattern
+	                                           publicFallback:false]}
+
+So `mode`, `publicFallback` and `domains` really do arrive in
+AdditionalProperties on this family. Both values of `publicFallback` are covered
+-- false on the network read, true on the region read -- and both `mode` enum
+values with them. Pinned by
+TestStandardNetworkPrivateDNSReadStoresTheMeasuredConfiguredBody and
+TestStandardRegionPrivateDNSReadStoresTheThirdDisabledShape.
+
+`forwardDNSUpdate` IS THE ONE FIELD STILL UNMEASURED, and it is the one the
+generated struct DOES declare. Neither capture returned the key at all, so
+GetForwardDNSUpdate() answers false on every body anyone has seen -- which is the
+ABSENCE of the field rather than a value the server stated. The schema
+description says so. An absent key and a key whose value is false are
+indistinguishable here, because the attribute is Computed and Terraform has no
+null; inventing a tri-state would be inventing information.
 
 @see LEFTOVERS.md L35 -- the candidate overlay entry that would remove the need
-for this function.
+for this function. It stays OPEN: the generator defect is real and unfixed, and
+1.36 upgraded its evidence from "the spec says allOf merges" to "measured on the
+wire" rather than closing it.
 
   - @param private *perimeter81Sdk.DnsPolicyResponseAllOfPrivate - the private half, non-nil
 

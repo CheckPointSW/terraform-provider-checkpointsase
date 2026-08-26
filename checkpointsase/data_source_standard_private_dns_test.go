@@ -24,10 +24,12 @@ these two data sources lives in data_source_standard_network_scoped_test.go and
 data_source_standard_private_dns_acc_test.go and genuinely is acceptance
 coverage.
 
-READ THE FIXTURE COMMENTS BEFORE TRUSTING A FIXTURE. Exactly ONE of the bodies
-below was captured from the standard family on the wire. The rest are derived
-from swagger.yaml, and each one says so. This project has twice shipped fixtures
-claiming a wire fidelity they did not have.
+READ THE FIXTURE COMMENTS BEFORE TRUSTING A FIXTURE. Some of the bodies below
+were captured from the standard family on the wire and some are derived from
+swagger.yaml, and each one says which. This project has twice shipped fixtures
+claiming a wire fidelity they did not have, so the split is kept narrow and
+literal rather than swept in one direction: a capture proves what is IN it, and
+the parts of a shape it left empty are still spec-derived afterwards.
 */
 
 /*
@@ -59,27 +61,68 @@ CAPTURE-DERIVED (one of them):
     All three are 404 with messageCode NOT_FOUND, so nothing in the provider
     behaves differently -- but a test asserting on the text would.
 
-SPEC-DERIVED (everything else):
+  - measuredStandardNetworkPrivateDNSConfigured is the standard NETWORK read of a
+    network configured OUT OF BAND FROM THE CONSOLE, measured 2026-08-26 and
+    recorded in API-FINDINGS.md 1.36. It exists because 1.35 established that v3
+    has NO write method on this family at all, so no probe on this API could ever
+    have produced it -- the console was the only route.
 
-  - specStandardPrivateDNSConfigured is a POPULATED standard body, and NOTHING
-    HAS EVER MEASURED ONE. No probe has read a standard private-DNS endpoint with
-    private DNS configured, at network or region level, in this project or any
-    run before it. Every populated body on record -- servers, searchDomains,
-    dnsPolicy -- came from the ENHANCED network endpoint (API-FINDINGS.md 1.31 for
-    servers and searchDomains, 1.34 for the dnsPolicy round trip). The values
-    below are copied from those enhanced captures so they are at least realistic,
-    but the SHAPE is what swagger.yaml:4419/:4409/:4632 declares for the standard
-    family and the assertions that read it are assertions about the provider's
-    handling of the SPEC, not about the server.
+    This is the body that settled plan decision D3 on evidence. Decoded with the
+    real generated types, `mode`, `publicFallback` and `domains` arrive in
+    DnsPolicyResponseAllOfPrivate.AdditionalProperties, exactly as the allOf
+    reading predicted, and `forwardDNSUpdate` -- the one field the generated
+    struct DOES declare -- was not returned at all.
 
-    The `private` block is the whole of plan decision D3: `forwardDNSUpdate` is
-    on the generated struct, and `mode`, `publicFallback` and `domains` are not --
-    they arrive in AdditionalProperties. See flattenDnsPolicyResponsePrivate.
+  - measuredStandardRegionPrivateDNSUntouched is the THIRD DISABLED READ SHAPE
+    (API-FINDINGS.md 1.36), captured from the same run. Nobody configured this
+    region; only its network was touched. It comes back `enabled: false` with
+    `attributes` PRESENT and a fully populated `dnsPolicy` carrying DIFFERENT
+    defaults from the network's -- resolveAllViaPrivate and publicFallback true,
+    against the network's matchPattern and false.
+
+SPEC-DERIVED (everything else), and BE PRECISE ABOUT WHAT THAT NOW MEANS. The two
+captures above are narrow. Between them they cover: one server with isTLS FALSE;
+EMPTY searchDomains; EMPTY public.domains; both `mode` enum values; both
+`publicFallback` values; and a private `domains` list of one element and of zero.
+They do NOT cover, and these therefore remain spec-derived on this family:
+
+  - more than one server, `isTLS: true`, or server ORDER;
+
+  - a non-empty searchDomains list or its order;
+
+  - a non-empty public.domains list or its order;
+
+  - more than one private domain, or their order;
+
+  - `forwardDNSUpdate` in ANY form -- neither capture returned it, so every
+    assertion about `forward_dns_update` in this file is about the SPEC;
+
+  - a 404 from the standard REGION path. P10's 404 is the standard NETWORK path;
+    a bogus region id has still never been sent to anything.
+
+  - specStandardPrivateDNSConfigured is therefore still a SPEC-DERIVED body, and
+    is kept rather than replaced by the capture: it is the only fixture here that
+    exercises two servers with different isTLS, non-alphabetical searchDomains and
+    a populated public.domains, which is exactly the ordering contract the
+    TypeList decision rests on. Its values come from the ENHANCED captures
+    (API-FINDINGS.md 1.31, 1.34) so they are realistic; the SHAPE is
+    swagger.yaml:4419/:4409/:4632.
 */
 const (
 	measuredStandardPrivateDNSUnconfigured = `{"enabled":false}`
 	measuredStandardPrivateDNSNetworkGone  = `{"message":"network doesnt exists",` +
 		`"messageCode":"NOT_FOUND","status":404}`
+
+	// Verbatim from the 1.36 captures, key order included.
+	measuredStandardNetworkPrivateDNSConfigured = `{"enabled":true,"attributes":{` +
+		`"servers":[{"address":"13.227.192.28","isTLS":false}],"searchDomains":[],` +
+		`"dnsPolicy":{"public":{"domains":[]},` +
+		`"private":{"mode":"matchPattern","publicFallback":false,` +
+		`"domains":["checkpoint.com"]}}}}`
+	measuredStandardRegionPrivateDNSUntouched = `{"enabled":false,"attributes":{` +
+		`"dnsPolicy":{"public":{"domains":[]},` +
+		`"private":{"mode":"resolveAllViaPrivate","publicFallback":true,"domains":[]}},` +
+		`"servers":[],"searchDomains":[]}}`
 
 	specStandardPrivateDNSConfigured = `{"enabled":true,"attributes":{` +
 		`"servers":[{"address":"10.0.0.53","isTLS":false},{"address":"10.0.1.53","isTLS":true}],` +
@@ -183,6 +226,143 @@ func TestStandardPrivateDNSReadOnUnconfiguredNetwork(t *testing.T) {
 	}
 	if d.Id() == "" {
 		t.Error("a successful read left the id empty; Terraform reads that as 'not read yet'")
+	}
+}
+
+/*
+TestStandardNetworkPrivateDNSReadStoresTheMeasuredConfiguredBody is the
+CAPTURE-DERIVED half of the D3 coverage, and it is the test that turns
+flattenDnsPolicyResponsePrivate from a well-argued guess into a measured one.
+
+The body is API-FINDINGS.md 1.36's standard NETWORK read, from a network
+configured out of band in the console -- the only route that exists, because 1.35
+established v3 has no write method on this family.
+
+WHAT IT PROVES THAT THE SPEC-DERIVED TEST CANNOT: that `mode`, `publicFallback`
+and `domains` really do arrive in AdditionalProperties on the standard family,
+rather than merely following from reading `allOf` as a merge. Both tests assert
+the same three attributes; only this one is evidence about the server.
+
+WHAT IT DELIBERATELY DOES NOT ASSERT. forward_dns_update is absent from the
+assertions below because the server DID NOT RETURN forwardDNSUpdate -- the one
+field the generated struct declares is the one field the wire omitted. Asserting
+`false` here would look like coverage and would in fact be asserting the zero
+value of a field nothing has ever sent. The spec-derived tests carry that
+attribute, labelled as spec-derived.
+
+search_domains and public.domains are asserted as EMPTY, which is what the
+capture holds. That is not the ordering contract -- an empty list cannot show
+order. The ordering assertions live in the spec-derived test, on the enhanced
+family's measured non-alphabetical shape.
+*/
+func TestStandardNetworkPrivateDNSReadStoresTheMeasuredConfiguredBody(t *testing.T) {
+	f := startStandardPrivateDNSFake(t, http.StatusOK,
+		measuredStandardNetworkPrivateDNSConfigured)
+
+	d := standardNetworkPrivateDNSData(t, "net-1")
+	if diags := dataSourceStandardNetworkPrivateDNSRead(
+		context.Background(), d, f.client()); diags.HasError() {
+		t.Fatalf("the MEASURED standard network body failed to read: %s", diagsText(diags))
+	}
+
+	for _, want := range []struct {
+		path string
+		val  interface{}
+	}{
+		{"enabled", true},
+		{"attributes.#", 1},
+		{"attributes.0.servers.#", 1},
+		{"attributes.0.servers.0.address", "13.227.192.28"},
+		{"attributes.0.servers.0.is_tls", false},
+		{"attributes.0.search_domains.#", 0},
+
+		{"attributes.0.dns_policy.#", 1},
+		{"attributes.0.dns_policy.0.public.#", 1},
+		{"attributes.0.dns_policy.0.public.0.domains.#", 0},
+
+		// The three D3 fields, now MEASURED rather than reasoned.
+		{"attributes.0.dns_policy.0.private.#", 1},
+		{"attributes.0.dns_policy.0.private.0.mode", "matchPattern"},
+		{"attributes.0.dns_policy.0.private.0.public_fallback", false},
+		{"attributes.0.dns_policy.0.private.0.domains.#", 1},
+		{"attributes.0.dns_policy.0.private.0.domains.0", "checkpoint.com"},
+	} {
+		assertStandardPrivateDNSAttr(t, d, want.path, want.val)
+	}
+}
+
+/*
+TestStandardRegionPrivateDNSReadStoresTheThirdDisabledShape covers the shape
+NOBODY PREDICTED, measured 2026-08-26 and recorded as API-FINDINGS.md 1.36.
+
+There are now THREE disabled read shapes, not the two 1.31 recorded:
+
+	never configured (enhanced)    {"enabled":false}
+	                               attributes ABSENT, dnsPolicy ABSENT
+	after an explicit disable      {"enabled":false,"attributes":{"servers":[],
+	  (enhanced)                    "searchDomains":[]}}
+	                               attributes PRESENT and empty, dnsPolicy ABSENT
+	standard region, NEVER TOUCHED {"enabled":false,"attributes":{"dnsPolicy":{...}
+	                                ,"servers":[],"searchDomains":[]}}
+	                               attributes PRESENT, dnsPolicy PRESENT AND
+	                               POPULATED
+
+The third one is the surprise, and it is the reason this test exists as its own
+function rather than as a row in a table. Nobody configured this region -- only
+its network was touched -- and it still returns a complete dns_policy carrying
+DIFFERENT defaults from its own network's: resolveAllViaPrivate against
+matchPattern, publicFallback true against false. So the server holds per-region
+defaults that no operator set and that do not match the parent.
+
+WHAT THIS MUST NOT BREAK ON, and what the assertions are chosen to catch:
+
+  - a reader that treats `enabled: false` as "nothing to flatten" and skips
+    `attributes` or `dns_policy`. That is the natural, wrong simplification here,
+    and it is what mutation M15 is;
+  - a reader that treats an empty `domains` list as "no private block" and drops
+    the whole sub-object. Both `domains` lists in this body are empty and the
+    block is still real -- mutation M16;
+  - public_fallback read as its zero value. It is TRUE here, so this is the
+    capture-derived twin of the spec-derived boolean test: a reader that never
+    looked at the field would store false and fail this row.
+
+THE USER-VISIBLE CONSEQUENCE is on checkpointsase_standard_region_private_dns's
+own page, in its top-level Description, and belongs there rather than only here:
+the data source WILL surface a dns_policy block for a region nobody has
+configured. That is what the server holds, not evidence that somebody configured
+it, and a reader will assume the latter unless told.
+*/
+func TestStandardRegionPrivateDNSReadStoresTheThirdDisabledShape(t *testing.T) {
+	f := startStandardPrivateDNSFake(t, http.StatusOK,
+		measuredStandardRegionPrivateDNSUntouched)
+
+	d := standardRegionPrivateDNSData(t, "net-1", "reg-1")
+	if diags := dataSourceStandardRegionPrivateDNSRead(
+		context.Background(), d, f.client()); diags.HasError() {
+		t.Fatalf("the MEASURED standard region body failed to read: %s", diagsText(diags))
+	}
+
+	for _, want := range []struct {
+		path string
+		val  interface{}
+	}{
+		{"enabled", false},
+		// PRESENT despite enabled being false. This is the whole finding.
+		{"attributes.#", 1},
+		{"attributes.0.servers.#", 0},
+		{"attributes.0.search_domains.#", 0},
+
+		// And a fully populated policy on an object nobody configured.
+		{"attributes.0.dns_policy.#", 1},
+		{"attributes.0.dns_policy.0.public.#", 1},
+		{"attributes.0.dns_policy.0.public.0.domains.#", 0},
+		{"attributes.0.dns_policy.0.private.#", 1},
+		// The OTHER enum value, and the OTHER boolean, from the network capture.
+		{"attributes.0.dns_policy.0.private.0.mode", "resolveAllViaPrivate"},
+		{"attributes.0.dns_policy.0.private.0.public_fallback", true},
+		{"attributes.0.dns_policy.0.private.0.domains.#", 0},
+	} {
+		assertStandardPrivateDNSAttr(t, d, want.path, want.val)
 	}
 }
 
@@ -305,6 +485,15 @@ The second row is also the API-FINDINGS.md 1.34 shape -- `publicFallback`
 explicitly false on the wire -- carried here rather than left only in the decode
 test, so that "the server sent false" and "nothing read the field" are told apart
 somewhere.
+
+WHAT IS MEASURED AND WHAT IS NOT, now that 1.36 exists. BOTH `publicFallback`
+values are measured on the standard family: false in the network capture, true in
+the region capture, and the two capture-derived tests above assert them.
+`forwardDNSUpdate` is NOT measured in any form -- neither capture returned the
+key at all -- so the forward_dns_update half of every row here is SPEC-DERIVED.
+This test is kept for the pairing it does that no capture does: no single
+captured body carries both fields, so nothing but a constructed body can tell a
+SWAP of the two sources from a correct read.
 */
 func TestStandardPrivateDNSReadsEachPrivatePolicyBooleanFromItsOwnSource(t *testing.T) {
 	for _, tc := range []struct {
@@ -651,9 +840,12 @@ carries over:
     the measured unconfigured body.
   - DnsPolicyPublic requires `domains`, and DnsPolicyResponse.Public IS
     DnsPolicyPublic. So a standard server that returned `"public": {}` would fail
-    the ENTIRE GET, not just that field. swagger.yaml:4595 makes `domains`
-    required inside `public`, so the spec says it cannot happen; nothing has
-    verified it on this family.
+    the ENTIRE GET, not just that field. MEASURED 2026-08-26 (API-FINDINGS.md
+    1.36): both standard reads returned `"public":{"domains":[]}`, so the check is
+    satisfied and the whole-GET failure DOES NOT OCCUR on the bodies anyone has
+    seen. The risk is still real and the wantErr row below still exercises it --
+    two captured bodies are not a guarantee about every object -- but it is no
+    longer an open question about the ordinary case.
   - DnsPolicyResponseAllOfPrivate has NO requiredProperties loop at all
     (model_dns_policy_response_all_of_private.go:99 unmarshals and files the rest
     into AdditionalProperties). This is the good half of the generator's D3
@@ -678,6 +870,17 @@ func TestStandardPrivateDNSSpecBodyDecodesThroughTheGeneratedModels(t *testing.T
 		{
 			name: "the spec-shaped populated body, publicFallback explicitly false",
 			body: specStandardPrivateDNSConfigured,
+		},
+		{
+			// The two MEASURED bodies, decoded through the real generated types.
+			// This is the row that would have caught the whole-GET failure if
+			// the server had sent `"public": {}`.
+			name: "the measured standard network body (1.36)",
+			body: measuredStandardNetworkPrivateDNSConfigured,
+		},
+		{
+			name: "the measured standard region body, third disabled shape (1.36)",
+			body: measuredStandardRegionPrivateDNSUntouched,
 		},
 		{
 			// The generator's allOf collapse means this decodes even though the
