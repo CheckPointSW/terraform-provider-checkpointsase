@@ -663,7 +663,7 @@ TestExpandCustomDnsUpdateNeverMarshalsNullArrays is a MARSHALLING test, not a
 struct test.
 
 CustomDnsUpdateAttributes declares Servers and SearchDomains without omitempty
-(model_custom_dns_update_attributes.go:23), and so do DnsPolicyPublic.Domains and
+(model_custom_dns_update_attributes.go:24 and :26), and so do DnsPolicyPublic.Domains and
 DnsPolicyPrivate.Domains, so a nil slice on any of the four reaches the wire as
 `"servers": null` -- not an array, and the endpoint's @IsArray rejects it. The
 schema is explicit: "send an empty array if you have none. Omitting it on update

@@ -512,7 +512,7 @@ func putPrivateDNSAndWait(
 		// resources' Read and in the data source's shared setter, and a panic is
 		// the one failure mode Terraform cannot report as a diagnostic. Pinned by
 		// TestPutPrivateDNSAndWaitSurvivesANullStatusBody. The guard is identical
-		// to putSplitTunnelingAndWait's (resource_split_tunneling.go:733); do not
+		// to putSplitTunnelingAndWait's own `if status == nil`; do not
 		// let the two shapes drift. async.go's two sibling pollers still have the
 		// unguarded shape, which is a house pattern to fix in one pass and is part
 		// of L37.
@@ -552,7 +552,7 @@ tells you to do. The legal "off" body is
 `{"enabled": false, "attributes": {"servers": [], "searchDomains": []}}`.
 
 EVERY ARRAY IS EMPTY, NEVER NIL. Servers and SearchDomains are declared without
-omitempty (model_custom_dns_update_attributes.go:23), as are
+omitempty (model_custom_dns_update_attributes.go:24 and :26), as are
 DnsPolicyPublic.Domains and DnsPolicyPrivate.Domains, so a nil slice reaches the
 wire as `"servers": null` -- not an array. Both variants compile and both marshal
 without error, which is why payload_marshal_test.go pins the body and not the

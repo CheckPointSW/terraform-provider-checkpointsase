@@ -490,7 +490,9 @@ A 200 carrying the literal `null` decodes without error and leaves the
 before it consults any Unmarshaler. GetCompleted() is generated nil-safe, so it
 is not the hazard; status.Result is a DIRECT FIELD ACCESS and dereferences the
 receiver. Removing the `status == nil` guard makes this test panic rather than
-fail -- verified by mutation on 2026-08-26, at resource_split_tunneling.go:694 --
+fail -- verified by mutation on 2026-08-26, at putSplitTunnelingAndWait's
+`if status == nil` guard (named rather than numbered: the old citation, :694, pointed
+at the `statusId == ""` guard a few lines earlier and line numbers drift) --
 and a panic is the one failure mode Terraform cannot report as a diagnostic.
 
 WHAT THE RIGHT ANSWER IS, since "does not panic" does not choose one: a null
