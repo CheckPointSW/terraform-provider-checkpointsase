@@ -2,6 +2,7 @@ package checkpointsase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -18,9 +19,77 @@ resourceIpsecRedundant Setup the IpSec-Redundant Resource CRUD operations
 
 @return &schema.Resource
 */
+/*
+ipsecRedundantCannotBeManaged is the whole explanation, not "invalid value",
+because nothing the user wrote is wrong. The API cannot return the identifier
+this resource needs, so no configuration can succeed.
+
+MEASURED 2026-08-27 on a live HA pair (API-FINDINGS.md 1.39). The read, update
+and delete routes all live at
+/v3/networks/standard/{networkId}/tunnels/ipsec/redundant/{haTunnelId}, and
+haTunnelID is returned by NO endpoint on this API: not the network detail, not
+the network list, not the gateway or region reads, not the single-tunnel read,
+and there is no redundant collection route to list it from. The redundant GET
+was tested with BOTH member ids and answered 404 to each.
+
+WHY THIS REFUSES RATHER THAN LETTING THE APPLY RUN. Create SUCCEEDS -- the
+tunnels are really built -- and the failure lands on the read immediately after.
+So every attempt left a live HA pair the provider could not read, update or
+delete, on two gateways that had to be removed by hand. Refusing at plan time is
+the difference between a clear message and orphaned infrastructure.
+
+This mirrors resourceEnhancedRouteTableCustomizeDiff, which refuses for the same
+class of reason (1.1). One difference is worth knowing: there, create FAILS, so
+refusing early only improves the message. Here create WORKS, so refusing early
+prevents real damage.
+
+Delete this function and the CustomizeDiff registration when the API returns
+haTunnelID -- one field on the network-find tunnel objects would restore read,
+update and delete together.
+*/
+const ipsecRedundantCannotBeManaged = `checkpointsase_ipsec_redundant cannot be managed on the v3 API.
+
+The read, update and delete endpoints are all addressed by an "haTunnelId" -- the
+identifier of the HA PAIR -- and the API returns that value from no endpoint. It
+is absent from the network read, the network list, the gateway and region reads,
+and the single-tunnel read, and there is no collection route that lists it. The
+pair endpoint was tested with each member tunnel's own id and returned 404 for
+both.
+
+This is refused at plan time on purpose. Creating the pair SUCCEEDS, so without
+this refusal an apply builds two real tunnels and then fails on the read that
+follows, leaving infrastructure this provider can neither manage nor destroy.
+
+Until the API exposes haTunnelID, use the Harmony SASE console for redundant
+IPsec tunnels. checkpointsase_ipsec_single is unaffected and works normally.
+
+Measured and recorded in API-FINDINGS.md section 1.39.`
+
+/*
+resourceIpsecRedundantCustomizeDiff refuses every configuration.
+
+See ipsecRedundantCannotBeManaged for why. Destroy plans do not reach
+CustomizeDiff in SDKv2, which is deliberate: anyone already holding a pair in
+state can still remove it from state.
+*/
+func resourceIpsecRedundantCustomizeDiff(_ context.Context, _ *schema.ResourceDiff, _ interface{}) error {
+	return errors.New(ipsecRedundantCannotBeManaged)
+}
+
 func resourceIpsecRedundant() *schema.Resource {
 	return &schema.Resource{
-		Description: "Manages an active/standby IPsec redundant tunnel pair for a " +
+		CustomizeDiff: resourceIpsecRedundantCustomizeDiff,
+		Description: "**UNAVAILABLE ON THE v3 API — every configuration is refused at " +
+			"plan time.** The read, update and delete endpoints are all addressed by an " +
+			"`haTunnelId` (the id of the HA *pair*), and the API returns that value from " +
+			"no endpoint: not the network read or list, not the gateway or region reads, " +
+			"not the single-tunnel read, and there is no collection route that lists it. " +
+			"The pair endpoint answers 404 to each member tunnel's own id. Creating the " +
+			"pair *succeeds*, so this resource refuses at plan time rather than building " +
+			"two real tunnels it could neither manage nor destroy. Use the Harmony SASE " +
+			"console until the API exposes `haTunnelID`; `checkpointsase_ipsec_single` is " +
+			"unaffected. Measured in API-FINDINGS.md §1.39. " +
+			"Manages an active/standby IPsec redundant tunnel pair for a " +
 			"`checkpointsase_network`. Two tunnels (`tunnel1` + `tunnel2`) terminate at " +
 			"distinct remote endpoints for failover; `shared_settings` (gateway subnets) " +
 			"and `advanced_settings` (IKE/IPSec parameters, phase1/phase2 proposals) " +

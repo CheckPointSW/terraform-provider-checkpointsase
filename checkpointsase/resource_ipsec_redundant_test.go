@@ -3,6 +3,7 @@ package checkpointsase
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
@@ -13,6 +14,22 @@ import (
 
 func TestAccIpsecRedundant_basic(t *testing.T) {
 	t.Parallel()
+	// BLOCKED ON THE API, not on this test. checkpointsase_ipsec_redundant now
+	// refuses every configuration at plan time, so this can never pass: the read,
+	// update and delete routes are all addressed by an haTunnelId that the API
+	// returns from no endpoint (API-FINDINGS.md 1.39, measured on a live pair).
+	//
+	// It is skipped rather than deleted so it is ready the day the API exposes
+	// haTunnelID -- the config below is known-good and did create a real pair.
+	// Deleting it would mean rebuilding a fixture that costs two gateways and
+	// ~26 minutes.
+	//
+	// Skipping rather than leaving it red is deliberate: a permanently failing
+	// test trains people to ignore a red suite, and this project already lost a
+	// whole phase's acceptance coverage to evidence that looked present and was
+	// measuring something else.
+	t.Skip("BLOCKED: the API returns no haTunnelId, so the resource refuses at " +
+		"plan time (API-FINDINGS.md 1.39). Unskip when haTunnelID is exposed.")
 	var tunnel perimeter81Sdk.IPSecRedundantTunnels
 	resource.Test(t, resource.TestCase{
 		PreCheck:  func() { testAccPreCheck(t); testAccPreCheckRegion(t) },
@@ -225,4 +242,36 @@ resource "checkpointsase_ipsec_redundant" "ipsr1" {
 }
   `
 	return fmt.Sprintf(config, randStringBytesRmndr(), testAccRegionID())
+}
+
+/*
+TestIpsecRedundantRefusesEveryConfiguration is the gate on the plan-time refusal.
+
+It matters more than an ordinary schema test because of what the refusal
+PREVENTS. Creating a redundant pair SUCCEEDS against the API -- two real tunnels
+on two real gateways -- and the failure lands on the read immediately after. So
+without this refusal an apply leaves infrastructure the provider can neither
+manage nor destroy, and the operator has to remove it by hand.
+
+If someone deletes the CustomizeDiff registration to "unblock" the resource, this
+test is what tells them what they have re-enabled.
+*/
+func TestIpsecRedundantRefusesEveryConfiguration(t *testing.T) {
+	r := resourceIpsecRedundant()
+
+	if r.CustomizeDiff == nil {
+		t.Fatal("CustomizeDiff is not registered: the resource would create real " +
+			"tunnels it cannot then read, update or delete (API-FINDINGS.md 1.39)")
+	}
+
+	err := r.CustomizeDiff(context.Background(), nil, nil)
+	if err == nil {
+		t.Fatal("CustomizeDiff accepted a configuration; it must refuse every one")
+	}
+	for _, want := range []string{"haTunnelId", "1.39", "ipsec_single"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q, so it does not tell the "+
+				"operator why or what to do instead:\n%s", want, err.Error())
+		}
+	}
 }
