@@ -52,7 +52,9 @@ func resourceEnhancedDynamicTunnel() *schema.Resource {
 			"tunnel_name": {
 				Type:     schema.TypeString,
 				Required: true,
-				Description: "The name of the dynamic IPSec tunnel. Must be 15 characters or fewer. " +
+				Description: "The name of the dynamic IPSec tunnel. 3-15 characters, letters and digits only: " +
+					"the server rejects hyphens, underscores, dots and spaces with a 422 naming " +
+					"`interfaceName`. " +
 					"The server derives each endpoint's interface name by appending `01` to this value " +
 					"(`interfaceName: ${tunnelName}0${i+1}`) and reports that decorated form on read. Terraform records " +
 					"the name **you** configured, not the decorated one, so a plan straight after an apply is empty and " +
@@ -61,7 +63,7 @@ func resourceEnhancedDynamicTunnel() *schema.Resource {
 				// (setEnhancedDynamicTunnelNameState) instead — see the comment
 				// above dynamicTunnelNameForState for why suppressing the diff
 				// here was actively harmful.
-				ValidateFunc: validation.StringLenBetween(0, 15),
+				ValidateFunc: validation.StringMatch(tunnelNamePattern, tunnelNameRuleMessage),
 			},
 			"description": {
 				Type:        schema.TypeString,

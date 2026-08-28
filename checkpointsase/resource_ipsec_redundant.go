@@ -132,11 +132,14 @@ func resourceIpsecRedundant() *schema.Resource {
 				Description: "The ID of the standard network the tunnel pair belongs to.",
 			},
 			"tunnel_name": {
-				Type:         schema.TypeString,
-				Required:     true,
-				ForceNew:     true,
-				Description:  "Display name for the redundant tunnel pair. Must be 15 characters or fewer.",
-				ValidateFunc: validation.StringLenBetween(0, 15),
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+				Description: "Display name for the redundant tunnel pair. 3-15 characters, letters and " +
+					"digits only. The server derives each member's `interfaceName` from this value " +
+					"(`<name>01` and `<name>02`) and rejects hyphens, underscores, dots and spaces " +
+					"with a 422 that names only the derived field.",
+				ValidateFunc: validation.StringMatch(tunnelNamePattern, tunnelNameRuleMessage),
 			},
 			"advanced_settings": {
 				Type:        schema.TypeList,

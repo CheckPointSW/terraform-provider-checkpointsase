@@ -77,7 +77,7 @@ resource "checkpointsase_enhanced_static_tunnel" "example" {
 - `phase2` (Block List, Min: 1, Max: 1) Phase 2 (ESP/IPSec) configuration. (see [below for nested schema](#nestedblock--phase2))
 - `region_id` (String) The target region ID within the enhanced network.
 - `remote_gateway_subnets` (List of String) List of remote gateway subnet CIDR blocks. **Do not use the default route `0.0.0.0/0` here.** A static tunnel created with `remote_gateway_subnets = ["0.0.0.0/0"]` can be created and read but can NEVER be updated: every later `PUT` returns `404 Remote gateway subnets not found` — including a change that does not touch either subnet list — so the tunnel is stuck at its created configuration for the rest of its life and the only way out is to destroy and re-create it. Measured 2026-08-17 (`API-FINDINGS.md` §1.2) on three tunnels differing only in this field; the same update returns `202` when the value is a real CIDR. Note this is the OPPOSITE of `p81_gateway_subnets`, where `0.0.0.0/0` is a legal and recommended value. The provider does not refuse `0.0.0.0/0` at plan time, because the API accepts it at create and a validator here would refuse a configuration the server allows.
-- `tunnel_name` (String) The name of the static IPSec tunnel. Must be 15 characters or fewer.
+- `tunnel_name` (String) The name of the static IPSec tunnel. 3-15 characters, letters and digits only. The server derives the tunnel's `interfaceName` from this value and rejects hyphens, underscores, dots and spaces with a 422 that names only the derived field.
 
 ### Optional
 

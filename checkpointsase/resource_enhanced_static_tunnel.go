@@ -59,10 +59,13 @@ func resourceEnhancedStaticTunnel() *schema.Resource {
 				Description: "The target region ID within the enhanced network.",
 			},
 			"tunnel_name": {
-				Type:         schema.TypeString,
-				Required:     true,
-				Description:  "The name of the static IPSec tunnel. Must be 15 characters or fewer.",
-				ValidateFunc: validation.StringLenBetween(0, 15),
+				Type:     schema.TypeString,
+				Required: true,
+				Description: "The name of the static IPSec tunnel. 3-15 characters, letters and digits " +
+					"only. The server derives the tunnel's `interfaceName` from this value and " +
+					"rejects hyphens, underscores, dots and spaces with a 422 that names only the " +
+					"derived field.",
+				ValidateFunc: validation.StringMatch(tunnelNamePattern, tunnelNameRuleMessage),
 			},
 			"remote_public_ip": {
 				Type:        schema.TypeString,

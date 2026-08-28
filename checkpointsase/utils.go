@@ -59,6 +59,61 @@ func validateRemoteID(v interface{}, k string) (warns []string, errs []error) {
 }
 
 /*
+tunnelNamePattern is the API's shared `TunnelName` schema -- pattern
+^[a-zA-Z0-9]*$, minLength 3, maxLength 15 (swagger.yaml:7517) -- reached from
+`BaseTunnelValues`, `CreateIPSecRedundantPayload` and `IPSecRedundantTunnels`,
+which is to say the four standard-network tunnel resources.
+
+{3,15} INSTEAD OF * PLUS A SEPARATE LENGTH CHECK. The server splits its rule
+across `pattern` and `minLength`/`maxLength`; folding both into one Go pattern
+gives the operator one message rather than two, and the quantifier applies to an
+ASCII-only class so there is no rune-versus-byte disagreement of the kind
+resource_group.go's name check had to unpick.
+
+The rule matters more than it looks: the server does not store this value and
+move on, it DERIVES the tunnel's `interfaceName` from it, and the 422 that
+follows names only the derived field. See tunnelNameRuleMessage.
+
+APPLIED TO THE ENHANCED-NETWORK TUNNELS TOO, ON EVIDENCE RATHER THAN SYMMETRY.
+`DynamicTunnelCreate` (swagger.yaml:4651) and the static tunnel payload
+(swagger.yaml:5059) declare `tunnelName` as a bare string with NO pattern and NO
+length, so for one day this pattern covered only the standard four. Measured
+2026-08-28: an apply of demo/enhanced_dynamic_tunnel -- which touches enhanced
+endpoints and nothing else -- returned the SAME 422 as the standard family,
+`"interfaceName" must only contain alpha-numeric characters`, and returned it at
+the SAME Joi path, `regions[0].instances[0].attributes.tunnels[0]`. `instances`
+appears in the public spec only on `NetworkRegion` (swagger.yaml:6326), the
+STANDARD region model; there is no enhanced equivalent. The two families
+therefore share one internal network document, and the spec's silence on the
+enhanced side is a spec gap, not a looser server.
+
+WHAT IS MEASURED FOR THE ENHANCED SIDE IS THE CHARACTER CLASS, not the bounds.
+15 was already enforced there before this change and is left as it was; the
+floor of 3 is carried over from the standard family's `minLength` and has not
+been tested against an enhanced endpoint. A two-character enhanced tunnel name
+is the one value this could refuse that the server might have taken.
+*/
+var tunnelNamePattern = regexp.MustCompile(`^[a-zA-Z0-9]{3,15}$`)
+
+/*
+tunnelNameRuleMessage states the RULE and stops there.
+
+An earlier version went on to explain that the server derives `interfaceName`
+from this value and quoted the 422 that results, on the reasoning that an
+operator who had already hit the server error would need the two connected.
+Trimmed on request: validation.StringMatch wraps this in "invalid value for %s
+(%s)", so anything past the rule itself lands in a parenthetical the reader
+cannot skim. The derivation and the measurement live in the attribute
+Description of all six tunnel resources and in API-FINDINGS.md 1.33, which is
+where someone looking for the WHY will be.
+
+validation.StringMatch passes this as an ARGUMENT to %s rather than as a format
+string, so a literal per-cent sign would be written once; there is none here.
+*/
+const tunnelNameRuleMessage = "must be 3-15 characters using only letters and digits: " +
+	"no hyphens, underscores, dots or spaces"
+
+/*
 p81GatewaySubnetsEnhancedRule is the server's own restriction on
 p81_gateway_subnets for the enhanced-network tunnel endpoints, carried in the
 attribute Description so a reader can tell it is the API's rule and not the

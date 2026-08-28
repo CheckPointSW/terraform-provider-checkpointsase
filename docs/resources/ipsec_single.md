@@ -69,7 +69,7 @@ resource "checkpointsase_ipsec_single" "example" {
 - `region_id` (String) The ID of the network's region. Returned by `checkpointsase_network.region.region_id`.
 - `remote_gateway_subnets` (List of String) Remote-side subnet CIDR blocks reachable through this tunnel.
 - `remote_public_ip` (String) The remote gateway public IP address.
-- `tunnel_name` (String) Display name for the IPsec tunnel. Must be 15 characters or fewer.
+- `tunnel_name` (String) Display name for the IPsec tunnel. 3-15 characters, letters and digits only. The server derives the tunnel's `interfaceName` from this value and rejects hyphens, underscores, dots and spaces with a 422 that names only the derived field.
 
 ### Optional
 
