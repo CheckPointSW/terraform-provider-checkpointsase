@@ -24,7 +24,11 @@ resource "checkpointsase_ipsec_single" "example" {
   remote_public_ip       = "203.0.113.20"
   p81_gateway_subnets    = ["10.99.0.0/24"]
   remote_gateway_subnets = ["192.168.20.0/24"]
-  passphrase             = "ChangeMe-shared-secret"
+  # No hyphens: the server's passphrase regex allows letters, digits, "." and
+  # "_" only, 8-64 characters. The provider enforces it at plan time, so the
+  # previous value here would have failed `terraform plan` for anyone who
+  # copied this example.
+  passphrase = "ChangeMe.shared.secret"
 
   key_exchange  = "ikev2"
   ike_life_time = "28800s"
@@ -58,25 +62,26 @@ resource "checkpointsase_ipsec_single" "example" {
 - `key_exchange` (String) IKE version for key exchange. Must be `ikev1` or `ikev2`.
 - `lifetime` (String) IPSec SA lifetime as a `<int><unit>` duration string, e.g. `3600s`, `60m`, or `1h`. Server-enforced ranges: `s` 10–86400, `m` 1–1440, `h` 1–24.
 - `network_id` (String) The ID of the standard network the tunnel belongs to.
-- `p81_gateway_subnets` (List of String) Check Point SASE gateway subnet CIDR blocks reachable through this tunnel.
-- `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication (8–64 characters).
+- `p81_gateway_subnets` (List of String) Check Point SASE gateway subnet CIDR blocks reachable through this tunnel. The enhanced-network tunnel endpoints restrict this list to `0.0.0.0/0` or the network's own subnet; whether `/v3/networks/standard/...` applies the same rule has not been measured. The plan-time validator checks CIDR format only.
+- `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).
 - `phase1` (Block List, Min: 1) Phase 1 (IKE) IPSec proposal lists. (see [below for nested schema](#nestedblock--phase1))
 - `phase2` (Block List, Min: 1) Phase 2 (ESP/IPSec) proposal lists. (see [below for nested schema](#nestedblock--phase2))
 - `region_id` (String) The ID of the network's region. Returned by `checkpointsase_network.region.region_id`.
 - `remote_gateway_subnets` (List of String) Remote-side subnet CIDR blocks reachable through this tunnel.
 - `remote_public_ip` (String) The remote gateway public IP address.
-- `tunnel_name` (String) Display name for the IPsec tunnel.
+- `tunnel_name` (String) Display name for the IPsec tunnel. 3-15 characters, letters and digits only. The server derives the tunnel's `interfaceName` from this value and rejects hyphens, underscores, dots and spaces with a 422 that names only the derived field.
 
 ### Optional
 
-- `created_at` (String) Timestamp when the tunnel was created (server-assigned).
 - `last_updated` (String) Timestamp of the last update to this resource.
-- `remote_id` (String) Optional remote tunnel ID. Computed if not supplied.
-- `updated_at` (String) Timestamp when the tunnel was last updated server-side.
+- `remote_id` (String) Optional remote tunnel ID. Computed if not supplied. Must be alphanumeric or a valid IP address.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
 
+- `created_at` (String) Timestamp when the tunnel was created (server-assigned).
 - `id` (String) The ID of this resource.
+- `updated_at` (String) Timestamp when the tunnel was last updated server-side.
 
 <a id="nestedblock--phase1"></a>
 ### Nested Schema for `phase1`
@@ -96,6 +101,16 @@ Required:
 - `auth` (List of String) List of phase 2 authentication algorithms.
 - `dh` (List of Number) List of phase 2 Diffie-Hellman group numbers.
 - `encryption` (List of String) List of phase 2 encryption algorithms.
+
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
+- `update` (String)
 
 ## Import
 

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -13,7 +13,7 @@ import (
 )
 
 /*
-resourceNetwork Setup the IpSec-Signle Resource CRUD operations
+resourceNetwork Setup the standard Network Resource CRUD operations
 
 @return &schema.Resource
 */
@@ -119,6 +119,11 @@ func resourceNetwork() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			StateContext: ResourceNetworkImportState,
 		},
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(asyncResourceTimeout),
+			Update: schema.DefaultTimeout(asyncResourceTimeout),
+			Delete: schema.DefaultTimeout(asyncResourceTimeout),
+		},
 	}
 }
 
@@ -154,7 +159,6 @@ func resourceNetworkCreate(ctx context.Context, d *schema.ResourceData, m interf
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the network data from the resource data and flatten what need to be flattened
 	network := d.Get("network").([]interface{})[0].(map[string]interface{})
@@ -174,9 +178,19 @@ func resourceNetworkCreate(ctx context.Context, d *schema.ResourceData, m interf
 
 	// create the network payload
 	CreateNetworkPayload := perimeter81Sdk.CreateNetworkPayload{
-		Name:   name,
-		Tags:   tags,
-		Subnet: &subnet,
+		Name: name,
+		Tags: tags,
+	}
+	// subnet is Optional+Computed and its description promises "if omitted, the
+	// server assigns one". That was never true before: assigning &subnet
+	// unconditionally sends a pointer to "" when the user omits the attribute,
+	// and `omitempty` on a *string omits only nil, so the wire carried
+	// "subnet": "" and the server rejected it with a regex validation error.
+	// v3 is the first version able to express the documented behaviour --
+	// CreateNetworkPayload.Subnet is *string with omitempty, whereas v2.3's was
+	// a non-pointer string that always serialized. Leave it nil when unset.
+	if subnet != "" {
+		CreateNetworkPayload.Subnet = &subnet
 	}
 	DeployNetworkPayload := perimeter81Sdk.DeployNetworkPayload{
 		Network: CreateNetworkPayload,
@@ -191,35 +205,37 @@ func resourceNetworkCreate(ctx context.Context, d *schema.ResourceData, m interf
 
 	// get the status id from the status url
 	statusId := getIdFromUrl(status.GetStatusUrl())
-	var networkId string
-	// check the status of the network creation
-	for {
-		// check the status of the network creation and check for errors
-		var networkStatus perimeter81Sdk.AsyncOperationStatus
-		networkStatus, diags, err = checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			networks, _, err := client.StandardNetworksAPI.StandardGetNetworks(ctx).Execute()
-			if err != nil {
-				d.Partial(true)
-				return appendErrorDiags(diags, "Unable to Create Network", err)
-			}
-			for _, networkData := range networks {
-				if networkData.Name == name {
-					d.SetId(networkData.Id)
-					return resourceNetworkRead(ctx, d, m)
-				}
-			}
+	// check the status of the network creation and check for errors
+	resource, err := pollStandardNetworkStatusForResource(ctx, client, statusId, standardNetworkPollInterval)
+	if err != nil {
+		diags = appendErrorDiags(diags, "Unable to Create Network", err)
+		if isAsyncConflict(err) {
+			// A 409 means the name-match loop below is guaranteed to find the
+			// very network that caused the conflict. Adopting it would point
+			// Terraform state at a network this apply never created, and a
+			// later destroy would delete someone else's network. Fail the
+			// apply instead of adopting.
 			d.Partial(true)
 			return diags
 		}
-		// if the network creation is completed, get the network id and break the loop
-		if networkStatus.GetCompleted() {
-			networkId = getIdFromUrl(networkStatus.Result.GetResource())
-			break
+		networks, _, err := client.StandardNetworksAPI.StandardGetNetworks(ctx).Execute()
+		if err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to Create Network", err)
 		}
-		// sleep for 60 seconds and check the status again
-		time.Sleep(60 * time.Second)
+		for _, networkData := range networks {
+			if networkData.Name == name {
+				d.SetId(networkData.Id)
+				diags = appendWarningDiags(diags, "Adopted existing Network after failed create",
+					fmt.Sprintf("The create request's async poll failed, but an existing network named %q (id %s) was found and adopted into Terraform state. Confirm this is the network you intended to manage.", name, networkData.Id))
+				diags = append(diags, resourceNetworkRead(ctx, d, m)...)
+				return diags
+			}
+		}
+		d.Partial(true)
+		return diags
 	}
+	networkId := getIdFromUrl(resource)
 
 	d.SetId(networkId)
 
@@ -238,7 +254,6 @@ func resourceNetworkRead(ctx context.Context, d *schema.ResourceData, m interfac
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the network id from the resource data
 	networkId := d.Id()
@@ -250,7 +265,7 @@ func resourceNetworkRead(ctx context.Context, d *schema.ResourceData, m interfac
 	}
 
 	// get the regions data and check for errors
-	regionsData, _, err := client.RegionsAPI.StandardNetworksControllerV2GetRegions(ctx).Execute()
+	regionsData, _, err := client.StandardRegionsAPI.StandardNetworksControllerV2GetRegions(ctx).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to get CpRegions", err)
@@ -294,7 +309,6 @@ func resourceNetworkUpdate(ctx context.Context, d *schema.ResourceData, m interf
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// check if the network has changed
 	if d.HasChange("network") {
@@ -340,20 +354,10 @@ func resourceNetworkUpdate(ctx context.Context, d *schema.ResourceData, m interf
 		d.Set("last_updated", time.Now().Format(time.RFC850))
 		// wait for the network to be updated with the regions (if a status id is available)
 		if statusId != "" {
-			for {
-				// check the network status and check for errors
-				var networkStatus perimeter81Sdk.AsyncOperationStatus
-				networkStatus, diags, err = checkNetworkStatus(ctx, statusId, *client, diags)
-				if err != nil {
-					d.Partial(true)
-					return diags
-				}
-				// if the network status is completed break the loop
-				if networkStatus.GetCompleted() {
-					break
-				}
-				// wait for 60 seconds and check again
-				time.Sleep(60 * time.Second)
+			// check the network status and check for errors
+			if err := pollStandardNetworkStatus(ctx, client, statusId, standardNetworkPollInterval); err != nil {
+				d.Partial(true)
+				return appendErrorDiags(diags, "Unable to update network regions", err)
 			}
 		}
 	}
@@ -373,7 +377,6 @@ func resourceNetworkDelete(ctx context.Context, d *schema.ResourceData, m interf
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the network id from the resource data
 	networkId := d.Id()

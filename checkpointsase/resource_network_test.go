@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
@@ -19,7 +19,7 @@ func TestAccNetwork_basic(t *testing.T) {
 	var network perimeter81Sdk.Network
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:  func() { testAccPreCheck(t) },
+		PreCheck:  func() { testAccPreCheck(t); testAccPreCheckRegion(t) },
 		Providers: testAccProviders,
 		Steps: []resource.TestStep{
 			{
@@ -95,12 +95,12 @@ resource "checkpointsase_network" "n" {
 		tags = ["test"]
 	}
 	region {
-		cpregion_id = "r2Epw6OJsx"
+		cpregion_id = "%s"
 		idle = true
 	}
 }
   `
-	return fmt.Sprintf(config, randNameNetwork)
+	return fmt.Sprintf(config, randNameNetwork, testAccRegionID())
 }
 
 func testAccNetworkUpdateConfig() string {
@@ -111,10 +111,10 @@ resource "checkpointsase_network" "n" {
 		tags = ["test", "updated"]
 	}
 	region {
-		cpregion_id = "r2Epw6OJsx"
+		cpregion_id = "%s"
 		idle = true
 	}
 }
   `
-	return fmt.Sprintf(config, randNameNetworkUpdated)
+	return fmt.Sprintf(config, randNameNetworkUpdated, testAccRegionID())
 }

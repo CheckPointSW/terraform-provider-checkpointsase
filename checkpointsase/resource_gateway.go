@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -87,6 +87,11 @@ func resourceGateway() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceGatewayImportState,
 		},
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(asyncResourceTimeout),
+			Update: schema.DefaultTimeout(asyncResourceTimeout),
+			Delete: schema.DefaultTimeout(asyncResourceTimeout),
+		},
 	}
 }
 
@@ -101,7 +106,6 @@ resourceGatewayImportState Import gateways
 func resourceGatewayImportState(ctx context.Context, d *schema.ResourceData, m interface{}) ([]*schema.ResourceData, error) {
 	var diagnostics diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 	// get the network and region id and validate
 	ids := strings.Split(d.Id(), "-")
 	if len(ids) != 2 {
@@ -174,7 +178,6 @@ func resourceGatewayCreate(ctx context.Context, d *schema.ResourceData, m interf
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the gateways data from the resource data
 
@@ -214,12 +217,27 @@ resourceGatewayRead Read a gateway
 func resourceGatewayRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	regionId := d.Get("region_id").(string)
 
-	networkData, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkFind(ctx, networkId).Execute()
+	networkData, resp, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkFind(ctx, networkId).Execute()
+
+	// A vanished parent network is DRIFT, not a failure (SI-D02). Without this,
+	// deleting the network out of band leaves every gateway under it unreadable:
+	// Read errors, so `plan` cannot even report that the gateway is gone, and the
+	// operator has to `terraform state rm` each one by hand to recover.
+	//
+	// This is safe here for the same reason it is safe on the Phase 5 private-DNS
+	// resources and NOT safe on a collection endpoint: the request addresses a
+	// SINGLE named network, so a 404 means that network is absent. On a
+	// collection, a 404 means the URL was wrong, and treating it as drift cleared
+	// live ids on a misconfiguration -- a defect this project shipped three times
+	// before recognising the distinction.
+	if isNotFound(resp, err) {
+		d.SetId("")
+		return diags
+	}
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to find Network for gateway read", err)
@@ -281,7 +299,6 @@ func resourceGatewayUpdate(ctx context.Context, d *schema.ResourceData, m interf
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 	// check if the region_id or network_id is changed
 	if d.HasChanges("region_id", "network_id") {
 		d.Partial(true)
@@ -366,7 +383,6 @@ func resourceGatewayDelete(ctx context.Context, d *schema.ResourceData, m interf
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 	// get the gateways data from the resource data
 	gateways := flattenGatewaysData(d.Get("gateways").([]interface{}))
 	network_id := d.Get("network_id").(string)

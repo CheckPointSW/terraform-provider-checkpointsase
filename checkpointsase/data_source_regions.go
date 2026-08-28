@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -85,10 +85,9 @@ func dataSourceRegionsRead(ctx context.Context, d *schema.ResourceData, m interf
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// call the api and check if there is an error
-	regionsData, _, err := client.RegionsAPI.StandardNetworksControllerV2GetRegions(ctx).Execute()
+	regionsData, _, err := client.StandardRegionsAPI.StandardNetworksControllerV2GetRegions(ctx).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to get Regions data", err)

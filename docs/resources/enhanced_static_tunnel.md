@@ -3,12 +3,12 @@
 page_title: "checkpointsase_enhanced_static_tunnel Resource - checkpointsase"
 subcategory: ""
 description: |-
-  Manages a static IPsec tunnel attached to a region of a checkpointsase_enhanced_network. A static tunnel terminates at a single remote endpoint identified by remote_public_ip (PSK) or via certificate authentication (auth_type = "cert" + customer_root_ca). Use checkpointsase_enhanced_route_table with type = "static" and the tunnel's ID to attach routes. network_id and region_id are immutable — changing either forces resource replacement.
+  Manages a static IPsec tunnel attached to a region of a checkpointsase_enhanced_network. A static tunnel terminates at a single remote endpoint identified by remote_public_ip (PSK) or via certificate authentication (auth_type = "cert" + customer_root_ca). The tunnel's route is part of the tunnel: Harmony SASE creates it with the tunnel, and its subnets are this resource's own remote_gateway_subnets, so set the routed subnets there — but never as 0.0.0.0/0, which permanently blocks every subsequent update of the tunnel (see that attribute). The checkpointsase_enhanced_route_table resource is rejected during terraform plan and cannot attach a route here; read the resulting route with the checkpointsase_enhanced_route_table data source. network_id and region_id are immutable — changing either forces resource replacement.
 ---
 
 # checkpointsase_enhanced_static_tunnel (Resource)
 
-Manages a static IPsec tunnel attached to a region of a `checkpointsase_enhanced_network`. A static tunnel terminates at a single remote endpoint identified by `remote_public_ip` (PSK) or via certificate authentication (`auth_type = "cert"` + `customer_root_ca`). Use `checkpointsase_enhanced_route_table` with `type = "static"` and the tunnel's ID to attach routes. **`network_id` and `region_id` are immutable** — changing either forces resource replacement.
+Manages a static IPsec tunnel attached to a region of a `checkpointsase_enhanced_network`. A static tunnel terminates at a single remote endpoint identified by `remote_public_ip` (PSK) or via certificate authentication (`auth_type = "cert"` + `customer_root_ca`). The tunnel's route is part of the tunnel: Harmony SASE creates it with the tunnel, and its subnets are this resource's own `remote_gateway_subnets`, so set the routed subnets there — but **never as `0.0.0.0/0`**, which permanently blocks every subsequent update of the tunnel (see that attribute). The `checkpointsase_enhanced_route_table` **resource** is rejected during `terraform plan` and cannot attach a route here; read the resulting route with the `checkpointsase_enhanced_route_table` **data source**. **`network_id` and `region_id` are immutable** — changing either forces resource replacement.
 
 ## Example Usage
 
@@ -20,6 +20,15 @@ Manages a static IPsec tunnel attached to a region of a `checkpointsase_enhanced
 # (letters/digits/`.`/`_`, 8-64 chars — no hyphens).
 # `p81_gateway_subnets` must equal the parent enhanced network's own subnet
 # (or `0.0.0.0/0` for a default route); arbitrary CIDRs are rejected.
+#
+# `remote_gateway_subnets` IS THE OPPOSITE CASE AND THE TWO ARE EASY TO CONFUSE.
+# Never write `0.0.0.0/0` there. A static tunnel created with
+# `remote_gateway_subnets = ["0.0.0.0/0"]` applies cleanly and can then NEVER be
+# updated -- every later change comes back
+#   404 {"message":"Remote gateway subnets not found"}
+# even for a change that touches neither subnet list. Measured 2026-08-17
+# (API-FINDINGS.md 1.2); the same tunnel with a real CIDR updates fine. The only
+# way out is destroy and re-create.
 resource "checkpointsase_enhanced_static_tunnel" "example" {
   network_id             = "ZwAeo5wqiF"
   region_id              = "K7tEfRm9vQ"
@@ -63,23 +72,24 @@ resource "checkpointsase_enhanced_static_tunnel" "example" {
 - `key_exchange` (String) IKE version for key exchange. Must be `ikev1` or `ikev2`.
 - `lifetime` (String) IPSec SA lifetime as a `<int><unit>` duration string, e.g. `3600s`, `60m`, or `1h`. Server-enforced ranges: `s` 10–86400, `m` 1–1440, `h` 1–24.
 - `network_id` (String) The ID of the enhanced network this static tunnel belongs to.
-- `p81_gateway_subnets` (List of String) List of Check Point SASE gateway subnet CIDR blocks.
+- `p81_gateway_subnets` (List of String) List of Check Point SASE gateway subnet CIDR blocks. Server-enforced: the list can hold only `0.0.0.0/0` or the parent `checkpointsase_enhanced_network`'s own `subnet`; any other CIDR is refused at apply time with `409 The list of Harmony SASE Subnets can only be "0.0.0.0/0" or the network Subnet`. The plan-time validator checks CIDR format only — the permitted subnet lives on another resource and is usually unknown while planning, so the allowed-value half of the rule cannot be checked before apply.
 - `phase1` (Block List, Min: 1, Max: 1) Phase 1 (IKE) IPSec configuration. (see [below for nested schema](#nestedblock--phase1))
 - `phase2` (Block List, Min: 1, Max: 1) Phase 2 (ESP/IPSec) configuration. (see [below for nested schema](#nestedblock--phase2))
 - `region_id` (String) The target region ID within the enhanced network.
-- `remote_gateway_subnets` (List of String) List of remote gateway subnet CIDR blocks.
-- `tunnel_name` (String) The name of the static IPSec tunnel.
+- `remote_gateway_subnets` (List of String) List of remote gateway subnet CIDR blocks. **Do not use the default route `0.0.0.0/0` here.** A static tunnel created with `remote_gateway_subnets = ["0.0.0.0/0"]` can be created and read but can NEVER be updated: every later `PUT` returns `404 Remote gateway subnets not found` — including a change that does not touch either subnet list — so the tunnel is stuck at its created configuration for the rest of its life and the only way out is to destroy and re-create it. Measured 2026-08-17 (`API-FINDINGS.md` §1.2) on three tunnels differing only in this field; the same update returns `202` when the value is a real CIDR. Note this is the OPPOSITE of `p81_gateway_subnets`, where `0.0.0.0/0` is a legal and recommended value. The provider does not refuse `0.0.0.0/0` at plan time, because the API accepts it at create and a validator here would refuse a configuration the server allows.
+- `tunnel_name` (String) The name of the static IPSec tunnel. 3-15 characters, letters and digits only. The server derives the tunnel's `interfaceName` from this value and rejects hyphens, underscores, dots and spaces with a 422 that names only the derived field.
 
 ### Optional
 
 - `auth_type` (String) Authentication type. Must be `psk` (pre-shared key, requires `passphrase`) or `cert` (certificate, requires `customer_root_ca`).
-- `customer_root_ca` (String) Customer root certificate authority. Required when auth_type is 'cert'.
+- `customer_root_ca` (String, Sensitive) Customer root certificate authority. Required when auth_type is 'cert'.
 - `description` (String) Optional description for the static tunnel.
 - `last_updated` (String) Timestamp of the last update to this resource.
-- `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication (8-64 characters). Required when auth_type is 'psk'.
-- `peak_bandwidth` (Number) Expected peak throughput of the tunnel communication in Mbps. Allowed range is 10–8000. Defaults to 1000.
-- `remote_id` (String) The remote gateway ID. When omitted, the server defaults this to `remote_public_ip`; the provider reads the server-assigned value back into state.
+- `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication. Required when auth_type is 'psk'. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).
+- `peak_bandwidth` (Number) Expected peak throughput of the tunnel communication in Mbps. Allowed range is 10–8000. Defaults to 1000. Settable only at creation: v3's update endpoint has no bandwidth field, so changing this value replaces the tunnel (destroy and re-create) rather than updating it in place.
+- `remote_id` (String) The remote gateway ID. When omitted, the server defaults this to `remote_public_ip`; the provider reads the server-assigned value back into state. Must be alphanumeric or a valid IP address.
 - `remote_public_ip` (String) The remote gateway public IP address.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
 
@@ -103,6 +113,16 @@ Required:
 - `auth` (List of String) List of phase 2 authentication algorithms.
 - `encryption` (List of String) List of phase 2 encryption algorithms.
 - `key_exchange_method` (List of String) List of phase 2 key exchange methods (Diffie-Hellman groups).
+
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
+- `update` (String)
 
 ## Import
 

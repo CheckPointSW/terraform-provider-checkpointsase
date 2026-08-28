@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -29,203 +29,249 @@ func dataSourceNetworks() *schema.Resource {
 		ReadContext: dataSourceNetworksRead,
 		Schema: map[string]*schema.Schema{
 			"networks": {
-				Type:     schema.TypeList,
-				Computed: true,
+				Type:        schema.TypeList,
+				Computed:    true,
+				Description: "The list of standard networks, in the legacy nested shape (see the deprecation note above).",
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"id": {
-							Type:     schema.TypeString,
-							Computed: true,
+							Type:        schema.TypeString,
+							Computed:    true,
+							Description: "The unique identifier of the network.",
 						},
 						"name": {
-							Type:     schema.TypeString,
-							Computed: true,
+							Type:        schema.TypeString,
+							Computed:    true,
+							Description: "The name of the network.",
 						},
 						"tags": {
-							Type:     schema.TypeList,
-							Computed: true,
-							Optional: true,
+							Type:        schema.TypeList,
+							Computed:    true,
+							Optional:    true,
+							Description: "The list of tags associated with the network.",
 							Elem: &schema.Schema{
 								Type: schema.TypeString,
 							},
 						},
 						"applications": {
-							Type:     schema.TypeList,
-							Computed: true,
-							Optional: true,
+							Type:        schema.TypeList,
+							Computed:    true,
+							Optional:    true,
+							Description: "The list of application IDs associated with the network.",
 							Elem: &schema.Schema{
 								Type: schema.TypeString,
 							},
 						},
 						"dns": {
-							Type:     schema.TypeString,
-							Computed: true,
+							Type:        schema.TypeString,
+							Computed:    true,
+							Description: "The DNS name of the network.",
 						},
 						"subnet": {
-							Type:     schema.TypeString,
-							Computed: true,
+							Type:        schema.TypeString,
+							Computed:    true,
+							Description: "The subnet CIDR block of the network.",
 						},
 						"accesstype": {
-							Type:     schema.TypeString,
-							Computed: true,
+							Type:        schema.TypeString,
+							Computed:    true,
+							Description: "The access type of the network.",
 						},
 						"isdefault": {
-							Type:     schema.TypeBool,
-							Computed: true,
+							Type:        schema.TypeBool,
+							Computed:    true,
+							Description: "Whether this is the default network.",
 						},
 						"tenantid": {
-							Type:     schema.TypeString,
-							Computed: true,
+							Type:        schema.TypeString,
+							Computed:    true,
+							Description: "The tenant ID that owns this network.",
 						},
 						"createdat": {
-							Type:     schema.TypeString,
-							Computed: true,
+							Type:        schema.TypeString,
+							Computed:    true,
+							Description: "The creation timestamp of the network (server-assigned).",
 						},
 						"updatedat": {
-							Type:     schema.TypeString,
-							Computed: true,
+							Type:        schema.TypeString,
+							Computed:    true,
+							Description: "The last update timestamp of the network (server-assigned).",
 						},
 						"regions": {
-							Type:     schema.TypeList,
-							Computed: true,
-							Optional: true,
+							Type:        schema.TypeList,
+							Computed:    true,
+							Optional:    true,
+							Description: "The list of regions where the network is deployed.",
 							Elem: &schema.Resource{
 								Schema: map[string]*schema.Schema{
 									"id": {
-										Type:     schema.TypeString,
-										Optional: true,
+										Type:        schema.TypeString,
+										Optional:    true,
+										Description: "The unique identifier of the region.",
 									},
 									"network": {
-										Type:     schema.TypeString,
-										Optional: true,
+										Type:        schema.TypeString,
+										Optional:    true,
+										Description: "The ID of the parent network this region belongs to.",
 									},
 									"dns": {
-										Type:     schema.TypeString,
-										Optional: true,
+										Type:        schema.TypeString,
+										Optional:    true,
+										Description: "The DNS name of the region.",
 									},
 									"name": {
-										Type:     schema.TypeString,
-										Optional: true,
+										Type:        schema.TypeString,
+										Optional:    true,
+										Description: "The name of the region.",
 									},
 									"tenantid": {
-										Type:     schema.TypeString,
-										Computed: true,
+										Type:        schema.TypeString,
+										Computed:    true,
+										Description: "The tenant ID that owns this region.",
 									},
 									"createdat": {
-										Type:     schema.TypeString,
-										Computed: true,
+										Type:        schema.TypeString,
+										Computed:    true,
+										Description: "The creation timestamp of the region (server-assigned).",
 									},
 									"updatedat": {
-										Type:     schema.TypeString,
-										Computed: true,
+										Type:        schema.TypeString,
+										Computed:    true,
+										Description: "The last update timestamp of the region (server-assigned).",
 									},
 									"instances": {
-										Type:     schema.TypeList,
-										Computed: true,
-										Optional: true,
+										Type:        schema.TypeList,
+										Computed:    true,
+										Optional:    true,
+										Description: "The list of gateway instances deployed in the region.",
 										Elem: &schema.Resource{
 											Schema: map[string]*schema.Schema{
 												"id": {
-													Type:     schema.TypeString,
-													Optional: true,
+													Type:        schema.TypeString,
+													Optional:    true,
+													Description: "The unique identifier of the instance.",
 												},
 												"network": {
-													Type:     schema.TypeString,
-													Optional: true,
+													Type:        schema.TypeString,
+													Optional:    true,
+													Description: "The ID of the network this instance belongs to.",
 												},
 												"dns": {
-													Type:     schema.TypeString,
-													Optional: true,
+													Type:        schema.TypeString,
+													Optional:    true,
+													Description: "The DNS name of the instance.",
 												},
 												"ip": {
-													Type:     schema.TypeString,
-													Optional: true,
+													Type:        schema.TypeString,
+													Optional:    true,
+													Description: "The IP address of the instance.",
 												},
 												"tenantid": {
-													Type:     schema.TypeString,
-													Computed: true,
+													Type:        schema.TypeString,
+													Computed:    true,
+													Description: "The tenant ID that owns this instance.",
 												},
 												"imageversion": {
-													Type:     schema.TypeString,
-													Computed: true,
+													Type:        schema.TypeString,
+													Computed:    true,
+													Description: "The image version running on the instance.",
 												},
 												"imagetype": {
-													Type:     schema.TypeString,
-													Computed: true,
+													Type:        schema.TypeString,
+													Computed:    true,
+													Description: "The image type running on the instance.",
 												},
 												"instancetype": {
-													Type:     schema.TypeString,
-													Computed: true,
+													Type:        schema.TypeString,
+													Computed:    true,
+													Description: "The compute instance type/size.",
 												},
 												"region": {
-													Type:     schema.TypeString,
-													Computed: true,
+													Type:        schema.TypeString,
+													Computed:    true,
+													Description: "The ID of the region this instance is deployed in.",
 												},
 												"createdat": {
-													Type:     schema.TypeString,
-													Computed: true,
+													Type:        schema.TypeString,
+													Computed:    true,
+													Description: "The creation timestamp of the instance (server-assigned).",
 												},
 												"updatedat": {
-													Type:     schema.TypeString,
-													Computed: true,
+													Type:        schema.TypeString,
+													Computed:    true,
+													Description: "The last update timestamp of the instance (server-assigned).",
 												},
 												"tunnels": {
-													Type:     schema.TypeList,
-													Computed: true,
-													Optional: true,
+													Type:        schema.TypeList,
+													Computed:    true,
+													Optional:    true,
+													Description: "The list of tunnels attached to the instance.",
 													Elem: &schema.Resource{
 														Schema: map[string]*schema.Schema{
 															"instance": {
-																Type:     schema.TypeString,
-																Optional: true,
+																Type:        schema.TypeString,
+																Optional:    true,
+																Description: "The ID of the instance this tunnel is attached to.",
 															},
 															"interfacename": {
-																Type:     schema.TypeString,
-																Optional: true,
+																Type:        schema.TypeString,
+																Optional:    true,
+																Description: "The name of the network interface the tunnel is bound to.",
 															},
 															"leftallowedip": {
-																Type:     schema.TypeList,
-																Computed: true,
-																Optional: true,
+																Type:        schema.TypeList,
+																Computed:    true,
+																Optional:    true,
+																Description: "The list of allowed IP ranges on the local (left-side) endpoint of the tunnel. Only populated for WireGuard tunnels; IPsec and OpenVPN entries read back as an empty list.",
 																Elem: &schema.Schema{
 																	Type: schema.TypeString,
 																},
 															},
 															"leftendpoint": {
-																Type:     schema.TypeString,
-																Optional: true,
+																Type:        schema.TypeString,
+																Optional:    true,
+																Description: "The local (left-side) endpoint address of the tunnel. Only populated for WireGuard tunnels; IPsec and OpenVPN entries read back as an empty string.",
 															},
 															"network": {
-																Type:     schema.TypeString,
-																Optional: true,
+																Type:        schema.TypeString,
+																Optional:    true,
+																Description: "The ID of the network this tunnel belongs to.",
 															},
 															"region": {
-																Type:     schema.TypeString,
-																Optional: true,
+																Type:        schema.TypeString,
+																Optional:    true,
+																Description: "The ID of the region this tunnel belongs to.",
 															},
 															"requestconfigtoken": {
-																Type:     schema.TypeString,
-																Optional: true,
+																Type:        schema.TypeString,
+																Optional:    true,
+																Sensitive:   true,
+																Description: "Server-assigned token for retrieving the tunnel's client configuration. Only populated for WireGuard tunnels; IPsec and OpenVPN entries read back as an empty string.",
 															},
 															"type": {
-																Type:     schema.TypeString,
-																Optional: true,
+																Type:        schema.TypeString,
+																Optional:    true,
+																Description: "The tunnel type (for example, WireGuard, OpenVPN, or IPsec).",
 															},
 															"id": {
-																Type:     schema.TypeString,
-																Optional: true,
+																Type:        schema.TypeString,
+																Optional:    true,
+																Description: "The unique identifier of the tunnel.",
 															},
 															"tenantid": {
-																Type:     schema.TypeString,
-																Optional: true,
+																Type:        schema.TypeString,
+																Optional:    true,
+																Description: "The tenant ID that owns this tunnel.",
 															},
 															"createdat": {
-																Type:     schema.TypeString,
-																Optional: true,
+																Type:        schema.TypeString,
+																Optional:    true,
+																Description: "The creation timestamp of the tunnel (server-assigned).",
 															},
 															"updatedat": {
-																Type:     schema.TypeString,
-																Optional: true,
+																Type:        schema.TypeString,
+																Optional:    true,
+																Description: "The last update timestamp of the tunnel (server-assigned).",
 															},
 														}}},
 											},
@@ -253,7 +299,6 @@ func dataSourceNetworksRead(ctx context.Context, d *schema.ResourceData, m inter
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// call the api and check if there is an error
 	networks, _, err := client.StandardNetworksAPI.StandardGetNetworks(ctx).Execute()

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
@@ -17,7 +17,7 @@ func TestAccIpsecSingle_basic(t *testing.T) {
 	t.Parallel()
 	var tunnel perimeter81Sdk.IPSecSingleTunnel
 	resource.Test(t, resource.TestCase{
-		PreCheck:  func() { testAccPreCheck(t) },
+		PreCheck:  func() { testAccPreCheck(t); testAccPreCheckRegion(t) },
 		Providers: testAccProviders,
 		Steps: []resource.TestStep{
 			{
@@ -35,13 +35,13 @@ func TestAccIpsecSingle_basic(t *testing.T) {
 						Passphrase:           "tnEgVbTJE23",
 						RemotePublicIP:       "198.51.100.41",
 						Phase1: perimeter81Sdk.IPSecPhaseConfig{
-							Auth:       []string{"3des"},
-							Encryption: []string{"sha256"},
+							Auth:       []string{"sha256"},
+							Encryption: []string{"3des"},
 							Dh:         []int32{14},
 						},
 						Phase2: perimeter81Sdk.IPSecPhaseConfig{
-							Auth:       []string{"3des"},
-							Encryption: []string{"sha256"},
+							Auth:       []string{"sha256"},
+							Encryption: []string{"3des"},
 							Dh:         []int32{14},
 						},
 					}),
@@ -62,13 +62,13 @@ func TestAccIpsecSingle_basic(t *testing.T) {
 						Passphrase:           "tnEgVbTJE23123",
 						RemotePublicIP:       "198.51.100.42",
 						Phase1: perimeter81Sdk.IPSecPhaseConfig{
-							Auth:       []string{"blowfish256"},
-							Encryption: []string{"md5"},
+							Auth:       []string{"md5"},
+							Encryption: []string{"blowfish256"},
 							Dh:         []int32{19},
 						},
 						Phase2: perimeter81Sdk.IPSecPhaseConfig{
-							Auth:       []string{"blowfish256"},
-							Encryption: []string{"md5"},
+							Auth:       []string{"md5"},
+							Encryption: []string{"blowfish256"},
 							Dh:         []int32{19},
 						},
 					}),
@@ -92,7 +92,7 @@ func testAccCheckIpsecSingleExists(n string, tunnel *perimeter81Sdk.IPSecSingleT
 		conn := testAccProvider.Meta().(*perimeter81Sdk.APIClient)
 		ctx := context.Background()
 		networkId := rs.Primary.Attributes["network_id"]
-		gotIpsecSingle, _, err := conn.IPSecSingleAPI.StandardGetIPSecSingleTunnel(ctx, networkId, tunnelId).Execute()
+		gotIpsecSingle, _, err := conn.StandardTunnelsAPI.StandardGetIPSecSingleTunnel(ctx, networkId, tunnelId).Execute()
 		if err != nil {
 			return err
 		}
@@ -174,7 +174,7 @@ resource "checkpointsase_network" "n3" {
     tags = ["test"]
   }
   region {
-    cpregion_id = "Xv3BREC4QI"
+    cpregion_id = "%s"
     idle = true
   }
 }
@@ -206,20 +206,20 @@ resource "checkpointsase_ipsec_single" "ipss1" {
   dpd_delay = "20s"
   dpd_timeout = "40s"
   phase1 {
-    auth = ["3des"]
-    encryption = ["sha256"]
+    auth = ["sha256"]
+    encryption = ["3des"]
     dh = [14]
   }
   phase2 {
-    auth = ["3des"]
-    encryption = ["sha256"]
+    auth = ["sha256"]
+    encryption = ["3des"]
     dh = [14]
   }
   passphrase = "tnEgVbTJE23"
   remote_public_ip = "198.51.100.41"
 }
   `
-	return fmt.Sprintf(config, randNameIpsecSignle)
+	return fmt.Sprintf(config, randNameIpsecSignle, testAccRegionID())
 }
 
 func testAccIpsecSingleUpdateConfig() string {
@@ -230,7 +230,7 @@ resource "checkpointsase_network" "n3" {
     tags = ["test"]
   }
   region {
-    cpregion_id = "Xv3BREC4QI"
+    cpregion_id = "%s"
     idle = true
   }
 }
@@ -262,18 +262,18 @@ resource "checkpointsase_ipsec_single" "ipss1" {
   dpd_delay = "30s"
   dpd_timeout = "50s"
   phase1 {
-    auth = ["blowfish256"]
-    encryption = ["md5"]
+    auth = ["md5"]
+    encryption = ["blowfish256"]
     dh = [19]
   }
   phase2 {
-    auth = ["blowfish256"]
-    encryption = ["md5"]
+    auth = ["md5"]
+    encryption = ["blowfish256"]
     dh = [19]
   }
   passphrase = "tnEgVbTJE23123"
   remote_public_ip = "198.51.100.42"
 }
   `
-	return fmt.Sprintf(config, randNameIpsecSignle)
+	return fmt.Sprintf(config, randNameIpsecSignle, testAccRegionID())
 }

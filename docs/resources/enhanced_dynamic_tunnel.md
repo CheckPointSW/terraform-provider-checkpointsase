@@ -3,12 +3,12 @@
 page_title: "checkpointsase_enhanced_dynamic_tunnel Resource - checkpointsase"
 subcategory: ""
 description: |-
-  Manages a dynamic (BGP-routed) IPsec tunnel attached to a checkpointsase_enhanced_network. A dynamic tunnel can span multiple regions: each tunnel block declares one endpoint, and shared phase1 / phase2 / lifetime parameters apply to all of them. Use checkpointsase_enhanced_route_table with type = "dynamic" to attach routes to the resulting tunnel group. network_id is immutable — changing it forces resource replacement.
+  Manages a dynamic (BGP-routed) IPsec tunnel attached to a checkpointsase_enhanced_network. A dynamic tunnel can span multiple regions: each tunnel block declares one endpoint, and shared phase1 / phase2 / lifetime parameters apply to all of them. The tunnel's route is part of the tunnel: Harmony SASE creates it with the tunnel, and its subnets are this resource's own remote_gateway_subnets, so set the routed subnets there. The checkpointsase_enhanced_route_table resource is rejected during terraform plan and cannot attach a route here; read the resulting route with the checkpointsase_enhanced_route_table data source. network_id is immutable — changing it forces resource replacement.
 ---
 
 # checkpointsase_enhanced_dynamic_tunnel (Resource)
 
-Manages a dynamic (BGP-routed) IPsec tunnel attached to a `checkpointsase_enhanced_network`. A dynamic tunnel can span multiple regions: each `tunnel` block declares one endpoint, and shared phase1 / phase2 / lifetime parameters apply to all of them. Use `checkpointsase_enhanced_route_table` with `type = "dynamic"` to attach routes to the resulting tunnel group. **`network_id` is immutable** — changing it forces resource replacement.
+Manages a dynamic (BGP-routed) IPsec tunnel attached to a `checkpointsase_enhanced_network`. A dynamic tunnel can span multiple regions: each `tunnel` block declares one endpoint, and shared phase1 / phase2 / lifetime parameters apply to all of them. The tunnel's route is part of the tunnel: Harmony SASE creates it with the tunnel, and its subnets are this resource's own `remote_gateway_subnets`, so set the routed subnets there. The `checkpointsase_enhanced_route_table` **resource** is rejected during `terraform plan` and cannot attach a route here; read the resulting route with the `checkpointsase_enhanced_route_table` **data source**. **`network_id` is immutable** — changing it forces resource replacement.
 
 ## Example Usage
 
@@ -18,6 +18,8 @@ Manages a dynamic (BGP-routed) IPsec tunnel attached to a `checkpointsase_enhanc
 # Encryption values must match the public-api enum (PhaseEncryptionV2_1) — use
 # "aes256", "aes128", etc. Passphrases must satisfy the IsPassphrase regex
 # (letters/digits/`.`/`_`, 8-64 chars — no hyphens).
+# `p81_gateway_subnets` must equal the parent enhanced network's own subnet
+# (or `0.0.0.0/0` for a default route); arbitrary CIDRs are rejected.
 resource "checkpointsase_enhanced_dynamic_tunnel" "example" {
   network_id             = "ZwAeo5wqiF"
   tunnel_name            = "dynamicTunnel01"
@@ -29,12 +31,12 @@ resource "checkpointsase_enhanced_dynamic_tunnel" "example" {
   left_asn = 65000
 
   tunnel {
-    region_id            = "K7tEfRm9vQ"
-    auth_type            = "psk"
-    passphrase           = "ChangeMeSharedSecret"
-    remote_public_ip     = "203.0.113.50"
-    remote_asn           = 65010
-    p81_gw_internal_ip   = "169.254.0.1"
+    region_id             = "K7tEfRm9vQ"
+    auth_type             = "psk"
+    passphrase            = "ChangeMeSharedSecret"
+    remote_public_ip      = "203.0.113.50"
+    remote_asn            = 65010
+    p81_gw_internal_ip    = "169.254.0.1"
     remote_gw_internal_ip = "169.254.0.2"
   }
 
@@ -67,21 +69,22 @@ resource "checkpointsase_enhanced_dynamic_tunnel" "example" {
 - `dpd_timeout` (String) Dead peer detection timeout, formatted `<int>s`. Allowed range is `5s`–`60s`.
 - `ike_life_time` (String) IKE lifetime as a `<int><unit>` duration string, e.g. `28800s`, `480m`, or `8h`. Server-enforced ranges: `s` 10–86400, `m` 1–1440, `h` 1–24.
 - `key_exchange` (String) IKE version for key exchange. Must be `ikev1` or `ikev2`.
-- `left_asn` (Number) The local (Check Point SASE) BGP autonomous-system number for this dynamic tunnel. Required by the API; valid ranges per IsValidASN.
+- `left_asn` (Number) The local (Check Point SASE) BGP autonomous-system number for this dynamic tunnel. Required by the API; valid ranges per IsValidASN. **Effectively set-once:** the v3 update request body has no field for it (`leftASN` exists only on the create shape), so changing this value cannot be applied in place. The provider raises a warning and leaves the server-side ASN unchanged; use `terraform apply -replace=...` to change it.
 - `lifetime` (String) IPSec SA lifetime as a `<int><unit>` duration string, e.g. `3600s`, `60m`, or `1h`. Server-enforced ranges: `s` 10–86400, `m` 1–1440, `h` 1–24.
 - `network_id` (String) The ID of the enhanced network this dynamic tunnel belongs to.
-- `p81_gateway_subnets` (List of String) List of Check Point SASE gateway subnet CIDR blocks (shared settings).
+- `p81_gateway_subnets` (List of String) List of Check Point SASE gateway subnet CIDR blocks (shared settings). Server-enforced: the list can hold only `0.0.0.0/0` or the parent `checkpointsase_enhanced_network`'s own `subnet`; any other CIDR is refused at apply time with `409 The list of Harmony SASE Subnets can only be "0.0.0.0/0" or the network Subnet`. The plan-time validator checks CIDR format only — the permitted subnet lives on another resource and is usually unknown while planning, so the allowed-value half of the rule cannot be checked before apply. The 409 above was measured on the static-tunnel endpoint; the dynamic endpoint was not separately exercised, but both write the same `p81GatewaySubnets` field of the same enhanced network.
 - `phase1` (Block List, Min: 1, Max: 1) Phase 1 (IKE) IPSec configuration. (see [below for nested schema](#nestedblock--phase1))
 - `phase2` (Block List, Min: 1, Max: 1) Phase 2 (ESP/IPSec) configuration. (see [below for nested schema](#nestedblock--phase2))
 - `remote_gateway_subnets` (List of String) List of remote gateway subnet CIDR blocks (shared settings).
-- `tunnel` (Block List, Min: 1) The list of individual tunnel endpoints for this dynamic tunnel group. (see [below for nested schema](#nestedblock--tunnel))
-- `tunnel_name` (String) The name of the dynamic IPSec tunnel.
+- `tunnel` (Block List, Min: 1) The list of individual tunnel endpoints for this dynamic tunnel group. **Adding** an endpoint to an existing dynamic tunnel is applied in place. **Changing or removing** an existing endpoint is not: the v3 update request identifies an endpoint by a server-assigned id that the provider has no way to obtain, so such a change fails the apply with an explanatory error instead of being silently dropped. Use `terraform apply -replace=...` to change or remove an endpoint, which destroys and recreates the whole tunnel group. An **imported** dynamic tunnel records no endpoints in state (the read API returns none of `remote_asn`, `p81_gw_internal_ip` or `remote_gw_internal_ip`), so the provider refuses to change its endpoint list at all rather than risk duplicating endpoints. (see [below for nested schema](#nestedblock--tunnel))
+- `tunnel_name` (String) The name of the dynamic IPSec tunnel. 3-15 characters, letters and digits only: the server rejects hyphens, underscores, dots and spaces with a 422 naming `interfaceName`. The server derives each endpoint's interface name by appending `01` to this value (`interfaceName: ${tunnelName}0${i+1}`) and reports that decorated form on read. Terraform records the name **you** configured, not the decorated one, so a plan straight after an apply is empty and a name you deliberately end with `01` is sent and kept exactly as written.
 
 ### Optional
 
 - `description` (String) Optional description for the dynamic tunnel.
 - `last_updated` (String) Timestamp of the last update to this resource.
-- `peak_bandwidth` (Number) Expected peak throughput of the tunnel communication in Mbps. Allowed range is 10–8000. Defaults to 1000.
+- `peak_bandwidth` (Number, Deprecated) Expected peak throughput of the tunnel communication in Mbps. Allowed range is 10–8000. Defaults to 1000. Not sent to the v3 server — the value is retained only for configuration compatibility with prior provider versions.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
 
@@ -120,10 +123,20 @@ Required:
 Optional:
 
 - `auth_type` (String) Authentication type for this tunnel endpoint. Must be `psk` or `cert`.
-- `customer_root_ca` (String) Customer root certificate authority. Required when auth_type is 'cert'.
+- `customer_root_ca` (String, Sensitive) Customer root certificate authority. Required when auth_type is 'cert'.
 - `passphrase` (String, Sensitive) Pre-shared key for tunnel authentication. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).
-- `remote_id` (String) The remote gateway ID. Server defaults to `remote_public_ip` when omitted.
+- `remote_id` (String) The remote gateway ID. Server defaults to `remote_public_ip` when omitted. Must be alphanumeric or a valid IP address.
 - `remote_public_ip` (String) The remote gateway public IP address.
+
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
+- `update` (String)
 
 ## Import
 

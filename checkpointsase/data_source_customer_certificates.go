@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -64,7 +64,6 @@ dataSourceCustomerCertificatesRead Use the SDK to query all customer certificate
 func dataSourceCustomerCertificatesRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	certificates, resp, err := client.EnhancedNetworksAPI.EnhancedNetworksControllerV23GetNetworkCustomerCertificate(ctx).Execute()
 	if err != nil {

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -22,8 +22,10 @@ func resourceWireguard() *schema.Resource {
 	return &schema.Resource{
 		Description: "Manages a WireGuard client tunnel attached to one gateway of a " +
 			"`checkpointsase_network`. After creation, the server returns `vault` and " +
-			"`request_config_token` — opaque values used to retrieve the WireGuard " +
-			"client configuration via the SASE management console. " +
+			"`request_config_token`. **`request_config_token` is a bearer credential " +
+			"that this resource stores in Terraform state**, and the URL built from " +
+			"it needs no authentication for the 6 hours it lives (API-FINDINGS.md " +
+			"1.32) — treat your state file as a secret store. " +
 			"**`network_id`, `region_id`, `gateway_id`, and `tunnel_name` are " +
 			"immutable** — changing any of them forces resource replacement. Only " +
 			"`remote_endpoint` and `remote_subnets` are updatable in place.",
@@ -63,36 +65,41 @@ func resourceWireguard() *schema.Resource {
 				Description: "The ID of the SASE gateway that terminates this tunnel locally.",
 			},
 			"tunnel_name": {
-				Type:        schema.TypeString,
-				Required:    true,
-				ForceNew:    true,
-				Description: "Display name for the WireGuard tunnel.",
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+				Description: "Display name for the WireGuard tunnel. 3-15 characters, letters and digits " +
+					"only. The server derives the tunnel's `interfaceName` from this value and " +
+					"rejects hyphens, underscores, dots and spaces with a 422 that names only the " +
+					"derived field.",
+				ValidateFunc: validation.StringMatch(tunnelNamePattern, tunnelNameRuleMessage),
 			},
 			"created_at": {
 				Type:        schema.TypeString,
-				Optional:    true,
 				Computed:    true,
 				Description: "Timestamp when the tunnel was created (server-assigned).",
 			},
 			"vault": {
 				Type:        schema.TypeString,
 				Computed:    true,
-				Description: "Server-assigned opaque identifier for the tunnel's config storage. Used together with `request_config_token` to retrieve the WireGuard client config from the SASE management console.",
+				Sensitive:   true,
+				Description: "Server-assigned opaque identifier for the tunnel's config storage. Its role is not documented by the API and has not been measured; the retrieval path that HAS been measured does not use it (see `request_config_token`).",
 			},
 			"request_config_token": {
 				Type:        schema.TypeString,
 				Computed:    true,
-				Description: "Server-assigned token for retrieving the WireGuard client configuration. Pair with `vault` to fetch the config blob.",
+				Sensitive:   true,
+				Description: "Server-assigned token for retrieving the WireGuard client configuration. **It is a bearer credential and it is in your state file.** The measured retrieval path uses neither `vault` nor the console: `GET /v3/networks/standard/{network_id}/tunnels/wireguard/{id}/config-token` returns a URL of the form `…/api/networks/{network_id}/tunnels/{id}/wireguard-config/{this token}`, that URL needs **no authentication**, it lives 6 hours from tunnel creation (see `request_config_token_expires_at` if present), and it serves an executable shell script carrying the tunnel's key material (API-FINDINGS.md 1.32). Anyone who can read this state can reconstruct that URL. Treat state as a secret store.",
 			},
 			"updated_at": {
 				Type:        schema.TypeString,
-				Optional:    true,
 				Computed:    true,
 				Description: "Timestamp when the tunnel was last updated server-side.",
 			},
 			"remote_subnets": {
 				Type:        schema.TypeList,
 				Required:    true,
+				MinItems:    1,
 				Description: "List of remote-side subnet CIDR blocks reachable through this tunnel. At least one is required; duplicates are rejected server-side.",
 				Elem: &schema.Schema{
 					Type:         schema.TypeString,
@@ -102,6 +109,11 @@ func resourceWireguard() *schema.Resource {
 		},
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceWireguardImportState,
+		},
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(asyncResourceTimeout),
+			Update: schema.DefaultTimeout(asyncResourceTimeout),
+			Delete: schema.DefaultTimeout(asyncResourceTimeout),
 		},
 	}
 }
@@ -144,7 +156,6 @@ func resourceWireguardCreate(ctx context.Context, d *schema.ResourceData, m inte
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the resource data from the terraform resource and flatten what needs to be flattened
 	networkId := d.Get("network_id").(string)
@@ -164,7 +175,7 @@ func resourceWireguardCreate(ctx context.Context, d *schema.ResourceData, m inte
 	}
 
 	// create the wireguard tunnel and check for errors
-	status, _, err := client.WireguardAPI.StandardCreateWireguardTunnel(ctx, networkId).CreateWireguardTunnelPayload(wireguardBody).Execute()
+	status, _, err := client.StandardTunnelsAPI.StandardCreateWireguardTunnel(ctx, networkId).CreateWireguardTunnelPayload(wireguardBody).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to create Wireguard tunnel", err)
@@ -174,29 +185,20 @@ func resourceWireguardCreate(ctx context.Context, d *schema.ResourceData, m inte
 	var wireguardTunnelId string
 	statusId := getIdFromUrl(status.GetStatusUrl())
 
-	// check the status of the wireguard tunnel creation
-	for {
-		// check the status of the wireguard tunnel creation and check for errors
-		networkStatus, diags, err := checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		// if the status is completed, get the tunnel id and break the loop
-		if networkStatus.GetCompleted() {
-			baseTunnelBody := perimeter81Sdk.BaseTunnelValues{
-				RegionID:   regionId,
-				GatewayID:  gatewayId,
-				TunnelName: tunnelName,
-			}
-			wireguardTunnelId, diags = getTunnelId(ctx, networkId, baseTunnelBody, *client, diags)
-			if wireguardTunnelId == "" {
-				return diags
-			}
-			break
-		}
-		// sleep for 20 seconds and check the status again
-		time.Sleep(20 * time.Second)
+	// check the status of the wireguard tunnel creation and check for errors
+	if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to create Wireguard tunnel", err)
+	}
+	// get the tunnel id
+	baseTunnelBody := perimeter81Sdk.BaseTunnelValues{
+		RegionID:   regionId,
+		GatewayID:  gatewayId,
+		TunnelName: tunnelName,
+	}
+	wireguardTunnelId, diags = getTunnelId(ctx, networkId, baseTunnelBody, *client, diags)
+	if wireguardTunnelId == "" {
+		return diags
 	}
 	d.SetId(wireguardTunnelId)
 
@@ -215,7 +217,6 @@ func resourceWireguardRead(ctx context.Context, d *schema.ResourceData, m interf
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the tunnel id and the network id from the terraform resource
 	ids := strings.Split(d.Id(), "-")
@@ -230,7 +231,7 @@ func resourceWireguardRead(ctx context.Context, d *schema.ResourceData, m interf
 	}
 
 	// get the wireguard tunnel and check for errors
-	tunnel, _, err := client.WireguardAPI.StandardGetWireguardTunnel(ctx, networkId, tunnelId).Execute()
+	tunnel, _, err := client.StandardTunnelsAPI.StandardGetWireguardTunnel(ctx, networkId, tunnelId).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to read wireguard tunnel", err)
@@ -305,7 +306,6 @@ func resourceWireguardUpdate(ctx context.Context, d *schema.ResourceData, m inte
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// check if the remote endpoint or the remote subnets have changed
 	if d.HasChanges("remote_endpoint", "remote_subnets") {
@@ -321,7 +321,7 @@ func resourceWireguardUpdate(ctx context.Context, d *schema.ResourceData, m inte
 			RemoteSubnets:  remoteSubnets,
 		}
 		// update the wireguard tunnel and check for errors
-		status, _, err := client.WireguardAPI.StandardUpdateWireguardTunnel(ctx, networkId, tunnelId).WireGuradDetails(wireguardDetails).Execute()
+		status, _, err := client.StandardTunnelsAPI.StandardUpdateWireguardTunnel(ctx, networkId, tunnelId).WireGuradDetails(wireguardDetails).Execute()
 		if err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to update wireguard Tunnel", err)
@@ -329,20 +329,10 @@ func resourceWireguardUpdate(ctx context.Context, d *schema.ResourceData, m inte
 
 		// get the status id from the status url
 		statusId := getIdFromUrl(status.GetStatusUrl())
-		// check the status of the wireguard tunnel update
-		for {
-			// check the status of the wireguard tunnel update and check for errors
-			networkStatus, diags, err := checkNetworkStatus(ctx, statusId, *client, diags)
-			if err != nil {
-				d.Partial(true)
-				return diags
-			}
-			// if the status is completed, break the loop
-			if networkStatus.GetCompleted() {
-				break
-			}
-			// sleep for 20 seconds and check the status again
-			time.Sleep(20 * time.Second)
+		// check the status of the wireguard tunnel update and check for errors
+		if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to update wireguard Tunnel", err)
 		}
 		d.Set("last_updated", time.Now().Format(time.RFC850))
 	}
@@ -362,14 +352,13 @@ func resourceWireguardDelete(ctx context.Context, d *schema.ResourceData, m inte
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the tunnel id and the network id from the terraform resource
 	tunnelId := d.Id()
 	networkId := d.Get("network_id").(string)
 
 	// delete the wireguard tunnel and check for errors
-	status, _, err := client.WireguardAPI.StandardDeleteWireguardTunnel(ctx, networkId, tunnelId).Execute()
+	status, _, err := client.StandardTunnelsAPI.StandardDeleteWireguardTunnel(ctx, networkId, tunnelId).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to delete wireguard tunnel", err)
@@ -377,20 +366,10 @@ func resourceWireguardDelete(ctx context.Context, d *schema.ResourceData, m inte
 
 	// get the status id from the status url
 	statusId := getIdFromUrl(status.GetStatusUrl())
-	// check the status of the wireguard tunnel deletion
-	for {
-		// check the status of the wireguard tunnel deletion and check for errors
-		networkStatus, diags, err := checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		// if the status is completed, break the loop
-		if networkStatus.GetCompleted() {
-			break
-		}
-		// sleep for 20 seconds and check the status again
-		time.Sleep(20 * time.Second)
+	// check the status of the wireguard tunnel deletion and check for errors
+	if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to delete wireguard tunnel", err)
 	}
 	d.SetId("")
 	return diags

@@ -3,12 +3,12 @@
 page_title: "checkpointsase_object_services Resource - checkpointsase"
 subcategory: ""
 description: |-
-  Manages a service object in Check Point SASE's shared object library. Service objects are reusable references to one or more transport-layer protocol + port combinations; they're typically referenced from firewall policy rules. Use checkpointsase_object_addresses for the parallel address-object resource. ICMP: the v2.3 API also supports protocol = "icmp", but this provider does not yet expose the corresponding protocolOptions payload, so only tcp and udp are usable here.
+  Manages a service object in Check Point SASE's shared object library. Service objects are reusable references to one or more transport-layer protocol + port combinations; they're typically referenced from firewall policy rules. Use checkpointsase_object_addresses for the parallel address-object resource. Every protocols entry is one of two shapes, and they do not mix. An icmp entry sets protocol_options and neither value_type nor value; a tcp or udp entry sets value_type and value and not protocol_options.
 ---
 
 # checkpointsase_object_services (Resource)
 
-Manages a service object in Check Point SASE's shared object library. Service objects are reusable references to one or more transport-layer protocol + port combinations; they're typically referenced from firewall policy rules. Use `checkpointsase_object_addresses` for the parallel address-object resource. **ICMP**: the v2.3 API also supports `protocol = "icmp"`, but this provider does not yet expose the corresponding `protocolOptions` payload, so only `tcp` and `udp` are usable here.
+Manages a service object in Check Point SASE's shared object library. Service objects are reusable references to one or more transport-layer protocol + port combinations; they're typically referenced from firewall policy rules. Use `checkpointsase_object_addresses` for the parallel address-object resource. Every `protocols` entry is one of two shapes, and they do not mix. An `icmp` entry sets `protocol_options` and neither `value_type` nor `value`; a `tcp` or `udp` entry sets `value_type` and `value` and not `protocol_options`.
 
 ## Example Usage
 
@@ -21,6 +21,26 @@ resource "checkpointsase_object_services" "web_ports" {
     protocol   = "tcp"
     value      = [80, 443]
     value_type = "list"
+  }
+}
+
+# One object may mix port entries with ICMP entries. An icmp entry carries a
+# protocol_options code and no ports; a tcp/udp entry carries value_type + value
+# and no protocol_options. Use -1 for "any ICMP type" — there is no default,
+# because the server would silently pick -1 for you.
+resource "checkpointsase_object_services" "ping_and_ssh" {
+  name        = "pingAndSsh"
+  description = "ICMP echo plus SSH"
+
+  protocols {
+    protocol         = "icmp"
+    protocol_options = 8 # Echo (ping request)
+  }
+
+  protocols {
+    protocol   = "tcp"
+    value      = [22]
+    value_type = "single"
   }
 }
 ```
@@ -47,9 +67,13 @@ resource "checkpointsase_object_services" "web_ports" {
 
 Required:
 
-- `protocol` (String) Transport protocol. Must be `tcp` or `udp`.
-- `value` (List of Number) Port numbers. Shape depends on `value_type`: 1 element for `single`, 2 elements (start, end) for `range`, 1+ for `list`. Each value must be a valid port (1–65535).
-- `value_type` (String) Shape of the `value` list. Must be `single` (one port), `range` (exactly two ports, low–high), or `list` (multiple discrete ports).
+- `protocol` (String) Transport protocol. Must be `tcp`, `udp`, or `icmp`.
+
+Optional:
+
+- `protocol_options` (Number) ICMP message type, as a numeric code. Required when `protocol` is `icmp`, and rejected otherwise. Allowed: -1 (Any), 0 (Echo Reply), 3, 5, 8 (Echo), 9, 10, 11, 12, 13, 14, 40, 42, 43. There is no default: the server turns an absent code into -1 ("Any") without saying so, so this provider makes you write it. The server also returns a human-readable description alongside the code; it is derived from the code and is deliberately not exposed here, because it would be a computed value whose only behaviour is to drift. An `icmp` entry sets `protocol_options` and neither `value_type` nor `value`; a `tcp` or `udp` entry sets `value_type` and `value` and not `protocol_options`.
+- `value` (List of Number) Port numbers. Shape depends on `value_type`: 1 element for `single`, 2 elements (start, end) for `range`, 1+ for `list`. Each value must be a valid port (1–65535). Required for `tcp` and `udp`, and must be omitted for `icmp`, which has no ports.
+- `value_type` (String) Shape of the `value` list. Must be `single` (one port), `range` (exactly two ports, low–high), or `list` (multiple discrete ports). Required for `tcp` and `udp`, and must be omitted for `icmp`, which has no ports.
 
 ## Import
 

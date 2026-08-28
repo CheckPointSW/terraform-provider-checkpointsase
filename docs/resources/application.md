@@ -42,12 +42,21 @@ resource "checkpointsase_application" "internal_app" {
 
 ### Optional
 
-- `groups` (List of String) List of group IDs allowed to access this application.
-- `users` (List of String) List of user IDs allowed to access this application.
+- `groups` (List of String) List of group IDs allowed to access this application. At least one of `users` or `groups` must be non-empty: the API refuses an application that grants access to nobody.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
+- `users` (List of String) List of user IDs allowed to access this application. At least one of `users` or `groups` must be non-empty: the API refuses an application that grants access to nobody.
 
 ### Read-Only
 
 - `id` (String) The ID of this resource.
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
 
 ## Import
 

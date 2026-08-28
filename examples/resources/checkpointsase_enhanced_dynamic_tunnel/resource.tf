@@ -3,6 +3,8 @@
 # Encryption values must match the public-api enum (PhaseEncryptionV2_1) — use
 # "aes256", "aes128", etc. Passphrases must satisfy the IsPassphrase regex
 # (letters/digits/`.`/`_`, 8-64 chars — no hyphens).
+# `p81_gateway_subnets` must equal the parent enhanced network's own subnet
+# (or `0.0.0.0/0` for a default route); arbitrary CIDRs are rejected.
 resource "checkpointsase_enhanced_dynamic_tunnel" "example" {
   network_id             = "ZwAeo5wqiF"
   tunnel_name            = "dynamicTunnel01"
@@ -14,12 +16,12 @@ resource "checkpointsase_enhanced_dynamic_tunnel" "example" {
   left_asn = 65000
 
   tunnel {
-    region_id            = "K7tEfRm9vQ"
-    auth_type            = "psk"
-    passphrase           = "ChangeMeSharedSecret"
-    remote_public_ip     = "203.0.113.50"
-    remote_asn           = 65010
-    p81_gw_internal_ip   = "169.254.0.1"
+    region_id             = "K7tEfRm9vQ"
+    auth_type             = "psk"
+    passphrase            = "ChangeMeSharedSecret"
+    remote_public_ip      = "203.0.113.50"
+    remote_asn            = 65010
+    p81_gw_internal_ip    = "169.254.0.1"
     remote_gw_internal_ip = "169.254.0.2"
   }
 

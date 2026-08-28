@@ -6,10 +6,11 @@ import (
 	"strings"
 	"time"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 )
 
 /*
@@ -64,14 +65,19 @@ func resourceOpenvpn() *schema.Resource {
 				Description: "The ID of the SASE gateway that terminates this tunnel locally.",
 			},
 			"tunnel_name": {
-				Type:        schema.TypeString,
-				Required:    true,
-				ForceNew:    true,
-				Description: "Display name for the OpenVPN tunnel.",
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+				Description: "Display name for the OpenVPN tunnel. 3-15 characters, letters and digits " +
+					"only. The server derives the tunnel's `interfaceName` from this value and " +
+					"rejects hyphens, underscores, dots and spaces with a 422 that names only the " +
+					"derived field.",
+				ValidateFunc: validation.StringMatch(tunnelNamePattern, tunnelNameRuleMessage),
 			},
 			"access_key_id": {
 				Type:        schema.TypeString,
 				Computed:    true,
+				Sensitive:   true,
 				Description: "Server-assigned credential ID for the OpenVPN client. Rotated when `version` changes.",
 			},
 			"secret_access_key": {
@@ -87,13 +93,11 @@ func resourceOpenvpn() *schema.Resource {
 			},
 			"created_at": {
 				Type:        schema.TypeString,
-				Optional:    true,
 				Computed:    true,
 				Description: "Timestamp when the tunnel was created (server-assigned).",
 			},
 			"updated_at": {
 				Type:        schema.TypeString,
-				Optional:    true,
 				Computed:    true,
 				Description: "Timestamp when the tunnel was last updated server-side.",
 			},
@@ -101,11 +105,16 @@ func resourceOpenvpn() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceOpenvpnImportState,
 		},
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(asyncResourceTimeout),
+			Update: schema.DefaultTimeout(asyncResourceTimeout),
+			Delete: schema.DefaultTimeout(asyncResourceTimeout),
+		},
 	}
 }
 
 /*
-resourceOpenvpnImportState Import gateways
+resourceOpenvpnImportState Import an openvpn tunnel by its ID
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
   - @param m interface{} - the terraform meta data that contains the client
@@ -151,7 +160,6 @@ func resourceOpenvpnCreate(ctx context.Context, d *schema.ResourceData, m interf
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the data from the resource data
 	networkId := d.Get("network_id").(string)
@@ -166,7 +174,7 @@ func resourceOpenvpnCreate(ctx context.Context, d *schema.ResourceData, m interf
 		TunnelName: tunnelName,
 	}
 	// create the tunnel and check for errors
-	status, _, err := client.OpenVPNAPI.StandardCreateOpenVPNTunnel(ctx, networkId).BaseTunnelValues(baseTunnelBody).Execute()
+	status, _, err := client.StandardTunnelsAPI.StandardCreateOpenVPNTunnel(ctx, networkId).BaseTunnelValues(baseTunnelBody).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to create Openvpn tunnel", err)
@@ -176,25 +184,29 @@ func resourceOpenvpnCreate(ctx context.Context, d *schema.ResourceData, m interf
 	var openvpnTunnelId string
 	statusId := getIdFromUrl(status.GetStatusUrl())
 
-	// check the status of the tunnel creation
-	for {
-		// check the status of the tunnel creation and check for errors
-		networkStatus, diags, err := checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			return diags
-		}
-		// if the status is completed, get the tunnel id and break the loop
-		if networkStatus.GetCompleted() {
-			openvpnTunnelId, diags = getTunnelId(ctx, networkId, baseTunnelBody, *client, diags)
-			if openvpnTunnelId == "" {
-				return diags
-			}
-			break
-		}
-		// sleep for 20 seconds and check the status again
-		time.Sleep(20 * time.Second)
+	// check the status of the tunnel creation and check for errors
+	if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+		return appendErrorDiags(diags, "Unable to create Openvpn tunnel", err)
+	}
+	// get the tunnel id
+	openvpnTunnelId, diags = getTunnelId(ctx, networkId, baseTunnelBody, *client, diags)
+	if openvpnTunnelId == "" {
+		return diags
 	}
 	d.SetId(openvpnTunnelId)
+
+	// The create response is the ONLY place secretAccessKey is ever returned --
+	// the SDK field's own comment says "This key will be shown only once in the
+	// response for security reasons". The subsequent GET does not carry it
+	// (despite the spec declaring it on OpenVPNTunnel), so if we do not persist
+	// it here the credential is lost forever and the attribute stays empty,
+	// which is what the resource's own description promises it will not be.
+	if secret := status.GetSecretAccessKey(); secret != "" {
+		if err := d.Set("secret_access_key", secret); err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to set Openvpn secret_access_key", err)
+		}
+	}
 
 	return resourceOpenvpnRead(ctx, d, m)
 }
@@ -211,7 +223,6 @@ func resourceOpenvpnRead(ctx context.Context, d *schema.ResourceData, m interfac
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the tunnel id and the network id from the resource data
 	ids := strings.Split(d.Id(), "-")
@@ -226,7 +237,7 @@ func resourceOpenvpnRead(ctx context.Context, d *schema.ResourceData, m interfac
 	}
 
 	// get the tunnel and check for errors
-	tunnel, _, err := client.OpenVPNAPI.StandardGetOpenVPNTunnel(ctx, networkId, tunnelId).Execute()
+	tunnel, _, err := client.StandardTunnelsAPI.StandardGetOpenVPNTunnel(ctx, networkId, tunnelId).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to read openvpn tunnel", err)
@@ -248,11 +259,22 @@ func resourceOpenvpnRead(ctx context.Context, d *schema.ResourceData, m interfac
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set gateway id", err)
 	}
-	if err := d.Set("access_key_id", tunnel.GetAccessKeyId()); err != nil {
+	// access_key_id and secret_access_key are write-once credentials: the API
+	// only returns them on create and on rotation (see secret_access_key's
+	// schema description above). A plain read gets neither back, and the
+	// SDK's nil-safe GetAccessKeyId()/GetSecretAccessKey() turn that absence
+	// into "" — so setting them unconditionally here would overwrite the
+	// terraform state's only durable copy of the tunnel's credentials with
+	// an empty string on every refresh. Only write when the API actually
+	// returned a value; otherwise leave whatever is already in state alone.
+	// Guarded independently (not "if either is present, set both") because
+	// the two are not guaranteed to arrive together. Do not "simplify" this
+	// back to an unconditional d.Set — that's the bug this guards against.
+	if err := setIfPresent(d, "access_key_id", tunnel.GetAccessKeyId(), tunnel.HasAccessKeyId()); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set access key id", err)
 	}
-	if err := d.Set("secret_access_key", tunnel.GetSecretAccessKey()); err != nil {
+	if err := setIfPresent(d, "secret_access_key", tunnel.GetSecretAccessKey(), tunnel.HasSecretAccessKey()); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set secret access key", err)
 	}
@@ -284,7 +306,6 @@ func resourceOpenvpnUpdate(ctx context.Context, d *schema.ResourceData, m interf
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// check if the version has changed
 	if d.HasChange("version") {
@@ -293,7 +314,7 @@ func resourceOpenvpnUpdate(ctx context.Context, d *schema.ResourceData, m interf
 		tunnelId := d.Id()
 		networkId := d.Get("network_id").(string)
 		// update the tunnel and check for errors
-		status, _, err := client.OpenVPNAPI.StandardUpdateOpenVPNTunnel(ctx, networkId, tunnelId).Execute()
+		status, _, err := client.StandardTunnelsAPI.StandardUpdateOpenVPNTunnel(ctx, networkId, tunnelId).Execute()
 		if err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to update openvpn Tunnel", err)
@@ -302,20 +323,20 @@ func resourceOpenvpnUpdate(ctx context.Context, d *schema.ResourceData, m interf
 		// get the status id from the status url
 		statusId := getIdFromUrl(status.GetStatusUrl())
 
-		// check the status of the tunnel update
-		for {
-			// check the status of the tunnel update and check for errors
-			networkStatus, diags, err := checkNetworkStatus(ctx, statusId, *client, diags)
-			if err != nil {
+		// check the status of the tunnel update and check for errors
+		if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to update openvpn Tunnel", err)
+		}
+		// A version bump is a credential rotation, and the update response is the
+		// only place the rotated secret is ever returned -- same one-shot contract
+		// as create. Without this the server rotates, the old secret stops working,
+		// and Terraform silently keeps the stale one.
+		if secret := status.GetSecretAccessKey(); secret != "" {
+			if err := d.Set("secret_access_key", secret); err != nil {
 				d.Partial(true)
-				return diags
+				return appendErrorDiags(diags, "Unable to set rotated Openvpn secret_access_key", err)
 			}
-			// if the status is completed, break the loop
-			if networkStatus.GetCompleted() {
-				break
-			}
-			// sleep for 20 seconds and check the status again
-			time.Sleep(20 * time.Second)
 		}
 		d.Set("last_updated", time.Now().Format(time.RFC850))
 	}
@@ -335,14 +356,13 @@ func resourceOpenvpnDelete(ctx context.Context, d *schema.ResourceData, m interf
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the tunnel id and the network id from the resource data
 	tunnelId := d.Id()
 	networkId := d.Get("network_id").(string)
 
 	// delete the tunnel and check for errors
-	status, _, err := client.OpenVPNAPI.StandardDeleteOpenVPNTunnel(ctx, networkId, tunnelId).Execute()
+	status, _, err := client.StandardTunnelsAPI.StandardDeleteOpenVPNTunnel(ctx, networkId, tunnelId).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to delete openvpn tunnel", err)
@@ -350,20 +370,10 @@ func resourceOpenvpnDelete(ctx context.Context, d *schema.ResourceData, m interf
 
 	// get the status id from the status url
 	statusId := getIdFromUrl(status.GetStatusUrl())
-	// check the status of the tunnel deletion
-	for {
-		// check the status of the tunnel deletion and check for errors
-		networkStatus, diags, err := checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		// if the status is completed, break the loop
-		if networkStatus.GetCompleted() {
-			break
-		}
-		// sleep for 20 seconds and check the status again
-		time.Sleep(20 * time.Second)
+	// check the status of the tunnel deletion and check for errors
+	if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to delete openvpn tunnel", err)
 	}
 	d.SetId("")
 	return diags

@@ -68,3 +68,8 @@ override.tf.json
 .terraformrc
 terraform.rc
 terraform
+
+# scripts/upg01.sh work directory: filesystem mirror, built provider
+# binaries, generated fixtures, and Terraform state that may contain tenant
+# data. Never commit this.
+/.upg01-work/

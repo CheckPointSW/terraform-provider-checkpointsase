@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -82,12 +82,9 @@ func dataSourceObjectAddressesRead(ctx context.Context, d *schema.ResourceData, 
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	if ctx == nil {
-		ctx = context.Background()
-	}
 
 	// call the api and check if there is an error
-	objectAddresses, _, err := client.ObjectsAddressesAPI.GetObjectsAddresses(ctx).Execute()
+	objectAddresses, _, err := client.ObjectsAPI.GetAddresses(ctx).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to get object addresses", err)

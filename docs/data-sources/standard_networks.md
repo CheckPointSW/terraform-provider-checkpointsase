@@ -3,12 +3,12 @@
 page_title: "checkpointsase_standard_networks Data Source - checkpointsase"
 subcategory: ""
 description: |-
-  List all standard networks in Check Point SASE. Uses the /v2.3/networks/standard endpoint.
+  List all standard networks in Check Point SASE. Uses the /v3/networks/standard endpoint.
 ---
 
 # checkpointsase_standard_networks (Data Source)
 
-List all standard networks in Check Point SASE. Uses the /v2.3/networks/standard endpoint.
+List all standard networks in Check Point SASE. Uses the /v3/networks/standard endpoint.
 
 ## Example Usage
 

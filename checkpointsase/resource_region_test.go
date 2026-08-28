@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
@@ -17,7 +17,11 @@ func TestAccRegion_basic(t *testing.T) {
 	var network perimeter81Sdk.Network
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:  func() { testAccPreCheck(t) },
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testAccPreCheckRegion(t)
+			testAccPreCheckSecondaryRegion(t)
+		},
 		Providers: testAccProviders,
 		Steps: []resource.TestStep{
 			{
@@ -63,12 +67,12 @@ resource "checkpointsase_network" "n5" {
 		tags = ["test"]
 	}
 	region {
-		cpregion_id = "r2Epw6OJsx"
+		cpregion_id = "%s"
 		idle = true
 	}
 }
   `
-	return fmt.Sprintf(config, randNameNetwork)
+	return fmt.Sprintf(config, randNameNetwork, testAccRegionID())
 }
 
 func testAccRegionsUpdate1Config() string {
@@ -79,16 +83,16 @@ resource "checkpointsase_network" "n5" {
 		tags = ["test"]
 	}
 	region {
-		cpregion_id = "r2Epw6OJsx"
+		cpregion_id = "%s"
 		idle = true
 	}
 	region {
-    	cpregion_id = "F2w4QTggWt"
+    	cpregion_id = "%s"
     	idle = true
   	}
 }
   `
-	return fmt.Sprintf(config, randNameRegion)
+	return fmt.Sprintf(config, randNameRegion, testAccRegionID(), testAccRegionID2())
 }
 func testAccRegionsUpdate2Config() string {
 	config := `
@@ -98,10 +102,10 @@ resource "checkpointsase_network" "n5" {
 		tags = ["test"]
 	}
 	region {
-		cpregion_id = "r2Epw6OJsx"
+		cpregion_id = "%s"
 		idle = true
 	}
 }
   `
-	return fmt.Sprintf(config, randNameRegion)
+	return fmt.Sprintf(config, randNameRegion, testAccRegionID())
 }

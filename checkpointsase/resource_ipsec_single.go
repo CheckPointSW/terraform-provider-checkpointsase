@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -57,10 +57,14 @@ func resourceIpsecSingle() *schema.Resource {
 				Description: "The ID of the SASE gateway that terminates this tunnel locally.",
 			},
 			"tunnel_name": {
-				Type:        schema.TypeString,
-				Required:    true,
-				ForceNew:    true,
-				Description: "Display name for the IPsec tunnel.",
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+				Description: "Display name for the IPsec tunnel. 3-15 characters, letters and digits " +
+					"only. The server derives the tunnel's `interfaceName` from this value and " +
+					"rejects hyphens, underscores, dots and spaces with a 422 that names only the " +
+					"derived field.",
+				ValidateFunc: validation.StringMatch(tunnelNamePattern, tunnelNameRuleMessage),
 			},
 			"key_exchange": {
 				Type:         schema.TypeString,
@@ -102,7 +106,11 @@ func resourceIpsecSingle() *schema.Resource {
 				Type:        schema.TypeString,
 				Sensitive:   true,
 				Required:    true,
-				Description: "Pre-shared key for tunnel authentication (8–64 characters).",
+				Description: "Pre-shared key for tunnel authentication. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).",
+				ValidateFunc: validation.StringMatch(
+					regexp.MustCompile(`^[a-zA-Z1-9._][a-zA-Z0-9._]{7,63}$`),
+					"must be 8-64 characters using only letters, digits, '.', and '_' (the first character cannot be '0')",
+				),
 			},
 			"remote_public_ip": {
 				Type:        schema.TypeString,
@@ -110,29 +118,38 @@ func resourceIpsecSingle() *schema.Resource {
 				Description: "The remote gateway public IP address.",
 			},
 			"remote_id": {
-				Type:        schema.TypeString,
-				Optional:    true,
-				Computed:    true,
-				Description: "Optional remote tunnel ID. Computed if not supplied.",
+				Type:         schema.TypeString,
+				Optional:     true,
+				Computed:     true,
+				Description:  "Optional remote tunnel ID. Computed if not supplied. Must be alphanumeric or a valid IP address.",
+				ValidateFunc: validateRemoteID,
 			},
 			"created_at": {
 				Type:        schema.TypeString,
-				Optional:    true,
 				Computed:    true,
 				Description: "Timestamp when the tunnel was created (server-assigned).",
 			},
 			"updated_at": {
 				Type:        schema.TypeString,
-				Optional:    true,
 				Computed:    true,
 				Description: "Timestamp when the tunnel was last updated server-side.",
 			},
 			"p81_gateway_subnets": {
-				Type:        schema.TypeList,
-				Required:    true,
-				Description: "Check Point SASE gateway subnet CIDR blocks reachable through this tunnel.",
+				Type:     schema.TypeList,
+				Required: true,
+				Description: "Check Point SASE gateway subnet CIDR blocks reachable through this tunnel. " +
+					"The enhanced-network tunnel endpoints restrict this list to `0.0.0.0/0` or the " +
+					"network's own subnet; whether `/v3/networks/standard/...` applies the same rule " +
+					"has not been measured. The plan-time validator checks CIDR format only.",
+				// This resource writes /v3/networks/standard/..., a different
+				// endpoint family from the enhanced tunnels where the
+				// "0.0.0.0/0 or the network Subnet" 409 was measured
+				// (see p81GatewaySubnetsEnhancedRule in utils.go). The rule is not
+				// asserted here because it was not measured here; only the CIDR
+				// format check, which holds for any list of CIDRs, is applied.
 				Elem: &schema.Schema{
-					Type: schema.TypeString,
+					Type:         schema.TypeString,
+					ValidateFunc: validation.IsCIDR,
 				},
 			},
 			"remote_gateway_subnets": {
@@ -152,6 +169,7 @@ func resourceIpsecSingle() *schema.Resource {
 						"auth": {
 							Type:        schema.TypeList,
 							Required:    true,
+							MinItems:    1,
 							Description: "List of phase 1 authentication algorithms (e.g. `[\"sha256\"]`).",
 							Elem: &schema.Schema{
 								Type: schema.TypeString,
@@ -160,6 +178,7 @@ func resourceIpsecSingle() *schema.Resource {
 						"encryption": {
 							Type:        schema.TypeList,
 							Required:    true,
+							MinItems:    1,
 							Description: "List of phase 1 encryption algorithms (e.g. `[\"aes-cbc-256\"]`).",
 							Elem: &schema.Schema{
 								Type: schema.TypeString,
@@ -184,6 +203,7 @@ func resourceIpsecSingle() *schema.Resource {
 						"auth": {
 							Type:        schema.TypeList,
 							Required:    true,
+							MinItems:    1,
 							Description: "List of phase 2 authentication algorithms.",
 							Elem: &schema.Schema{
 								Type: schema.TypeString,
@@ -192,6 +212,7 @@ func resourceIpsecSingle() *schema.Resource {
 						"encryption": {
 							Type:        schema.TypeList,
 							Required:    true,
+							MinItems:    1,
 							Description: "List of phase 2 encryption algorithms.",
 							Elem: &schema.Schema{
 								Type: schema.TypeString,
@@ -211,11 +232,16 @@ func resourceIpsecSingle() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceIpsecSingleImportState,
 		},
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(asyncResourceTimeout),
+			Update: schema.DefaultTimeout(asyncResourceTimeout),
+			Delete: schema.DefaultTimeout(asyncResourceTimeout),
+		},
 	}
 }
 
 /*
-resourceOpenvpnImportState Import gateways
+resourceIpsecSingleImportState Import an ipsec-single tunnel by its ID
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
   - @param m interface{} - the terraform meta data that contains the client
@@ -252,7 +278,6 @@ func resourceIpsecSingleCreate(ctx context.Context, d *schema.ResourceData, m in
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the ipsec single data from the terraform resource data and flatten what need to be flattened for the api
 	networkId := d.Get("network_id").(string)
@@ -306,7 +331,7 @@ func resourceIpsecSingleCreate(ctx context.Context, d *schema.ResourceData, m in
 	}
 
 	// create the ipsec single tunnel and check for errors
-	status, _, err := client.IPSecSingleAPI.StandardCreateIPSecSingleTunnel(ctx, networkId).CreateIPSecSinglePayload(ipSecSingleBody).Execute()
+	status, _, err := client.StandardTunnelsAPI.StandardCreateIPSecSingleTunnel(ctx, networkId).CreateIPSecSinglePayload(ipSecSingleBody).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to create IpsecSingle tunnel", err)
@@ -316,29 +341,20 @@ func resourceIpsecSingleCreate(ctx context.Context, d *schema.ResourceData, m in
 	var ipSecSingleTunnelId string
 	statusId := getIdFromUrl(status.GetStatusUrl())
 
-	// check the status of the ipsec-redundant tunnel creation
-	for {
-		// check the status of the network that contains the ipsec-redundant tunnel and check for errors
-		networkStatus, diags, err := checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		// if the network status is completed, get the ipsec-single tunnel id and break the loop
-		if networkStatus.GetCompleted() {
-			baseTunnelBody := perimeter81Sdk.BaseTunnelValues{
-				RegionID:   regionId,
-				GatewayID:  gatewayId,
-				TunnelName: tunnelName,
-			}
-			ipSecSingleTunnelId, diags = getTunnelId(ctx, networkId, baseTunnelBody, *client, diags)
-			if ipSecSingleTunnelId == "" {
-				return diags
-			}
-			break
-		}
-		// delay for 20 seconds before checking the status again
-		time.Sleep(20 * time.Second)
+	// check the status of the network that contains the ipsec-single tunnel and check for errors
+	if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to create IpsecSingle tunnel", err)
+	}
+	// get the ipsec-single tunnel id
+	baseTunnelBody := perimeter81Sdk.BaseTunnelValues{
+		RegionID:   regionId,
+		GatewayID:  gatewayId,
+		TunnelName: tunnelName,
+	}
+	ipSecSingleTunnelId, diags = getTunnelId(ctx, networkId, baseTunnelBody, *client, diags)
+	if ipSecSingleTunnelId == "" {
+		return diags
 	}
 	d.SetId(ipSecSingleTunnelId)
 
@@ -357,7 +373,6 @@ func resourceIpsecSingleRead(ctx context.Context, d *schema.ResourceData, m inte
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the ipsec-single tunnel id and the network id
 	ids := strings.Split(d.Id(), "-")
@@ -372,7 +387,7 @@ func resourceIpsecSingleRead(ctx context.Context, d *schema.ResourceData, m inte
 	}
 
 	// get the ipsec-single tunnel and check for errors
-	tunnel, _, err := client.IPSecSingleAPI.StandardGetIPSecSingleTunnel(ctx, networkId, tunnelId).Execute()
+	tunnel, _, err := client.StandardTunnelsAPI.StandardGetIPSecSingleTunnel(ctx, networkId, tunnelId).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to read ipsec-single tunnel", err)
@@ -417,7 +432,12 @@ func resourceIpsecSingleRead(ctx context.Context, d *schema.ResourceData, m inte
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set Dpd timeout", err)
 	}
-	if err := d.Set("passphrase", tunnel.GetPassphrase()); err != nil {
+	// passphrase is a write-once credential, same pattern as OpenVPN's
+	// secret_access_key (see setIfPresent in utils.go): v3 does not return the
+	// pre-shared key on a plain read, so setting it unconditionally here would
+	// overwrite the terraform state's only copy with "" on every refresh. Only
+	// write it when the API actually returned it.
+	if err := setIfPresent(d, "passphrase", tunnel.GetPassphrase(), tunnel.HasPassphrase()); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set passphrase", err)
 	}
@@ -469,7 +489,6 @@ func resourceIpsecSingleUpdate(ctx context.Context, d *schema.ResourceData, m in
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// check if the ipsec single data has changes
 	if d.HasChanges("key_exchange", "remote_public_ip", "remote_id", "passphrase", "dpd_timeout", "dpd_delay", "lifetime", "ike_life_time", "p81_gateway_subnets", "remote_gateway_subnets", "phase1", "phase2") {
@@ -527,7 +546,7 @@ func resourceIpsecSingleUpdate(ctx context.Context, d *schema.ResourceData, m in
 		}
 
 		// update the ipsec-single tunnel and check for errors
-		status, _, err := client.IPSecSingleAPI.StandardUpdateIPSecSingleTunnel(ctx, networkId, tunnelId).IPSecSingleDetails(ipSecSingleDetails).Execute()
+		status, _, err := client.StandardTunnelsAPI.StandardUpdateIPSecSingleTunnel(ctx, networkId, tunnelId).IPSecSingleDetails(ipSecSingleDetails).Execute()
 		if err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to update ipsec-single Tunnel", err)
@@ -537,19 +556,9 @@ func resourceIpsecSingleUpdate(ctx context.Context, d *schema.ResourceData, m in
 		statusId := getIdFromUrl(status.GetStatusUrl())
 
 		// check the status of the ipsec-single tunnel and check for errors
-		for {
-			// check the status of the ipsec-single tunnel and check for errors
-			networkStatus, diags, err := checkNetworkStatus(ctx, statusId, *client, diags)
-			if err != nil {
-				d.Partial(true)
-				return diags
-			}
-			// if the ipsec-single tunnel status is completed break the loop
-			if networkStatus.GetCompleted() {
-				break
-			}
-			// sleep for 20 seconds
-			time.Sleep(20 * time.Second)
+		if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to update ipsec-single Tunnel", err)
 		}
 		d.Set("last_updated", time.Now().Format(time.RFC850))
 	}
@@ -569,14 +578,13 @@ func resourceIpsecSingleDelete(ctx context.Context, d *schema.ResourceData, m in
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the ipsec-single tunnel id and the network id from the terraform resource data
 	tunnelId := d.Id()
 	networkId := d.Get("network_id").(string)
 
 	// delete the ipsec-single tunnel and check for errors
-	status, _, err := client.IPSecSingleAPI.StandardDeleteIPSecSingleTunnel(ctx, networkId, tunnelId).Execute()
+	status, _, err := client.StandardTunnelsAPI.StandardDeleteIPSecSingleTunnel(ctx, networkId, tunnelId).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to delete ipsec-single tunnel", err)
@@ -585,19 +593,9 @@ func resourceIpsecSingleDelete(ctx context.Context, d *schema.ResourceData, m in
 	// get the status id from the status url
 	statusId := getIdFromUrl(status.GetStatusUrl())
 	// check the status of the ipsec-single tunnel and check for errors
-	for {
-		// check the status of the ipsec-single tunnel and check for errors
-		networkStatus, diags, err := checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		// if the ipsec-single tunnel status is completed break the loop
-		if networkStatus.GetCompleted() {
-			break
-		}
-		// sleep for 20 seconds
-		time.Sleep(20 * time.Second)
+	if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to delete ipsec-single tunnel", err)
 	}
 	d.SetId("")
 	return diags

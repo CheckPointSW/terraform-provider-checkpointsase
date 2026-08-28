@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -20,10 +20,12 @@ resourceEnhancedNetwork Setup the Enhanced Network Resource CRUD operations
 func resourceEnhancedNetwork() *schema.Resource {
 	return &schema.Resource{
 		Description: "Manages an enhanced (SD-WAN-capable) network in Check Point SASE. " +
-			"Enhanced networks support multi-region deployment, IPsec tunnels (static and " +
-			"BGP-routed dynamic), and route tables — see `checkpointsase_enhanced_region`, " +
-			"`checkpointsase_enhanced_static_tunnel`, `checkpointsase_enhanced_dynamic_tunnel`, " +
-			"and `checkpointsase_enhanced_route_table`. " +
+			"Enhanced networks support multi-region deployment and IPsec tunnels (static and " +
+			"BGP-routed dynamic) — see `checkpointsase_enhanced_region`, " +
+			"`checkpointsase_enhanced_static_tunnel` and " +
+			"`checkpointsase_enhanced_dynamic_tunnel`. Each tunnel carries its own route, " +
+			"set through that tunnel's `remote_gateway_subnets` and readable through the " +
+			"`checkpointsase_enhanced_route_table` **data source**. " +
 			"**`subnet` is immutable** — changing it forces resource replacement.",
 		CreateContext: resourceEnhancedNetworkCreate,
 		ReadContext:   resourceEnhancedNetworkRead,
@@ -94,6 +96,11 @@ func resourceEnhancedNetwork() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceEnhancedNetworkImportState,
 		},
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(asyncResourceTimeout),
+			Update: schema.DefaultTimeout(asyncResourceTimeout),
+			Delete: schema.DefaultTimeout(asyncResourceTimeout),
+		},
 	}
 }
 
@@ -128,7 +135,6 @@ resourceEnhancedNetworkCreate Create an Enhanced Network.
 func resourceEnhancedNetworkCreate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	name := d.Get("name").(string)
 	subnet := d.Get("subnet").(string)
@@ -165,31 +171,36 @@ func resourceEnhancedNetworkCreate(ctx context.Context, d *schema.ResourceData, 
 	}
 
 	statusId := getIdFromUrl(status.GetStatusUrl())
-	var networkId string
-	for {
-		var networkStatus perimeter81Sdk.AsyncOperationStatus
-		networkStatus, diags, err = checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			networks, _, listErr := client.EnhancedNetworksAPI.GetEnhancedNetworks(ctx).Execute()
-			if listErr != nil {
-				d.Partial(true)
-				return appendErrorDiags(diags, "Unable to create Enhanced Network", listErr)
-			}
-			for _, networkData := range networks {
-				if networkData.Name == name {
-					d.SetId(networkData.Id)
-					return resourceEnhancedNetworkRead(ctx, d, m)
-				}
-			}
+	resource, err := pollStandardNetworkStatusForResource(ctx, client, statusId, standardNetworkPollInterval)
+	if err != nil {
+		diags = appendErrorDiags(diags, "Unable to create Enhanced Network", err)
+		if isAsyncConflict(err) {
+			// A 409 means the name-match loop below is guaranteed to find the
+			// very network that caused the conflict. Adopting it would point
+			// Terraform state at a network this apply never created, and a
+			// later destroy would delete someone else's network. Fail the
+			// apply instead of adopting.
 			d.Partial(true)
 			return diags
 		}
-		if networkStatus.GetCompleted() {
-			networkId = getIdFromUrl(networkStatus.Result.GetResource())
-			break
+		networks, _, listErr := client.EnhancedNetworksAPI.GetEnhancedNetworks(ctx).Execute()
+		if listErr != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to create Enhanced Network", listErr)
 		}
-		time.Sleep(60 * time.Second)
+		for _, networkData := range networks {
+			if networkData.Name == name {
+				d.SetId(networkData.Id)
+				diags = appendWarningDiags(diags, "Adopted existing Enhanced Network after failed create",
+					fmt.Sprintf("The create request's async poll failed, but an existing enhanced network named %q (id %s) was found and adopted into Terraform state. Confirm this is the network you intended to manage.", name, networkData.Id))
+				diags = append(diags, resourceEnhancedNetworkRead(ctx, d, m)...)
+				return diags
+			}
+		}
+		d.Partial(true)
+		return diags
 	}
+	networkId := getIdFromUrl(resource)
 
 	d.SetId(networkId)
 	return resourceEnhancedNetworkRead(ctx, d, m)
@@ -206,7 +217,6 @@ resourceEnhancedNetworkRead Read an Enhanced Network.
 func resourceEnhancedNetworkRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Id()
 	networkData, _, err := client.EnhancedNetworksAPI.GetEnhancedNetwork(ctx, networkId).Execute()
@@ -291,7 +301,6 @@ resourceEnhancedNetworkUpdate Update an Enhanced Network.
 func resourceEnhancedNetworkUpdate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	if d.HasChanges("name", "tags") {
 		networkId := d.Id()
@@ -327,7 +336,6 @@ resourceEnhancedNetworkDelete Delete an Enhanced Network.
 func resourceEnhancedNetworkDelete(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Id()
 	status, _, err := client.EnhancedNetworksAPI.DeleteEnhancedNetwork(ctx, networkId).Execute()
@@ -337,17 +345,9 @@ func resourceEnhancedNetworkDelete(ctx context.Context, d *schema.ResourceData, 
 	}
 
 	statusId := getIdFromUrl(status.GetStatusUrl())
-	for {
-		var networkStatus perimeter81Sdk.AsyncOperationStatus
-		networkStatus, diags, err = checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		if networkStatus.GetCompleted() {
-			break
-		}
-		time.Sleep(60 * time.Second)
+	if err := pollStandardNetworkStatus(ctx, client, statusId, standardNetworkPollInterval); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to delete Enhanced Network", err)
 	}
 
 	d.SetId("")

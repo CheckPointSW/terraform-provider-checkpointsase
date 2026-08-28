@@ -40,5 +40,6 @@ Read-Only:
 Read-Only:
 
 - `protocol` (String)
+- `protocol_options` (Number)
 - `value` (List of Number)
 - `value_type` (String)

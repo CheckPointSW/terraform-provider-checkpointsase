@@ -2,24 +2,234 @@ package checkpointsase
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/rand"
+	"net"
+	"net/http"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
-// parseASNString converts a user-supplied ASN string (e.g. "65010") to the
-// SDK's RemoteASN type. Invalid input returns 0; the API validator catches
-// out-of-range values. Used by resources whose HCL schema declares the ASN
-// as a string (historical reasons) — newer resources use TypeInt directly.
-func parseASNString(s string) perimeter81Sdk.RemoteASN {
+// parseASNString converts a user-supplied ASN string (e.g. "65010") to an
+// int32. Invalid input returns 0; the API validator catches out-of-range
+// values. Used by resources whose HCL schema declares the ASN as a string
+// (historical reasons) — newer resources use TypeInt directly.
+func parseASNString(s string) int32 {
 	n, _ := strconv.Atoi(strings.TrimSpace(s))
-	return perimeter81Sdk.RemoteASN(int32(n))
+	return int32(n)
+}
+
+// remoteIDAlphanumericPattern is the "alpha-numeric" half of the server's
+// documented remote_id rule; the other half (IP address) is checked with
+// net.ParseIP below so both IPv4 and IPv6 values are accepted.
+var remoteIDAlphanumericPattern = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
+
+// validateRemoteID is a schema.SchemaValidateFunc enforcing the server's
+// documented remote_id rule, confirmed live against a 400 response reading
+// `remoteID must be a valid remoteID ( alpha-numeric or IP)`. An empty
+// string is let through here: remote_id is Optional (often Optional+
+// Computed) everywhere it's used, and validation for a value the user never
+// set is not this function's job.
+func validateRemoteID(v interface{}, k string) (warns []string, errs []error) {
+	s, ok := v.(string)
+	if !ok {
+		errs = append(errs, fmt.Errorf("expected type of %q to be string", k))
+		return warns, errs
+	}
+	if s == "" {
+		return warns, errs
+	}
+	if remoteIDAlphanumericPattern.MatchString(s) || net.ParseIP(s) != nil {
+		return warns, errs
+	}
+	errs = append(errs, fmt.Errorf("%q must be alphanumeric or a valid IP address, got: %s", k, s))
+	return warns, errs
+}
+
+/*
+tunnelNamePattern is the API's shared `TunnelName` schema -- pattern
+^[a-zA-Z0-9]*$, minLength 3, maxLength 15 (swagger.yaml:7517) -- reached from
+`BaseTunnelValues`, `CreateIPSecRedundantPayload` and `IPSecRedundantTunnels`,
+which is to say the four standard-network tunnel resources.
+
+{3,15} INSTEAD OF * PLUS A SEPARATE LENGTH CHECK. The server splits its rule
+across `pattern` and `minLength`/`maxLength`; folding both into one Go pattern
+gives the operator one message rather than two, and the quantifier applies to an
+ASCII-only class so there is no rune-versus-byte disagreement of the kind
+resource_group.go's name check had to unpick.
+
+The rule matters more than it looks: the server does not store this value and
+move on, it DERIVES the tunnel's `interfaceName` from it, and the 422 that
+follows names only the derived field. See tunnelNameRuleMessage.
+
+APPLIED TO THE ENHANCED-NETWORK TUNNELS TOO, ON EVIDENCE RATHER THAN SYMMETRY.
+`DynamicTunnelCreate` (swagger.yaml:4651) and the static tunnel payload
+(swagger.yaml:5059) declare `tunnelName` as a bare string with NO pattern and NO
+length, so for one day this pattern covered only the standard four. Measured
+2026-08-28: an apply of demo/enhanced_dynamic_tunnel -- which touches enhanced
+endpoints and nothing else -- returned the SAME 422 as the standard family,
+`"interfaceName" must only contain alpha-numeric characters`, and returned it at
+the SAME Joi path, `regions[0].instances[0].attributes.tunnels[0]`. `instances`
+appears in the public spec only on `NetworkRegion` (swagger.yaml:6326), the
+STANDARD region model; there is no enhanced equivalent. The two families
+therefore share one internal network document, and the spec's silence on the
+enhanced side is a spec gap, not a looser server.
+
+WHAT IS MEASURED FOR THE ENHANCED SIDE IS THE CHARACTER CLASS, not the bounds.
+15 was already enforced there before this change and is left as it was; the
+floor of 3 is carried over from the standard family's `minLength` and has not
+been tested against an enhanced endpoint. A two-character enhanced tunnel name
+is the one value this could refuse that the server might have taken.
+*/
+var tunnelNamePattern = regexp.MustCompile(`^[a-zA-Z0-9]{3,15}$`)
+
+/*
+tunnelNameRuleMessage states the RULE and stops there.
+
+An earlier version went on to explain that the server derives `interfaceName`
+from this value and quoted the 422 that results, on the reasoning that an
+operator who had already hit the server error would need the two connected.
+Trimmed on request: validation.StringMatch wraps this in "invalid value for %s
+(%s)", so anything past the rule itself lands in a parenthetical the reader
+cannot skim. The derivation and the measurement live in the attribute
+Description of all six tunnel resources and in API-FINDINGS.md 1.33, which is
+where someone looking for the WHY will be.
+
+validation.StringMatch passes this as an ARGUMENT to %s rather than as a format
+string, so a literal per-cent sign would be written once; there is none here.
+*/
+const tunnelNameRuleMessage = "must be 3-15 characters using only letters and digits: " +
+	"no hyphens, underscores, dots or spaces"
+
+/*
+p81GatewaySubnetsEnhancedRule is the server's own restriction on
+p81_gateway_subnets for the enhanced-network tunnel endpoints, carried in the
+attribute Description so a reader can tell it is the API's rule and not the
+provider's.
+
+Measured live 2026-08-17. Creating an enhanced static tunnel
+(POST /v3/networks/enhanced/{networkId}/tunnels/ipsec/static) with
+p81GatewaySubnets set to an arbitrary CIDR is refused:
+
+	409 {"message":"The list of Harmony SASE Subnets can only be \"0.0.0.0/0\"
+	     or the network Subnet","messageCode":"CONFLICT"}
+
+So the permitted values are exactly two: the default route, or the enclosing
+network's own subnet.
+
+WHY THAT FULL RULE IS NOT ENFORCED AT PLAN TIME — deliberate, do not "fix" it.
+The permitted non-default value is another resource's attribute,
+checkpointsase_enhanced_network.subnet. A resource's CustomizeDiff sees only
+its own configuration and state; it cannot read a sibling resource, and the
+sibling is usually being created in the same apply, so its subnet is an unknown
+value during plan (network_id itself commonly is too). Anything written here
+would therefore have to guess. Guessing has one plausible shape — allow only
+"0.0.0.0/0" — and it would fail every configuration that correctly names its
+network's subnet, which is the other half of what the server allows. A plan
+that refuses a valid config is worse than the 409 the server already returns
+for an invalid one, so the rule is documented and the server keeps enforcing
+it.
+
+What IS enforced is the part that needs no outside knowledge: every element
+parses as a CIDR (validation.IsCIDR on the element schema). That turns a typo
+into a plan-time failure instead of an apply-time one, without overclaiming.
+
+Not measured: whether the dynamic-tunnel endpoint
+(.../tunnels/ipsec/dynamic) applies the same restriction — only the static
+endpoint was exercised — and whether the standard-network endpoints
+(/v3/networks/standard/...) do. See those resources' descriptions.
+*/
+const p81GatewaySubnetsEnhancedRule = "Server-enforced: the list can hold only " +
+	"`0.0.0.0/0` or the parent `checkpointsase_enhanced_network`'s own `subnet`; " +
+	"any other CIDR is refused at apply time with " +
+	"`409 The list of Harmony SASE Subnets can only be \"0.0.0.0/0\" or the network Subnet`. " +
+	"The plan-time validator checks CIDR format only — the permitted subnet lives on " +
+	"another resource and is usually unknown while planning, so the allowed-value half " +
+	"of the rule cannot be checked before apply."
+
+/*
+setIfPresent writes value to the ResourceData attribute key only when present
+is true. present is expected to be the SDK model's nil-safety check for the
+field being written (e.g. tunnel.HasSecretAccessKey()) — a no-op otherwise.
+
+Several credential-bearing attributes across this provider (OpenVPN's
+access_key_id/secret_access_key, IPSec's passphrase) are write-once: the v3
+API returns them on create or rotation but omits them on a plain read. The
+SDK's nil-safe Get*() getters turn that omission into a zero value ("") with
+no way for a caller to tell "the API sent an empty string" apart from "the
+API sent nothing" — so an unconditional d.Set(key, tunnel.GetX()) after a
+plain read would overwrite the terraform state's only durable copy of the
+value with "". setIfPresent exists so Read functions can't do that by
+accident: when present is false, this is a no-op and whatever is already in
+state is left untouched.
+
+The same guard is used beyond credentials, for any optional read-model field
+where blanking state is worse than missing one refresh — see
+setEnhancedTunnelIPSecState in resource_enhanced_static_tunnel.go, which
+routes the enhanced tunnel's timing and remote-endpoint fields through here
+precisely because a spec defect that made them read back as "" is what caused
+the bug it was written to fix.
+  - @param d *schema.ResourceData - the terraform resource data
+  - @param key string - the schema attribute to (maybe) write
+  - @param value string - the value to write when present
+  - @param present bool - whether the API actually returned a value for key
+
+@return error - any error from the underlying d.Set
+*/
+func setIfPresent(d *schema.ResourceData, key string, value string, present bool) error {
+	// `present` comes from the SDK's generated HasX(), which only reports whether
+	// the JSON field was non-nil -- it is true for a field the server sent as "".
+	// That is not good enough for write-once credentials: the API returns
+	// secretAccessKey exactly once, on create/rotation, and thereafter sends the
+	// key back as an empty string rather than omitting it. Treating that as
+	// "present" made Read overwrite the stored credential with "", which is the
+	// value the resource description explicitly promises to preserve.
+	//
+	// So an empty value never overwrites state here. The only way to clear one of
+	// these attributes is to destroy the resource.
+	if !present || value == "" {
+		return nil
+	}
+	return d.Set(key, value)
+}
+
+/*
+setStringListIfPresent is the []string counterpart of setIfPresent, for
+list-typed attributes whose SDK field is a plain slice with no generated
+HasX() to consult.
+
+The reasoning is the one written out above setIfPresent, applied to a slice: a
+response that carries no entries for the field is indistinguishable, after
+decoding, from a response that omitted the field entirely, and writing the
+resulting empty slice into state would erase a list the user configured. An
+empty slice therefore leaves state alone. As with setIfPresent, that makes the
+worst case "this refresh learned nothing" rather than "the configuration was
+silently erased" — and it costs nothing real, because every attribute this is
+used for is Required in the schema, so an empty list was never a legal
+configured value to preserve in the first place.
+  - @param d *schema.ResourceData - the terraform resource data
+  - @param key string - the schema attribute to (maybe) write
+  - @param values []string - the values to write when non-empty
+
+@return error - any error from the underlying d.Set
+*/
+func setStringListIfPresent(d *schema.ResourceData, key string, values []string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	return d.Set(key, values)
 }
 
 /*
@@ -130,11 +340,36 @@ func flattenProtocolsData(protocolItems []interface{}) []perimeter81Sdk.ObjectsS
 	}
 	protocols := make([]perimeter81Sdk.ObjectsServicesProtocolRequestObj, len(protocolItems))
 	for i, protocolItem := range protocolItems {
-		m := protocolItem.(map[string]interface{})
+		m, _ := protocolItem.(map[string]interface{})
+		protocol, _ := m["protocol"].(string)
+
+		if protocol == "icmp" {
+			// An icmp entry carries the message type and no ports, and the two
+			// halves are exclusive on the wire rather than merely optional: the
+			// server's CreateServicesTransformer overwrites valueType with
+			// "single" and drops value for icmp, so a body carrying both reads
+			// back different from what was sent. protocol_options is required
+			// for icmp by resourceObjectServicesCustomizeDiff, so a zero here
+			// is a configured code 0 (Echo Reply) and not an omission — an
+			// omission would have to be sent as something, and whatever we
+			// chose would be an ICMP type the user never asked for.
+			code, _ := m["protocol_options"].(int)
+			options := perimeter81Sdk.ObjectServiceProtocolOptionsICMPrequest(int32(code))
+			protocols[i] = perimeter81Sdk.ObjectsServicesProtocolRequestObj{
+				Protocol:        protocol,
+				ProtocolOptions: &options,
+			}
+			continue
+		}
+
+		// v3 flipped ValueType to *string; take the address of a local
+		// rather than the (non-addressable) map-index type assertion.
+		valueType, _ := m["value_type"].(string)
+		value, _ := m["value"].([]interface{})
 		entry := perimeter81Sdk.ObjectsServicesProtocolRequestObj{
-			Protocol:  m["protocol"].(string),
-			ValueType: m["value_type"].(string),
-			Value:     flattenIntsArrayData(m["value"].([]interface{})),
+			Protocol:  protocol,
+			ValueType: &valueType,
+			Value:     flattenIntsArrayData(value),
 		}
 		protocols[i] = entry
 	}
@@ -286,9 +521,22 @@ func flattenObjectServicesProtocols(protocolItems []perimeter81Sdk.ObjectsServic
 	protocols := make([]interface{}, len(protocolItems))
 	for i, protocolItem := range protocolItems {
 		protocols[i] = map[string]interface{}{
-			"protocol":   protocolItem.Protocol,
-			"value_type": protocolItem.ValueType,
+			"protocol": protocolItem.Protocol,
+			// ValueType is *string in v3; GetValueType() nil-checks the
+			// receiver and returns the zero value, so it's safe under
+			// omitempty absence. Assigning the pointer directly would
+			// store the pointer, not the string, in the flattened map.
+			"value_type": protocolItem.GetValueType(),
 			"value":      protocolItem.Value,
+			// protocolOptions is asymmetric: the request takes the bare ICMP
+			// code, the response wraps it as {code, description} because the
+			// server expands it through createProtocolOptions. Read the code
+			// back, never the description — the description is derived from the
+			// code, so a state attribute holding it would have no behaviour
+			// except to drift. GetCode is nil-safe on a nil receiver, so a
+			// tcp/udp entry reads back 0, which is what an unset TypeInt holds
+			// and therefore does not diff.
+			"protocol_options": int(protocolItem.ProtocolOptions.GetCode()),
 		}
 	}
 	return protocols
@@ -559,17 +807,48 @@ func flattenAdvancedSettingsData(advancedSettingsItem *perimeter81Sdk.IPSecAdvan
 /*
 flattenSharedSettingsData flatten Shared Settings date
   - @param sharedSettingsItem *IpSecSharedSettings - the Ip-Sec Shared settings that need to be flattened
+  - @param priorSharedSettings []interface{} - the previous value of the "shared_settings"
+    attribute (i.e. d.Get("shared_settings") from BEFORE this Read call overwrites it), used to
+    preserve peak_bandwidth across reads — see comment below. Callers MUST pass the prior value;
+    passing nil/empty silently loses any previously-configured peak_bandwidth. Preservation is
+    threaded through the signature (rather than left to the caller to remember at the d.Set call
+    site) specifically so it can't be forgotten by a future call site.
 
 @return []interface{} - the flattened Ip-Sec Shared settings data
 */
-func flattenSharedSettingsData(sharedSettingsItem *perimeter81Sdk.IPSecSharedSettings) []interface{} {
+func flattenSharedSettingsData(sharedSettingsItem *perimeter81Sdk.IPSecSharedSettings, priorSharedSettings []interface{}) []interface{} {
 	if sharedSettingsItem != nil {
 		sharedSettings := make([]interface{}, 1)
 		sharedSettingsData := make(map[string]interface{})
 		sharedSettingsData["p81_gateway_subnets"] = sharedSettingsItem.P81GatewaySubnets
 		sharedSettingsData["remote_gateway_subnets"] = sharedSettingsItem.RemoteGatewaySubnets
-		if sharedSettingsItem.PeakBandwidth != nil {
-			sharedSettingsData["peak_bandwidth"] = int(*sharedSettingsItem.PeakBandwidth)
+		// v3 dropped the bandwidth field entirely from IPSecSharedSettings —
+		// verified against the SDK: no field of any name carries it anymore,
+		// and nothing on the redundant-tunnel read/create/update surface
+		// replaces it. This flatten helper can no longer populate
+		// "peak_bandwidth" from the API response, so carry forward whatever
+		// was already in state instead of blanking it — same
+		// preserve-prior-state precedent as resourceGatewayRead's
+		// `name`/`idle` handling in resource_gateway.go. A tunnel whose
+		// state never had peak_bandwidth set (e.g. imported outside
+		// Terraform) has nothing to carry forward and falls back to the
+		// schema default via Terraform's normal Default handling.
+		//
+		// The corresponding schema attribute
+		// (checkpointsase_ipsec_redundant's shared_settings.peak_bandwidth,
+		// resource_ipsec_redundant.go) is effectively inert under v3: HCL
+		// can still set it, and it round-trips in state via this
+		// preservation, but it is never transmitted to the API —
+		// IPSecSharedSettingsCreate (and every other IPSecSharedSettings-
+		// family type) dropped the field entirely, with no replacement
+		// anywhere on the redundant-tunnel create/update surface. See the
+		// schema comment on that attribute for the user-facing note.
+		if len(priorSharedSettings) > 0 {
+			if priorMap, ok := priorSharedSettings[0].(map[string]interface{}); ok {
+				if pb, ok := priorMap["peak_bandwidth"].(int); ok {
+					sharedSettingsData["peak_bandwidth"] = pb
+				}
+			}
 		}
 		sharedSettings[0] = sharedSettingsData
 		return sharedSettings
@@ -581,17 +860,37 @@ func flattenSharedSettingsData(sharedSettingsItem *perimeter81Sdk.IPSecSharedSet
 /*
 flattenTunnelData flatten Tunnel date
   - @param tunnelItem *IPSecRedundantTunnel - the tunnel that need to be flattened
+  - @param priorTunnelData []interface{} - the previous value of the "tunnel1"/"tunnel2"
+    attribute (i.e. d.Get("tunnel1") / d.Get("tunnel2") from BEFORE this Read call overwrites
+    it). passphrase is a write-once credential — same pattern as OpenVPN's secret_access_key
+    (see setIfPresent above): v3 does not return the pre-shared key on a plain read, and this
+    resource has no in-place update path (tunnel1/tunnel2 are ForceNew), so blanking passphrase
+    here would surface as a diff on a ForceNew field and force a destroy/recreate of a live
+    tunnel pair on every refresh. When tunnelItem carries no passphrase, carry forward whatever
+    was already in state instead — same preserve-prior-state precedent as
+    flattenSharedSettingsData's peak_bandwidth handling below. Callers MUST pass the prior
+    value; passing nil/empty degrades to "" for a tunnel the API never reported a passphrase
+    for (e.g. straight after import).
 
 @return []interface{} - the flattened tunnel data
 */
-func flattenTunnelData(tunnelItem *perimeter81Sdk.IPSecRedundantTunnel) []interface{} {
+func flattenTunnelData(tunnelItem *perimeter81Sdk.IPSecRedundantTunnel, priorTunnelData []interface{}) []interface{} {
 	if tunnelItem != nil {
 		tunnel := make([]interface{}, 1)
 		tunnelData := make(map[string]interface{})
-		tunnelData["passphrase"] = tunnelItem.Passphrase
+		tunnelData["passphrase"] = ""
+		if tunnelItem.HasPassphrase() {
+			tunnelData["passphrase"] = tunnelItem.GetPassphrase()
+		} else if len(priorTunnelData) > 0 {
+			if priorMap, ok := priorTunnelData[0].(map[string]interface{}); ok {
+				if prior, ok := priorMap["passphrase"].(string); ok {
+					tunnelData["passphrase"] = prior
+				}
+			}
+		}
 		tunnelData["gateway_id"] = tunnelItem.GatewayID
-		// RemoteID is a union type wrapping *string
-		if tunnelItem.RemoteID.String != nil {
+		// RemoteID is a union type wrapping an optional string
+		if tunnelItem.RemoteID != nil && tunnelItem.RemoteID.String != nil {
 			tunnelData["remote_id"] = *tunnelItem.RemoteID.String
 		} else {
 			tunnelData["remote_id"] = ""
@@ -822,28 +1121,6 @@ func setNetworkRegionInfos(regionsData []perimeter81Sdk.Region, networkData *per
 }
 
 /*
-checkNetworkStatus check the network status
-  - @param ctx context.Context - the context
-  - @param statusId string - the status id
-  - @param client perimeter81Sdk.APIClient - the client
-  - @param diags diag.Diagnostics - the diagnostics
-
-@return perimeter81Sdk.AsyncOperationStatus, diag.Diagnostics, error - the network status, the diagnostics, the error
-*/
-func checkNetworkStatus(ctx context.Context, statusId string, client perimeter81Sdk.APIClient, diags diag.Diagnostics) (perimeter81Sdk.AsyncOperationStatus, diag.Diagnostics, error) {
-	networkStatus, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2Status(ctx, statusId).Execute()
-	if err != nil {
-		diags = appendErrorDiags(diags, "Unable to get Network Status", err)
-		return perimeter81Sdk.AsyncOperationStatus{}, diags, err
-	}
-	if networkStatus.Result != nil && networkStatus.Result.StatusCode != nil && *networkStatus.Result.StatusCode == 500 {
-		diags = appendErrorDiags(diags, "Unable to get Network Status", fmt.Errorf("%s", strings.Join(networkStatus.Result.Reason, " | ")))
-		return *networkStatus, diags, fmt.Errorf("network status error")
-	}
-	return *networkStatus, diags, err
-}
-
-/*
 addGatewayToRegion add the gateway to region
   - @param ctx context.Context - the context
   - @param client *perimeter81Sdk.APIClient - the client
@@ -863,7 +1140,7 @@ func addGatewayToRegion(ctx context.Context, client *perimeter81Sdk.APIClient, g
 			RegionId: region_id,
 			Idle:     gateway.Idle,
 		}
-		status, _, err := client.GatewaysAPI.StandardNetworksControllerV2AddNetworkInstance(ctx, network_id).CreateInstancesInNetworkPayload(gatewayPayload).Execute()
+		status, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2AddNetworkInstance(ctx, network_id).CreateInstancesInNetworkPayload(gatewayPayload).Execute()
 		if err != nil {
 			diags = appendErrorDiags(diags, "Unable to create gateway", err)
 			return diags, err
@@ -872,18 +1149,11 @@ func addGatewayToRegion(ctx context.Context, client *perimeter81Sdk.APIClient, g
 		var gatewayId string
 		var gatewayDns string
 		var gatewayIp string
-		for {
-			var networkStatus perimeter81Sdk.AsyncOperationStatus
-			networkStatus, diags, err = checkNetworkStatus(ctx, statusId, *client, diags)
-			if err != nil {
-				return diags, err
-			}
-			if networkStatus.GetCompleted() {
-				gatewayId, gatewayDns, gatewayIp, diags = getGatewayInfo(ctx, network_id, region_id, *client, diags)
-				break
-			}
-			time.Sleep(60 * time.Second)
+		if err := pollStandardNetworkStatus(ctx, client, statusId, standardNetworkPollInterval); err != nil {
+			diags = appendErrorDiags(diags, "Unable to create gateway", err)
+			return diags, err
 		}
+		gatewayId, gatewayDns, gatewayIp, diags = getGatewayInfo(ctx, network_id, region_id, *client, diags)
 		gateways[index].Id = gatewayId
 		gateways[index].Dns = gatewayDns
 		gateways[index].Ip = gatewayIp
@@ -915,17 +1185,53 @@ func deleteGatewayFromRegion(ctx context.Context, client *perimeter81Sdk.APIClie
 		},
 	}
 
+	removedIds := make(map[string]bool, len(gateways))
 	for _, gateway := range gateways {
 		id := gateway.Id
+		removedIds[id] = true
 		gatewaysForDelete.Regions[0].Instances = append(gatewaysForDelete.Regions[0].Instances, perimeter81Sdk.RemoveInstancePayload{
 			Id: &id,
 		})
 	}
-	// DeleteNetworkInstance is synchronous — returns AsyncOperationResult (no status URL to poll)
-	_, _, err := client.GatewaysAPI.StandardNetworksControllerV2DeleteNetworkInstance(ctx, network_id).RemoveRegionInstance(gatewaysForDelete).Execute()
+	// DeleteNetworkInstance returns its AsyncOperationResult inline — there is
+	// no status URL to poll — so a non-2xx result.statusCode is the only
+	// signal that the delete was rejected.
+	result, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2DeleteNetworkInstance(ctx, network_id).RemoveRegionInstance(gatewaysForDelete).Execute()
 	if err != nil {
 		diags = appendErrorDiags(diags, "Unable to delete gateways", err)
 		return diags, err
+	}
+	if !isSuccessStatus(int(result.GetStatusCode())) {
+		err := &asyncFailedError{StatusCode: int(result.GetStatusCode()), Reasons: result.GetReason()}
+		diags = appendErrorDiags(diags, "Unable to delete gateways", err)
+		return diags, err
+	}
+
+	// The delete responded 2xx, but the gateway can still be listed in the
+	// network for a moment afterwards: it is eventually consistent. Callers
+	// read the network right after this function returns, so wait until none
+	// of the removed gateway ids are listed under this region any more —
+	// otherwise Read observes stale state.
+	what := fmt.Sprintf("gateway removal to take effect in region %s of network %s", region_id, network_id)
+	if pollErr := pollUntilConverged(ctx, func(ctx context.Context) (bool, *http.Response, error) {
+		network, resp, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkFind(ctx, network_id).Execute()
+		if err != nil {
+			return false, resp, err
+		}
+		for _, region := range network.Regions {
+			if region.Id != region_id {
+				continue
+			}
+			for _, instance := range region.Instances {
+				if removedIds[instance.Id] {
+					return false, resp, nil
+				}
+			}
+		}
+		return true, resp, nil
+	}, convergencePollInterval, convergenceTransientBudget, what); pollErr != nil {
+		diags = appendErrorDiags(diags, "Unable to delete gateways", pollErr)
+		return diags, pollErr
 	}
 	return diags, nil
 }
@@ -974,7 +1280,14 @@ appendErrorDiags append the error diagnostics
 */
 func appendErrorDiags(diags diag.Diagnostics, summary string, err error) diag.Diagnostics {
 	var errMsg string
-	if apiErr, ok := err.(*perimeter81Sdk.GenericOpenAPIError); ok {
+	// errors.As rather than a bare type assertion. The SDK's error carries the
+	// server's message body -- `"fromDefault" is not allowed`, `VALIDATION_WEB_
+	// RULES_REQUIRED` -- and Error() carries only `422 Unprocessable Entity`.
+	// A direct assertion fails the moment anything wraps the error with %w, and
+	// something already does (async.go's withStatusID), so this was silently
+	// discarding the only useful half of the diagnostic on that path.
+	var apiErr *perimeter81Sdk.GenericOpenAPIError
+	if errors.As(err, &apiErr) {
 		errMsg = string(apiErr.Body())
 		if errMsg == "" {
 			errMsg = apiErr.Error()
@@ -986,6 +1299,65 @@ func appendErrorDiags(diags diag.Diagnostics, summary string, err error) diag.Di
 		Severity: diag.Error,
 		Summary:  summary,
 		Detail:   errMsg,
+	})
+	return diags
+}
+
+/*
+appendErrorDiagsWithGuidance is appendErrorDiags for the errors that have to
+carry an INSTRUCTION as well as a cause.
+
+WHY IT EXISTS. appendErrorDiags promotes the server's response body into Detail
+whenever errors.As finds a GenericOpenAPIError, and that is right: the body
+(`VALIDATION_WEB_RULES_REQUIRED`, `"fromDefault" is not allowed`) is normally the
+only useful part. The cost is that everything the caller wrapped the error with
+is discarded. For an ordinary failure that costs nothing. Measured on the SWG
+policies, where the wrapper is the entire "what to do about it" half of the
+message, the whole diagnostic an operator saw for a failed read-back was:
+
+	The web access policy was written but could not be read back
+	{"message":"re-read failed"}
+
+-- with policyWrittenNotReadBack's "the tenant is now enforcing it" and all of
+reapplyToResync, including the `terraform untaint` warning that stops an operator
+DESTROYING a whole-policy resource and emptying the tenant's policy with it,
+reaching nobody.
+
+The guidance goes in Detail rather than Summary because Terraform prints Summary
+as a one-line heading, and it is skipped when the Detail already contains it --
+which is the non-API-error branch, where err.Error() carries the wrapper
+verbatim and appending it again would print the same paragraph twice.
+
+  - @param diags diag.Diagnostics - the diagnostics
+  - @param summary string - the one-line heading
+  - @param guidance string - the instruction, which must survive whichever branch appendErrorDiags takes
+  - @param err error - the error
+
+@return diag.Diagnostics - the diagnostics
+*/
+func appendErrorDiagsWithGuidance(diags diag.Diagnostics, summary, guidance string,
+	err error) diag.Diagnostics {
+	diags = appendErrorDiags(diags, summary, err)
+	last := &diags[len(diags)-1]
+	if !strings.Contains(last.Detail, guidance) {
+		last.Detail = strings.TrimSpace(last.Detail) + "\n\n" + guidance
+	}
+	return diags
+}
+
+/*
+appendWarningDiags append a warning diagnostic
+  - @param diags diag.Diagnostics - the diagnostics
+  - @param summary string - the summary
+  - @param detail string - the detail
+
+@return diag.Diagnostics - the diagnostics
+*/
+func appendWarningDiags(diags diag.Diagnostics, summary string, detail string) diag.Diagnostics {
+	diags = append(diags, diag.Diagnostic{
+		Severity: diag.Warning,
+		Summary:  summary,
+		Detail:   detail,
 	})
 	return diags
 }
@@ -1262,9 +1634,19 @@ func flattenProtocolsDataSourceData(protocolItems []perimeter81Sdk.ObjectsServic
 	protocols := make([]interface{}, len(protocolItems))
 	for i, protocolItem := range protocolItems {
 		protocols[i] = map[string]interface{}{
-			"protocol":   protocolItem.Protocol,
-			"value_type": protocolItem.ValueType,
+			"protocol": protocolItem.Protocol,
+			// ValueType is *string in v3; GetValueType() nil-checks the
+			// receiver and returns the zero value, so it's safe under
+			// omitempty absence. Assigning the pointer directly would
+			// store the pointer, not the string, in the flattened map.
+			"value_type": protocolItem.GetValueType(),
 			"value":      protocolItem.Value,
+			// The code only, matching the resource attribute of the same name:
+			// the response wraps it as {code, description}, and the description
+			// is derived from the code rather than being information of its own.
+			// GetCode is nil-safe on a nil receiver, so a tcp/udp entry — which
+			// the server never gives protocolOptions — reads back 0.
+			"protocol_options": int(protocolItem.ProtocolOptions.GetCode()),
 		}
 	}
 	return protocols
@@ -1272,12 +1654,12 @@ func flattenProtocolsDataSourceData(protocolItems []perimeter81Sdk.ObjectsServic
 
 /*
 getCurrentObjectAddressesInArray get the current object addresses from all the addresses
-  - @param objectsAddresses perimeter81Sdk.ObjectsAddressesResponse - the objects addresses in the system
+  - @param objectsAddresses perimeter81Sdk.AddressList - the objects addresses in the system
   - @param objectAddressesId string - the object addresses id
 
-@return *perimeter81Sdk.ObjectsAddressObj - the result
+@return *perimeter81Sdk.Address - the result
 */
-func getCurrentObjectAddressesInArray(objectsAddresses *perimeter81Sdk.ObjectsAddressesResponse, objectAddressesId string) *perimeter81Sdk.ObjectsAddressObj {
+func getCurrentObjectAddressesInArray(objectsAddresses *perimeter81Sdk.AddressList, objectAddressesId string) *perimeter81Sdk.Address {
 	for i, address := range objectsAddresses.Data {
 		if address.GetId() == objectAddressesId {
 			return &objectsAddresses.Data[i]
@@ -1288,11 +1670,11 @@ func getCurrentObjectAddressesInArray(objectsAddresses *perimeter81Sdk.ObjectsAd
 
 /*
 flattenObjectAddressesData flatten ObjectAddresses data
-  - @param objectAddressesItems []perimeter81Sdk.ObjectsAddressObj - the object services that need to be flattened
+  - @param objectAddressesItems []perimeter81Sdk.Address - the object services that need to be flattened
 
 @return []interface{} - the flattened object addressess data
 */
-func flattenObjectAddressesData(objectAddressesItems []perimeter81Sdk.ObjectsAddressObj) []interface{} {
+func flattenObjectAddressesData(objectAddressesItems []perimeter81Sdk.Address) []interface{} {
 	if objectAddressesItems != nil {
 		objectAddresses := make([]interface{}, len(objectAddressesItems))
 		for i, objectAddressesItem := range objectAddressesItems {
@@ -1300,15 +1682,298 @@ func flattenObjectAddressesData(objectAddressesItems []perimeter81Sdk.ObjectsAdd
 			if objectAddressesItem.Id != nil {
 				objectAddress["id"] = *objectAddressesItem.Id
 			}
-			objectAddress["name"] = objectAddressesItem.Name
+			// v3 flipped Name/ValueType from required string to *string;
+			// use the Get* accessors (nil-safe) rather than assigning the
+			// pointer itself, which would break d.Set.
+			objectAddress["name"] = objectAddressesItem.GetName()
 			if objectAddressesItem.Description != nil {
 				objectAddress["description"] = *objectAddressesItem.Description
 			}
-			objectAddress["value_type"] = objectAddressesItem.ValueType
+			objectAddress["value_type"] = objectAddressesItem.GetValueType()
 			objectAddress["value"] = objectAddressesItem.Value
 			objectAddresses[i] = objectAddress
 		}
 		return objectAddresses
 	}
 	return make([]interface{}, 0)
+}
+
+/*
+readByIDFromList finds one element of a collection by exact ID match, for the v3
+surfaces that expose no GET-by-id. /v3/users and /v3/groups are the first two;
+Phase 4's SWG rule lists are the next.
+
+MATCHING IS EXACT EQUALITY AND MUST STAY THAT WAY. A prefix or name match here
+would hand one resource another resource's attributes, and Terraform would then
+write that to state as a successful Read -- silent, and indistinguishable from
+correct behaviour until two resources' ids happen to share a prefix.
+
+An empty id never matches, even against an element whose own id is empty. That
+case is reachable rather than theoretical: overlay entries A21a/A22a declare
+`id` OPTIONAL on User and Group, so idOf can legitimately return "".
+
+Returns found=false when the object is absent, so callers apply the provider's
+drift convention (d.SetId("")) rather than reporting an error.
+
+  - @param items []T - the collection as the list endpoint returned it
+  - @param id string - the id held in Terraform state
+  - @param idOf func(T) string - extracts one element's id
+
+@return (T, bool) - the matching element (or T's zero value) and whether it was found
+*/
+func readByIDFromList[T any](items []T, id string, idOf func(T) string) (T, bool) {
+	var zero T
+	if id == "" {
+		return zero, false
+	}
+	for i := range items {
+		if idOf(items[i]) == id {
+			return items[i], true
+		}
+	}
+	return zero, false
+}
+
+/*
+expandUserProfile builds a UserProfileDto from the profile_data block.
+
+Returns nil when no field was actually set, which is what keeps `profileData` out
+of the request body entirely. That matters: CreateUserDto.profileData is
+@IsOptional, and sending a present-but-empty object is a different request from
+omitting the key.
+
+The emptiness test is "did any field get a value", NOT "is the block present".
+A bare `profile_data {}` in HCL yields a non-nil map of empty strings, so
+guarding on block presence alone would set every pointer to nil and then send
+`"profileData": {}` -- the exact request this comment claims to avoid.
+
+  - @param profileItems []interface{} - the profile_data block as Terraform holds it
+
+@return *perimeter81Sdk.UserProfileDto - nil when no profile field was configured
+*/
+func expandUserProfile(profileItems []interface{}) *perimeter81Sdk.UserProfileDto {
+	if len(profileItems) == 0 || profileItems[0] == nil {
+		return nil
+	}
+	item, ok := profileItems[0].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	profile := perimeter81Sdk.UserProfileDto{}
+	set := false
+	for key, target := range map[string]**string{
+		"first_name": &profile.FirstName,
+		"last_name":  &profile.LastName,
+		"role_name":  &profile.RoleName,
+		"phone":      &profile.Phone,
+	} {
+		if v, ok := item[key].(string); ok && v != "" {
+			value := v
+			*target = &value
+			set = true
+		}
+	}
+	if !set {
+		return nil
+	}
+	return &profile
+}
+
+/*
+suppressDiffOnEmptyOldValue suppresses the diff for a write-only attribute on a
+resource that already exists but has no value for it in state.
+
+The case this exists for is import. A write-only attribute -- one the server
+either does not return or must not be read back from -- is absent from an
+imported resource's state, so the first plan after an import sees "" -> the
+configured value. On a ForceNew attribute that plans a REPLACEMENT: import a
+user, apply the configuration that describes her, and she is deleted and
+re-invited.
+
+THE `d.Id() != ""` CONDITION IS NOT OPTIONAL. Keyed on `old == ""` alone, this
+function breaks create instead. A create diffs against no state, so `old` is ""
+for every attribute; schemaMap.diff DROPS a suppressed attribute from the diff
+(it only converts it to a no-op when called with all=true, which the real plan
+path never does), the ResourceData a CreateContext receives is built from that
+diff, and d.Get on the attribute returns "". Measured, not theorised: with the
+condition removed, d.Get("invite_message") is "" for a configuration that sets
+it, and the provider POSTs an empty invitation message. A non-empty Id is what
+distinguishes "state has no value because the resource does not exist yet" from
+"state has no value because the resource was imported".
+
+What it does NOT do is mask a real change on a resource this provider created:
+such a resource has the operator's own value in state, so `old` is non-empty.
+The one accepted blind spot is an imported resource, whose state stays empty for
+the attribute -- a later edit to it plans clean instead of replacing. That is the
+lesser harm by a wide margin, and for these attributes it is nearly moot: there
+is no update endpoint, so "changing" one means deleting the account either way.
+
+  - @param k string - the attribute key (unused; the SDK passes it for logging)
+  - @param old string - the value in state
+  - @param new string - the value in configuration (unused)
+  - @param d *schema.ResourceData - the prior state, consulted for the resource id
+
+@return bool - true to suppress the diff
+*/
+func suppressDiffOnEmptyOldValue(_, old, _ string, d *schema.ResourceData) bool {
+	return old == "" && d != nil && d.Id() != ""
+}
+
+/*
+validateSortDirections rejects a sort map whose values are not asc/desc.
+
+The API's `sort` parameter on GET /v3/users is an object of enum strings, and the
+enum is the whole of its validation -- a typo like {email = "ascending"} is
+otherwise a request the server rejects after Terraform has already reported a
+valid plan.
+
+Only checkpointsase_users can be validated this way. GET /v3/groups declares its
+`sort` as a bare string with no documented grammar, so its schema entry carries
+no ValidateFunc at all; see the comment there.
+
+  - @param v interface{} - the configured map, which schemaMap.validateMap passes as map[string]interface{}
+  - @param p cty.Path - the attribute path, so a diagnostic points at the right argument
+
+@return diag.Diagnostics
+*/
+func validateSortDirections(v interface{}, p cty.Path) diag.Diagnostics {
+	var diags diag.Diagnostics
+	raw, ok := v.(map[string]interface{})
+	if !ok {
+		// schemaMap.validateMap only reaches validateFunc with a
+		// map[string]interface{}, so this is unreachable through Terraform. It
+		// is here so a direct caller (a test, or a later refactor that moves the
+		// attribute) gets a diagnostic instead of a panic.
+		return append(diags, diag.Diagnostic{
+			Severity:      diag.Error,
+			Summary:       "Invalid sort",
+			Detail:        fmt.Sprintf("sort must be a map of field to direction, got %T.", v),
+			AttributePath: p,
+		})
+	}
+	// Sorted so a map with two bad entries always reports them in the same
+	// order; a diagnostic whose wording depends on Go's map iteration is a
+	// flaky test waiting to happen.
+	for _, field := range sortedMapKeys(raw) {
+		s, _ := raw[field].(string)
+		if s != "asc" && s != "desc" {
+			diags = append(diags, diag.Diagnostic{
+				Severity:      diag.Error,
+				Summary:       "Invalid sort direction",
+				Detail:        fmt.Sprintf("sort[%s] is %q; it must be \"asc\" or \"desc\".", field, s),
+				AttributePath: p,
+			})
+		}
+	}
+	return diags
+}
+
+/*
+expandSortDirections converts a configured TypeMap into the map[string]string the
+generated Sort builder takes.
+
+  - @param raw interface{} - the value d.Get returned for a TypeMap attribute
+
+@return map[string]string - empty (not nil) when nothing was configured
+*/
+func expandSortDirections(raw interface{}) map[string]string {
+	configured, ok := raw.(map[string]interface{})
+	if !ok {
+		return map[string]string{}
+	}
+	sortOrder := make(map[string]string, len(configured))
+	for field, direction := range configured {
+		s, _ := direction.(string)
+		sortOrder[field] = s
+	}
+	return sortOrder
+}
+
+/*
+canonicalSortDirections renders a sort map as one deterministic string, for use in
+a data source's derived ID. Map iteration order is random in Go, so joining the
+pairs unsorted would give the same configuration a different ID on every process.
+*/
+func canonicalSortDirections(sortOrder map[string]string) string {
+	pairs := make([]string, 0, len(sortOrder))
+	for _, field := range sortedMapKeys(sortOrder) {
+		pairs = append(pairs, field+":"+sortOrder[field])
+	}
+	return strings.Join(pairs, ",")
+}
+
+/*
+sortedMapKeys returns a map's keys in sorted order. Generic over the value type so
+it serves both map[string]string and map[string]interface{}.
+*/
+func sortedMapKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+/*
+dataSourceArgumentDigest builds the short, stable suffix a parameterised data
+source appends to its base ID.
+
+THIS IS AN IDENTITY KEY, NOT AN INTEGRITY CHECK. Nothing here is a security
+boundary: the digest exists so that two instances of one data source with
+different arguments do not share a Terraform address, and a practitioner who
+forces a collision has given two instances one id string, not access to another
+instance's data. Do not cite it as evidence of anything else.
+
+WHAT IS ACTUALLY GUARANTEED: the same arguments always produce the same suffix,
+in this process and the next. That is the property the derived ID needs and the
+one L16c is about, and it holds because every caller renders its arguments
+deterministically -- `canonicalSortDirections` sorts the map's keys before
+joining, so Go's randomised map iteration cannot leak into the digest.
+
+WHAT IS NOT GUARANTEED, corrected 2026-08-20: an earlier version of this comment
+claimed the newline separator made a collision by concatenation IMPOSSIBLE,
+"because a newline cannot appear in any of the parts". That is false and a
+reviewer built the counter-example: `where` is a free-form pass-through and
+validateSortDirections constrains sort DIRECTIONS but not sort KEYS, so both can
+carry a newline, and a crafted key can be made to produce the same joined string
+as a crafted `where`. Each part is therefore length-prefixed, which does make the
+encoding unambiguous -- but the honest claim is the narrow one: the encoding
+separates the arguments these data sources can realistically carry, and truncating
+to six bytes trades collision headroom for a readable id, which is the right trade
+for the handful of instances one configuration holds.
+
+Same construction as updatableObjectsDataSourceID, which predates it; that
+function is left as it is rather than rewritten in terms of this one, because it
+carries its own base-name special case and is covered by its own tests.
+*/
+func dataSourceArgumentDigest(parts ...string) string {
+	// Length-prefixed rather than newline-joined: "3:abc" cannot be read as any
+	// other sequence of parts, whatever the parts contain.
+	var canonical strings.Builder
+	for _, part := range parts {
+		canonical.WriteString(strconv.Itoa(len(part)))
+		canonical.WriteString(":")
+		canonical.WriteString(part)
+	}
+	digest := sha256.Sum256([]byte(canonical.String()))
+	return hex.EncodeToString(digest[:6])
+}
+
+/*
+coerceNilStringsToEmpty returns an empty slice in place of a nil one.
+
+BELT-AND-BRACES, NOT LOAD-BEARING. Measured 2026-08-20:
+schema.ResourceData.Set already normalises a nil slice to an empty list, including
+for a list nested inside a list element, so state holds [] either way. This exists
+so that a flatten function handling four optional lists says once, legibly, that
+nil is the routine case rather than repeating a four-line if. Do not write a
+comment claiming state would hold a null without it, and do not write a test
+asserting that -- such a test cannot fail.
+*/
+func coerceNilStringsToEmpty(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }

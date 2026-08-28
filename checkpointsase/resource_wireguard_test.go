@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
@@ -18,7 +18,7 @@ func TestAccWireguard_basic(t *testing.T) {
 	var tunnel perimeter81Sdk.WireguardTunnel
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:  func() { testAccPreCheck(t) },
+		PreCheck:  func() { testAccPreCheck(t); testAccPreCheckRegion(t) },
 		Providers: testAccProviders,
 		Steps: []resource.TestStep{
 			{
@@ -59,7 +59,7 @@ func testAccCheckWireguardExists(n string, tunnel *perimeter81Sdk.WireguardTunne
 		conn := testAccProvider.Meta().(*perimeter81Sdk.APIClient)
 		ctx := context.Background()
 		networkId := rs.Primary.Attributes["network_id"]
-		gotWireguard, _, err := conn.WireguardAPI.StandardGetWireguardTunnel(ctx, networkId, tunnelId).Execute()
+		gotWireguard, _, err := conn.StandardTunnelsAPI.StandardGetWireguardTunnel(ctx, networkId, tunnelId).Execute()
 		if err != nil {
 			return err
 		}
@@ -95,7 +95,7 @@ resource "checkpointsase_network" "n1" {
     tags = ["test"]
   }
   region {
-    cpregion_id = "Xv3BREC4QI"
+    cpregion_id = "%s"
     idle = true
   }
 }
@@ -123,7 +123,7 @@ resource "checkpointsase_wireguard" "wgd1" {
   remote_subnets = ["192.177.255.255/32"]
 }
   `
-	return fmt.Sprintf(config, randNameWireguard)
+	return fmt.Sprintf(config, randNameWireguard, testAccRegionID())
 }
 
 func testAccWireguardUpdateConfig() string {
@@ -134,7 +134,7 @@ resource "checkpointsase_network" "n1" {
     tags = ["test"]
   }
   region {
-    cpregion_id = "Xv3BREC4QI"
+    cpregion_id = "%s"
     idle = true
   }
 }
@@ -162,5 +162,5 @@ resource "checkpointsase_wireguard" "wgd1" {
   remote_subnets = ["192.178.255.255/32"]
 }
   `
-	return fmt.Sprintf(config, randNameWireguard)
+	return fmt.Sprintf(config, randNameWireguard, testAccRegionID())
 }

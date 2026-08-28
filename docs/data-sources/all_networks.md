@@ -3,12 +3,12 @@
 page_title: "checkpointsase_all_networks Data Source - checkpointsase"
 subcategory: ""
 description: |-
-  List all networks (both standard and enhanced) in Check Point SASE. Uses the generic /v2.3/networks endpoint.
+  List all networks (both standard and enhanced) in Check Point SASE. The v3 API has no combined networks endpoint, so this data source merges GET /v3/networks/standard and GET /v3/networks/enhanced.
 ---
 
 # checkpointsase_all_networks (Data Source)
 
-List all networks (both standard and enhanced) in Check Point SASE. Uses the generic /v2.3/networks endpoint.
+List all networks (both standard and enhanced) in Check Point SASE. The v3 API has no combined networks endpoint, so this data source merges GET /v3/networks/standard and GET /v3/networks/enhanced.
 
 ## Example Usage
 
@@ -36,6 +36,7 @@ Read-Only:
 - `id` (String)
 - `is_default` (Boolean)
 - `name` (String)
+- `network_kind` (String)
 - `subnet` (String)
 - `tags` (List of String)
 - `tenant_id` (String)

@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -159,7 +159,6 @@ dataSourceEnhancedTunnelsRead Use the SDK to query all tunnels in an enhanced ne
 func dataSourceEnhancedTunnelsRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 
@@ -202,6 +201,26 @@ func flattenEnhancedTunnelsData(tunnels []perimeter81Sdk.EnhancedTunnel) []inter
 	if tunnels == nil {
 		return make([]interface{}, 0)
 	}
+
+	// Every attribute below is read straight off the response. That was not
+	// true before SDK overlay A19: the spec declared the timing fields and
+	// phase configs nested inside an `advancedSettings` object the server
+	// never sends, and declared no remotePublicIP/remoteID/description at
+	// all, so this function reported "" for six of its attributes on every
+	// call. A live GET /v3/networks/enhanced/{networkId}/tunnels captured
+	// 2026-08-16 shows all of them at the top level; A19 corrects the read
+	// model to match.
+	//
+	// Unconditional Get* is right here in a way it is not in the resource
+	// Read functions (which guard with setIfPresent so an absent field cannot
+	// blank state): a data source has no prior state to protect. Terraform
+	// never gives one its previous state — terraform-plugin-sdk/v2@v2.26.1's
+	// grpc_provider.go:1155 calls `res.Diff(ctx, nil, config, ...)` for
+	// ReadDataSource with a hardcoded nil, and resource.go:935 says outright
+	// "Data sources are always built completely from scratch on each read, so
+	// the source state is always nil." So "" from a nil-safe getter is the
+	// only possible answer for a field the server omits, and there is nothing
+	// to preserve it against.
 	result := make([]interface{}, len(tunnels))
 	for i, tunnel := range tunnels {
 		tunnelMap := map[string]interface{}{
@@ -220,7 +239,7 @@ func flattenEnhancedTunnelsData(tunnels []perimeter81Sdk.EnhancedTunnel) []inter
 			"remote_id":              tunnel.GetRemoteID(),
 			"description":            tunnel.GetDescription(),
 			"routing_type":           string(tunnel.GetRoutingType()),
-			"peak_bandwidth":         int(tunnel.GetPeakBandwidth()),
+			"peak_bandwidth":         int(tunnel.GetPeakBandwidthMbps()),
 			"p81_gateway_subnets":    tunnel.GetP81GatewaySubnets(),
 			"remote_gateway_subnets": tunnel.GetRemoteGatewaySubnets(),
 		}

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
@@ -59,6 +59,7 @@ func resourceObjectAddresses() *schema.Resource {
 			"value": {
 				Type:        schema.TypeList,
 				Required:    true,
+				MinItems:    1,
 				Description: "Address values. Shape depends on `value_type`: exactly 1 element for `ip` / `cidr` / `fqdn`, 1+ elements for `list`.",
 				Elem: &schema.Schema{
 					Type: schema.TypeString,
@@ -72,7 +73,7 @@ func resourceObjectAddresses() *schema.Resource {
 }
 
 /*
-resourceOpenvpnImportState Import gateways
+resourceObjectAddressesImportState Import an object addresses entry by its ID
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
   - @param m interface{} - the terraform meta data that contains the client
@@ -103,7 +104,6 @@ func resourceObjectAddressesCreate(ctx context.Context, d *schema.ResourceData, 
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the object services data from the terraform resource data and flatten what need to be flattened for the api
 	name := d.Get("name").(string)
@@ -111,14 +111,18 @@ func resourceObjectAddressesCreate(ctx context.Context, d *schema.ResourceData, 
 	valueType := d.Get("value_type").(string)
 	value := flattenStringsArrayData(d.Get("value").([]interface{}))
 
-	objectAddressesPayload := perimeter81Sdk.ObjectsAddressObj{
-		Name:        name,
+	// v3's Address flips Name/ValueType from required string to *string;
+	// take addresses of the locals rather than inlining type assertions.
+	objectAddressesPayload := perimeter81Sdk.Address{
+		Name:        &name,
 		Description: &description,
-		ValueType:   valueType,
+		ValueType:   &valueType,
 		Value:       value,
 	}
 	// create the Object Addresses and check for errors
-	objectAddresses, _, err := client.ObjectsAddressesAPI.PostObjectsAddresses(ctx).ObjectsAddressObj(objectAddressesPayload).Execute()
+	// Execute() returns *DBAddress (top-level Id + nested Attributes
+	// Address), not *Address — see model_db_address.go.
+	objectAddresses, _, err := client.ObjectsAPI.CreateAddress(ctx).Address(objectAddressesPayload).Execute()
 
 	if err != nil {
 		d.Partial(true)
@@ -141,10 +145,9 @@ func resourceObjectAddressesRead(ctx context.Context, d *schema.ResourceData, m 
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// get the object addresses and check for errors
-	objectsAddresses, _, err := client.ObjectsAddressesAPI.GetObjectsAddresses(ctx).Execute()
+	objectsAddresses, _, err := client.ObjectsAPI.GetAddresses(ctx).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to find object addresses", err)
@@ -157,7 +160,10 @@ func resourceObjectAddressesRead(ctx context.Context, d *schema.ResourceData, m 
 		return diags
 	}
 
-	if err := d.Set("name", currentObjectAddresses.Name); err != nil {
+	// v3 flipped Name/ValueType from required string to *string; use the
+	// Get* accessors (nil-safe) instead of assigning the pointer itself,
+	// which would otherwise store a pointer value via d.Set instead of a string.
+	if err := d.Set("name", currentObjectAddresses.GetName()); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set object addresses name", err)
 	}
@@ -165,7 +171,7 @@ func resourceObjectAddressesRead(ctx context.Context, d *schema.ResourceData, m 
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set object addresses description", err)
 	}
-	if err := d.Set("value_type", currentObjectAddresses.ValueType); err != nil {
+	if err := d.Set("value_type", currentObjectAddresses.GetValueType()); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set object addresses value_type", err)
 	}
@@ -178,7 +184,7 @@ func resourceObjectAddressesRead(ctx context.Context, d *schema.ResourceData, m 
 }
 
 /*
-resourceObjectAddressesUpdate Update a Ipsec single Tunnel
+resourceObjectAddressesUpdate Update an Object Addresses entry
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
   - @param m interface{} - the terraform meta data that contains the client
@@ -190,7 +196,6 @@ func resourceObjectAddressesUpdate(ctx context.Context, d *schema.ResourceData, 
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	if d.HasChanges("value", "description", "name", "ip_version", "value_type") {
 
@@ -202,14 +207,14 @@ func resourceObjectAddressesUpdate(ctx context.Context, d *schema.ResourceData, 
 		value := flattenStringsArrayData(d.Get("value").([]interface{}))
 
 		// prepare the object addresses data for the api service
-		updateObjectAddressesPayload := perimeter81Sdk.ObjectsAddressObj{
-			Name:        name,
+		updateObjectAddressesPayload := perimeter81Sdk.Address{
+			Name:        &name,
 			Description: &description,
-			ValueType:   valueType,
+			ValueType:   &valueType,
 			Value:       value,
 		}
 		//update the object addresses and check for errors
-		_, _, err := client.ObjectsAddressesAPI.PutObjectsAddresses(ctx, objectAddressesId).ObjectsAddressObj(updateObjectAddressesPayload).Execute()
+		_, _, err := client.ObjectsAPI.UpdateAddress(ctx, objectAddressesId).Address(updateObjectAddressesPayload).Execute()
 		if err != nil {
 			d.Partial(true)
 			return appendErrorDiags(diags, "Unable to update object addresses", err)
@@ -220,7 +225,7 @@ func resourceObjectAddressesUpdate(ctx context.Context, d *schema.ResourceData, 
 }
 
 /*
-resourceObjectAddressesDelete Delete a Ipsec single Tunnel
+resourceObjectAddressesDelete Delete an Object Addresses entry
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
   - @param m interface{} - the terraform meta data that contains the client
@@ -231,12 +236,16 @@ func resourceObjectAddressesDelete(ctx context.Context, d *schema.ResourceData, 
 	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	// delete the object Addresses and check for errors
-	_, err := client.ObjectsAddressesAPI.DeleteObjectsAddresses(ctx, d.Id()).Execute()
+	resp, err := client.ObjectsAPI.DeleteAddress(ctx, d.Id()).Execute()
 
-	if err != nil {
+	// A 404 means somebody already deleted the address object; destroy has
+	// nothing left to do and reporting a failure would leave the resource stuck
+	// in state forever, needing a manual `terraform state rm` (OA-N02). This is
+	// the same treatment resourceUserDelete and resourceGroupDelete give their
+	// own 404s.
+	if err != nil && !isNotFound(resp, err) {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to delete object addresses", err)
 	}

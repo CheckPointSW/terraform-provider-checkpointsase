@@ -3,9 +3,10 @@ package checkpointsase
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
@@ -13,9 +14,25 @@ import (
 
 func TestAccIpsecRedundant_basic(t *testing.T) {
 	t.Parallel()
+	// BLOCKED ON THE API, not on this test. checkpointsase_ipsec_redundant now
+	// refuses every configuration at plan time, so this can never pass: the read,
+	// update and delete routes are all addressed by an haTunnelId that the API
+	// returns from no endpoint (API-FINDINGS.md 1.39, measured on a live pair).
+	//
+	// It is skipped rather than deleted so it is ready the day the API exposes
+	// haTunnelID -- the config below is known-good and did create a real pair.
+	// Deleting it would mean rebuilding a fixture that costs two gateways and
+	// ~26 minutes.
+	//
+	// Skipping rather than leaving it red is deliberate: a permanently failing
+	// test trains people to ignore a red suite, and this project already lost a
+	// whole phase's acceptance coverage to evidence that looked present and was
+	// measuring something else.
+	t.Skip("BLOCKED: the API returns no haTunnelId, so the resource refuses at " +
+		"plan time (API-FINDINGS.md 1.39). Unskip when haTunnelID is exposed.")
 	var tunnel perimeter81Sdk.IPSecRedundantTunnels
 	resource.Test(t, resource.TestCase{
-		PreCheck:  func() { testAccPreCheck(t) },
+		PreCheck:  func() { testAccPreCheck(t); testAccPreCheckRegion(t) },
 		Providers: testAccProviders,
 		Steps: []resource.TestStep{
 			{
@@ -34,13 +51,13 @@ func TestAccIpsecRedundant_basic(t *testing.T) {
 							DpdDelay:    "10s",
 							DpdTimeout:  "30s",
 							Phase1: perimeter81Sdk.IPSecPhaseConfig{
-								Auth:       []string{"3des"},
-								Encryption: []string{"sha256"},
+								Auth:       []string{"sha256"},
+								Encryption: []string{"3des"},
 								Dh:         []int32{14},
 							},
 							Phase2: perimeter81Sdk.IPSecPhaseConfig{
-								Auth:       []string{"3des"},
-								Encryption: []string{"sha256"},
+								Auth:       []string{"sha256"},
+								Encryption: []string{"3des"},
 								Dh:         []int32{14},
 							},
 						},
@@ -65,7 +82,7 @@ func testAccCheckIpsecRedundantExists(n string, tunnel *perimeter81Sdk.IPSecRedu
 		conn := testAccProvider.Meta().(*perimeter81Sdk.APIClient)
 		ctx := context.Background()
 		networkId := rs.Primary.Attributes["network_id"]
-		gotIpsecRedundant, _, err := conn.IPSecRedundantAPI.StandardGetIPSecRedundantTunnel(ctx, networkId, tunnelId).Execute()
+		gotIpsecRedundant, _, err := conn.StandardTunnelsAPI.StandardGetIPSecRedundantTunnel(ctx, networkId, tunnelId).Execute()
 		if err != nil {
 			return err
 		}
@@ -148,7 +165,7 @@ resource "checkpointsase_network" "n4" {
     tags = ["test"]
   }
   region {
-    cpregion_id = "Xv3BREC4QI"
+    cpregion_id = "%s"
     idle = true
   }
 }
@@ -181,6 +198,7 @@ resource "checkpointsase_ipsec_redundant" "ipsr1" {
       remote_gwinternal_ip = "169.254.100.5"
       remote_public_ip = "169.254.100.7"
       remote_asn = "65323"
+      remote_id = "tunnelOneRemoteId"
       gateway_id = {
 		for network in data.checkpointsase_networks.all4.networks :
 		network.id => network.regions[0].instances[0].id
@@ -193,6 +211,7 @@ resource "checkpointsase_ipsec_redundant" "ipsr1" {
       remote_gwinternal_ip = "169.254.100.14"
       remote_public_ip = "169.254.100.16"
       remote_asn = "65324"
+      remote_id = "tunnelTwoRemoteId"
       gateway_id = {
 		for network in data.checkpointsase_networks.all4.networks :
 		network.id => network.regions[0].instances[1].id
@@ -210,17 +229,49 @@ resource "checkpointsase_ipsec_redundant" "ipsr1" {
     dpd_delay = "10s"
     dpd_timeout = "30s"
     phase1 {
-      auth = ["3des"]
-      encryption = ["sha256"]
+      auth = ["sha256"]
+      encryption = ["3des"]
       dh = [14]
     }
     phase2 {
-      auth = ["3des"]
-      encryption = ["sha256"]
+      auth = ["sha256"]
+      encryption = ["3des"]
       dh = [14]
     }
   }
 }
   `
-	return fmt.Sprintf(config, randStringBytesRmndr())
+	return fmt.Sprintf(config, randStringBytesRmndr(), testAccRegionID())
+}
+
+/*
+TestIpsecRedundantRefusesEveryConfiguration is the gate on the plan-time refusal.
+
+It matters more than an ordinary schema test because of what the refusal
+PREVENTS. Creating a redundant pair SUCCEEDS against the API -- two real tunnels
+on two real gateways -- and the failure lands on the read immediately after. So
+without this refusal an apply leaves infrastructure the provider can neither
+manage nor destroy, and the operator has to remove it by hand.
+
+If someone deletes the CustomizeDiff registration to "unblock" the resource, this
+test is what tells them what they have re-enabled.
+*/
+func TestIpsecRedundantRefusesEveryConfiguration(t *testing.T) {
+	r := resourceIpsecRedundant()
+
+	if r.CustomizeDiff == nil {
+		t.Fatal("CustomizeDiff is not registered: the resource would create real " +
+			"tunnels it cannot then read, update or delete (API-FINDINGS.md 1.39)")
+	}
+
+	err := r.CustomizeDiff(context.Background(), nil, nil)
+	if err == nil {
+		t.Fatal("CustomizeDiff accepted a configuration; it must refuse every one")
+	}
+	for _, want := range []string{"haTunnelId", "1.39", "ipsec_single"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q, so it does not tell the "+
+				"operator why or what to do instead:\n%s", want, err.Error())
+		}
+	}
 }

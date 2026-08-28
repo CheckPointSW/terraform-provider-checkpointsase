@@ -3,12 +3,12 @@
 page_title: "checkpointsase_wireguard Resource - checkpointsase"
 subcategory: ""
 description: |-
-  Manages a WireGuard client tunnel attached to one gateway of a checkpointsase_network. After creation, the server returns vault and request_config_token — opaque values used to retrieve the WireGuard client configuration via the SASE management console. network_id, region_id, gateway_id, and tunnel_name are immutable — changing any of them forces resource replacement. Only remote_endpoint and remote_subnets are updatable in place.
+  Manages a WireGuard client tunnel attached to one gateway of a checkpointsase_network. After creation, the server returns vault and request_config_token. request_config_token is a bearer credential that this resource stores in Terraform state, and the URL built from it needs no authentication for the 6 hours it lives (API-FINDINGS.md 1.32) — treat your state file as a secret store. network_id, region_id, gateway_id, and tunnel_name are immutable — changing any of them forces resource replacement. Only remote_endpoint and remote_subnets are updatable in place.
 ---
 
 # checkpointsase_wireguard (Resource)
 
-Manages a WireGuard client tunnel attached to one gateway of a `checkpointsase_network`. After creation, the server returns `vault` and `request_config_token` — opaque values used to retrieve the WireGuard client configuration via the SASE management console. **`network_id`, `region_id`, `gateway_id`, and `tunnel_name` are immutable** — changing any of them forces resource replacement. Only `remote_endpoint` and `remote_subnets` are updatable in place.
+Manages a WireGuard client tunnel attached to one gateway of a `checkpointsase_network`. After creation, the server returns `vault` and `request_config_token`. **`request_config_token` is a bearer credential that this resource stores in Terraform state**, and the URL built from it needs no authentication for the 6 hours it lives (API-FINDINGS.md 1.32) — treat your state file as a secret store. **`network_id`, `region_id`, `gateway_id`, and `tunnel_name` are immutable** — changing any of them forces resource replacement. Only `remote_endpoint` and `remote_subnets` are updatable in place.
 
 ## Example Usage
 
@@ -35,19 +35,29 @@ resource "checkpointsase_wireguard" "example" {
 - `region_id` (String) The ID of the network's region. Returned by `checkpointsase_network.region.region_id`.
 - `remote_endpoint` (String) Remote peer's public IP address (IPv4 or IPv6).
 - `remote_subnets` (List of String) List of remote-side subnet CIDR blocks reachable through this tunnel. At least one is required; duplicates are rejected server-side.
-- `tunnel_name` (String) Display name for the WireGuard tunnel.
+- `tunnel_name` (String) Display name for the WireGuard tunnel. 3-15 characters, letters and digits only. The server derives the tunnel's `interfaceName` from this value and rejects hyphens, underscores, dots and spaces with a 422 that names only the derived field.
 
 ### Optional
 
-- `created_at` (String) Timestamp when the tunnel was created (server-assigned).
 - `last_updated` (String) Timestamp of the last update to this resource.
-- `updated_at` (String) Timestamp when the tunnel was last updated server-side.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
 
+- `created_at` (String) Timestamp when the tunnel was created (server-assigned).
 - `id` (String) The ID of this resource.
-- `request_config_token` (String) Server-assigned token for retrieving the WireGuard client configuration. Pair with `vault` to fetch the config blob.
-- `vault` (String) Server-assigned opaque identifier for the tunnel's config storage. Used together with `request_config_token` to retrieve the WireGuard client config from the SASE management console.
+- `request_config_token` (String, Sensitive) Server-assigned token for retrieving the WireGuard client configuration. **It is a bearer credential and it is in your state file.** The measured retrieval path uses neither `vault` nor the console: `GET /v3/networks/standard/{network_id}/tunnels/wireguard/{id}/config-token` returns a URL of the form `…/api/networks/{network_id}/tunnels/{id}/wireguard-config/{this token}`, that URL needs **no authentication**, it lives 6 hours from tunnel creation (see `request_config_token_expires_at` if present), and it serves an executable shell script carrying the tunnel's key material (API-FINDINGS.md 1.32). Anyone who can read this state can reconstruct that URL. Treat state as a secret store.
+- `updated_at` (String) Timestamp when the tunnel was last updated server-side.
+- `vault` (String, Sensitive) Server-assigned opaque identifier for the tunnel's config storage. Its role is not documented by the API and has not been measured; the retrieval path that HAS been measured does not use it (see `request_config_token`).
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
+- `update` (String)
 
 ## Import
 

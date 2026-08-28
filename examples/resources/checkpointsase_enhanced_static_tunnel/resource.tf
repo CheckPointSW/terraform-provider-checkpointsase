@@ -5,6 +5,15 @@
 # (letters/digits/`.`/`_`, 8-64 chars — no hyphens).
 # `p81_gateway_subnets` must equal the parent enhanced network's own subnet
 # (or `0.0.0.0/0` for a default route); arbitrary CIDRs are rejected.
+#
+# `remote_gateway_subnets` IS THE OPPOSITE CASE AND THE TWO ARE EASY TO CONFUSE.
+# Never write `0.0.0.0/0` there. A static tunnel created with
+# `remote_gateway_subnets = ["0.0.0.0/0"]` applies cleanly and can then NEVER be
+# updated -- every later change comes back
+#   404 {"message":"Remote gateway subnets not found"}
+# even for a change that touches neither subnet list. Measured 2026-08-17
+# (API-FINDINGS.md 1.2); the same tunnel with a real CIDR updates fine. The only
+# way out is destroy and re-create.
 resource "checkpointsase_enhanced_static_tunnel" "example" {
   network_id             = "ZwAeo5wqiF"
   region_id              = "K7tEfRm9vQ"

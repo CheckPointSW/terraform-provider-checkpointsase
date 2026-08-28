@@ -3,12 +3,12 @@
 page_title: "checkpointsase_ipsec_redundant Resource - checkpointsase"
 subcategory: ""
 description: |-
-  Manages an active/standby IPsec redundant tunnel pair for a checkpointsase_network. Two tunnels (tunnel1 + tunnel2) terminate at distinct remote endpoints for failover; shared_settings (gateway subnets) and advanced_settings (IKE/IPSec parameters, phase1/phase2 proposals) apply to both tunnels uniformly. This resource has no in-place update path — every attribute change forces full replacement (destroy + recreate). Updating in place will be supported in a future version.
+  UNAVAILABLE ON THE v3 API — every configuration is refused at plan time. The read, update and delete endpoints are all addressed by an haTunnelId (the id of the HA pair), and the API returns that value from no endpoint: not the network read or list, not the gateway or region reads, not the single-tunnel read, and there is no collection route that lists it. The pair endpoint answers 404 to each member tunnel's own id. Creating the pair succeeds, so this resource refuses at plan time rather than building two real tunnels it could neither manage nor destroy. Use the Harmony SASE console until the API exposes haTunnelID; checkpointsase_ipsec_single is unaffected. Measured in API-FINDINGS.md §1.39. Manages an active/standby IPsec redundant tunnel pair for a checkpointsase_network. Two tunnels (tunnel1 + tunnel2) terminate at distinct remote endpoints for failover; shared_settings (gateway subnets) and advanced_settings (IKE/IPSec parameters, phase1/phase2 proposals) apply to both tunnels uniformly. This resource has no in-place update path. region_id, network_id and tunnel_name are ForceNew, so changing one of those plans a full replacement (destroy + recreate). Changing anything else fails the apply instead, with ipsec-redundant tunnel update is not available yet — this resource's Update handler makes no API call at all. That covers last_updated and, more importantly, every field nested inside tunnel1, tunnel2, shared_settings and advanced_settings: those four blocks are marked ForceNew, but the SDK does not propagate ForceNew from a list into the schema of its element object, so editing a passphrase or an IKE lifetime produces an in-place plan that then errors. To change any of them, taint or replace the resource explicitly (terraform apply -replace=...). A PUT for this tunnel type does exist in the API and is simply not wired up here. Updating in place will be supported in a future version.
 ---
 
 # checkpointsase_ipsec_redundant (Resource)
 
-Manages an active/standby IPsec redundant tunnel pair for a `checkpointsase_network`. Two tunnels (`tunnel1` + `tunnel2`) terminate at distinct remote endpoints for failover; `shared_settings` (gateway subnets) and `advanced_settings` (IKE/IPSec parameters, phase1/phase2 proposals) apply to both tunnels uniformly. **This resource has no in-place update path** — every attribute change forces full replacement (destroy + recreate). Updating in place will be supported in a future version.
+**UNAVAILABLE ON THE v3 API — every configuration is refused at plan time.** The read, update and delete endpoints are all addressed by an `haTunnelId` (the id of the HA *pair*), and the API returns that value from no endpoint: not the network read or list, not the gateway or region reads, not the single-tunnel read, and there is no collection route that lists it. The pair endpoint answers 404 to each member tunnel's own id. Creating the pair *succeeds*, so this resource refuses at plan time rather than building two real tunnels it could neither manage nor destroy. Use the Harmony SASE console until the API exposes `haTunnelID`; `checkpointsase_ipsec_single` is unaffected. Measured in API-FINDINGS.md §1.39. Manages an active/standby IPsec redundant tunnel pair for a `checkpointsase_network`. Two tunnels (`tunnel1` + `tunnel2`) terminate at distinct remote endpoints for failover; `shared_settings` (gateway subnets) and `advanced_settings` (IKE/IPSec parameters, phase1/phase2 proposals) apply to both tunnels uniformly. **This resource has no in-place update path.** `region_id`, `network_id` and `tunnel_name` are `ForceNew`, so changing one of those plans a full replacement (destroy + recreate). **Changing anything else fails the apply instead**, with `ipsec-redundant tunnel update is not available yet` — this resource's Update handler makes no API call at all. That covers `last_updated` and, more importantly, every field nested inside `tunnel1`, `tunnel2`, `shared_settings` and `advanced_settings`: those four blocks are marked `ForceNew`, but the SDK does not propagate `ForceNew` from a list into the schema of its element object, so editing a passphrase or an IKE lifetime produces an in-place plan that then errors. **To change any of them, taint or replace the resource explicitly** (`terraform apply -replace=...`). A `PUT` for this tunnel type does exist in the API and is simply not wired up here. Updating in place will be supported in a future version.
 
 ## Example Usage
 
@@ -21,7 +21,7 @@ Manages an active/standby IPsec redundant tunnel pair for a `checkpointsase_netw
 resource "checkpointsase_ipsec_redundant" "example" {
   network_id  = "ZwAeo5wqiF"
   region_id   = "K7tEfRm9vQ"
-  tunnel_name = "ipsecRedundant01"
+  tunnel_name = "ipsecRedundant"
 
   shared_settings {
     p81_gateway_subnets    = ["10.99.0.0/24"]
@@ -30,7 +30,7 @@ resource "checkpointsase_ipsec_redundant" "example" {
 
   tunnel1 {
     gateway_id           = "abc12345DE"
-    passphrase           = "ChangeMe-tunnel1-secret"
+    passphrase           = "ChangeMe.tunnel1.secret"
     p81_gwinternal_ip    = "169.254.0.1"
     remote_gwinternal_ip = "169.254.0.2"
     remote_public_ip     = "203.0.113.30"
@@ -39,7 +39,7 @@ resource "checkpointsase_ipsec_redundant" "example" {
 
   tunnel2 {
     gateway_id           = "abc12345DF"
-    passphrase           = "ChangeMe-tunnel2-secret"
+    passphrase           = "ChangeMe.tunnel2.secret"
     p81_gwinternal_ip    = "169.254.1.1"
     remote_gwinternal_ip = "169.254.1.2"
     remote_public_ip     = "203.0.113.31"
@@ -79,11 +79,12 @@ resource "checkpointsase_ipsec_redundant" "example" {
 - `shared_settings` (Block List, Min: 1) Subnet routing settings shared by both tunnels. (see [below for nested schema](#nestedblock--shared_settings))
 - `tunnel1` (Block List, Min: 1) Primary tunnel endpoint configuration. (see [below for nested schema](#nestedblock--tunnel1))
 - `tunnel2` (Block List, Min: 1) Standby tunnel endpoint configuration. Same shape as `tunnel1`. (see [below for nested schema](#nestedblock--tunnel2))
-- `tunnel_name` (String) Display name for the redundant tunnel pair.
+- `tunnel_name` (String) Display name for the redundant tunnel pair. 3-15 characters, letters and digits only. The server derives each member's `interfaceName` from this value (`<name>01` and `<name>02`) and rejects hyphens, underscores, dots and spaces with a 422 that names only the derived field.
 
 ### Optional
 
 - `last_updated` (String) Timestamp of the last update to this resource.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
 
@@ -128,12 +129,12 @@ Required:
 
 Required:
 
-- `p81_gateway_subnets` (List of String) Check Point SASE gateway subnet CIDR blocks reachable through either tunnel.
+- `p81_gateway_subnets` (List of String) Check Point SASE gateway subnet CIDR blocks reachable through either tunnel. The enhanced-network tunnel endpoints restrict this list to `0.0.0.0/0` or the network's own subnet; whether `/v3/networks/standard/...` applies the same rule has not been measured. The plan-time validator checks CIDR format only.
 - `remote_gateway_subnets` (List of String) Remote-side subnet CIDR blocks reachable through either tunnel.
 
 Optional:
 
-- `peak_bandwidth` (Number) Expected peak throughput of the tunnel pair in Mbps. Defaults to 1000. Required by the downstream service even though the public-api DTO marks it optional.
+- `peak_bandwidth` (Number, Deprecated) Expected peak throughput of the tunnel pair in Mbps. Defaults to 1000. Not sent to the v3 server — the value is retained only for configuration compatibility with prior provider versions.
 
 
 <a id="nestedblock--tunnel1"></a>
@@ -143,14 +144,14 @@ Required:
 
 - `gateway_id` (String) The ID of the SASE gateway that terminates this tunnel locally.
 - `p81_gwinternal_ip` (String) The Check Point SASE gateway internal IP on this tunnel.
-- `passphrase` (String, Sensitive) Pre-shared key for this tunnel (8–64 characters).
+- `passphrase` (String, Sensitive) Pre-shared key for this tunnel. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).
 - `remote_asn` (String) The remote peer's BGP ASN as a string (e.g. `"65010"`).
 - `remote_gwinternal_ip` (String) The remote gateway internal IP on this tunnel.
 - `remote_public_ip` (String) The remote gateway public IP on this tunnel.
 
 Optional:
 
-- `remote_id` (String) Optional remote tunnel ID. Computed if not supplied.
+- `remote_id` (String) Optional remote tunnel ID. Computed if not supplied. Must be alphanumeric or a valid IP address.
 - `tunnel_id` (String) The server-assigned tunnel ID. Computed.
 
 
@@ -161,15 +162,25 @@ Required:
 
 - `gateway_id` (String) The ID of the SASE gateway that terminates this tunnel locally.
 - `p81_gwinternal_ip` (String) The Check Point SASE gateway internal IP on this tunnel.
-- `passphrase` (String, Sensitive) Pre-shared key for this tunnel (8–64 characters).
+- `passphrase` (String, Sensitive) Pre-shared key for this tunnel. The public-api regex disallows hyphens; allowed characters are letters, digits, `.` and `_` (8-64 chars).
 - `remote_asn` (String) The remote peer's BGP ASN as a string (e.g. `"65010"`).
 - `remote_gwinternal_ip` (String) The remote gateway internal IP on this tunnel.
 - `remote_public_ip` (String) The remote gateway public IP on this tunnel.
 
 Optional:
 
-- `remote_id` (String) Optional remote tunnel ID. Computed if not supplied.
+- `remote_id` (String) Optional remote tunnel ID. Computed if not supplied. Must be alphanumeric or a valid IP address.
 - `tunnel_id` (String) The server-assigned tunnel ID. Computed.
+
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
+- `update` (String)
 
 ## Import
 

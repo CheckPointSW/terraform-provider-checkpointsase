@@ -32,21 +32,31 @@ resource "checkpointsase_openvpn" "example" {
 - `gateway_id` (String) The ID of the SASE gateway that terminates this tunnel locally.
 - `network_id` (String) The ID of the standard network the tunnel belongs to.
 - `region_id` (String) The ID of the network's region. Returned by `checkpointsase_network.region.region_id`.
-- `tunnel_name` (String) Display name for the OpenVPN tunnel.
+- `tunnel_name` (String) Display name for the OpenVPN tunnel. 3-15 characters, letters and digits only. The server derives the tunnel's `interfaceName` from this value and rejects hyphens, underscores, dots and spaces with a 422 that names only the derived field.
 - `version` (Number) Credential-rotation trigger. Increment (or change) this integer to trigger a server-side rotation of `access_key_id` / `secret_access_key`. The numeric value itself has no meaning beyond change detection.
 
 ### Optional
 
-- `created_at` (String) Timestamp when the tunnel was created (server-assigned).
 - `last_updated` (String) Timestamp of the last update to this resource.
-- `updated_at` (String) Timestamp when the tunnel was last updated server-side.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
 
-- `access_key_id` (String) Server-assigned credential ID for the OpenVPN client. Rotated when `version` changes.
+- `access_key_id` (String, Sensitive) Server-assigned credential ID for the OpenVPN client. Rotated when `version` changes.
+- `created_at` (String) Timestamp when the tunnel was created (server-assigned).
 - `id` (String) The ID of this resource.
 - `secret_access_key` (String, Sensitive) Server-assigned credential secret for the OpenVPN client. Returned on create and on each rotation; the API does not allow re-fetching this value later, so the terraform state is the only durable copy.
 - `type` (String) Tunnel type (always `openvpn` server-side).
+- `updated_at` (String) Timestamp when the tunnel was last updated server-side.
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `delete` (String)
+- `update` (String)
 
 ## Import
 

@@ -4,9 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -60,6 +59,11 @@ func resourceEnhancedRegion() *schema.Resource {
 		},
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceEnhancedRegionImportState,
+		},
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(asyncResourceTimeout),
+			Update: schema.DefaultTimeout(asyncResourceTimeout),
+			Delete: schema.DefaultTimeout(asyncResourceTimeout),
 		},
 	}
 }
@@ -135,7 +139,6 @@ resourceEnhancedRegionCreate Create an Enhanced Region in an Enhanced Network.
 func resourceEnhancedRegionCreate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	harmonySaseRegionId := d.Get("harmony_sase_region_id").(string)
@@ -155,20 +158,12 @@ func resourceEnhancedRegionCreate(ctx context.Context, d *schema.ResourceData, m
 	}
 
 	statusId := getIdFromUrl(status.GetStatusUrl())
-	var regionId string
-	for {
-		var networkStatus perimeter81Sdk.AsyncOperationStatus
-		networkStatus, diags, err = checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		if networkStatus.GetCompleted() {
-			regionId = getIdFromUrl(networkStatus.Result.GetResource())
-			break
-		}
-		time.Sleep(60 * time.Second)
+	resource, err := pollStandardNetworkStatusForResource(ctx, client, statusId, standardNetworkPollInterval)
+	if err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to create Enhanced Region", err)
 	}
+	regionId := getIdFromUrl(resource)
 
 	d.SetId(regionId)
 	return resourceEnhancedRegionRead(ctx, d, m)
@@ -185,7 +180,6 @@ resourceEnhancedRegionRead Read an Enhanced Region.
 func resourceEnhancedRegionRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	regionId := d.Id()
@@ -222,7 +216,6 @@ resourceEnhancedRegionUpdate Update an Enhanced Region's scale units.
 func resourceEnhancedRegionUpdate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	if !d.HasChange("scale_units") {
 		return resourceEnhancedRegionRead(ctx, d, m)
@@ -258,17 +251,9 @@ func resourceEnhancedRegionUpdate(ctx context.Context, d *schema.ResourceData, m
 		}
 
 		statusId := getIdFromUrl(status.GetStatusUrl())
-		for {
-			var networkStatus perimeter81Sdk.AsyncOperationStatus
-			networkStatus, diags, err = checkNetworkStatus(ctx, statusId, *client, diags)
-			if err != nil {
-				d.Partial(true)
-				return diags
-			}
-			if networkStatus.GetCompleted() {
-				break
-			}
-			time.Sleep(60 * time.Second)
+		if err := pollStandardNetworkStatus(ctx, client, statusId, standardNetworkPollInterval); err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to increase Enhanced Region scale units", err)
 		}
 	} else if newScaleUnits < oldScaleUnits {
 		// Reduce scale units. Same idle-field handling as the increase branch.
@@ -286,17 +271,9 @@ func resourceEnhancedRegionUpdate(ctx context.Context, d *schema.ResourceData, m
 		}
 
 		statusId := getIdFromUrl(status.GetStatusUrl())
-		for {
-			var networkStatus perimeter81Sdk.AsyncOperationStatus
-			networkStatus, diags, err = checkNetworkStatus(ctx, statusId, *client, diags)
-			if err != nil {
-				d.Partial(true)
-				return diags
-			}
-			if networkStatus.GetCompleted() {
-				break
-			}
-			time.Sleep(60 * time.Second)
+		if err := pollStandardNetworkStatus(ctx, client, statusId, standardNetworkPollInterval); err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to reduce Enhanced Region scale units", err)
 		}
 	}
 
@@ -314,7 +291,6 @@ resourceEnhancedRegionDelete Delete an Enhanced Region from an Enhanced Network.
 func resourceEnhancedRegionDelete(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	ctx = context.Background()
 
 	networkId := d.Get("network_id").(string)
 	regionId := d.Id()
@@ -326,17 +302,9 @@ func resourceEnhancedRegionDelete(ctx context.Context, d *schema.ResourceData, m
 	}
 
 	statusId := getIdFromUrl(status.GetStatusUrl())
-	for {
-		var networkStatus perimeter81Sdk.AsyncOperationStatus
-		networkStatus, diags, err = checkNetworkStatus(ctx, statusId, *client, diags)
-		if err != nil {
-			d.Partial(true)
-			return diags
-		}
-		if networkStatus.GetCompleted() {
-			break
-		}
-		time.Sleep(60 * time.Second)
+	if err := pollStandardNetworkStatus(ctx, client, statusId, standardNetworkPollInterval); err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to delete Enhanced Region", err)
 	}
 
 	d.SetId("")

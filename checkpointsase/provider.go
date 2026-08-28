@@ -4,7 +4,7 @@ import (
 	"context"
 	"log"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -48,24 +48,47 @@ func Provider() *schema.Provider {
 			"checkpointsase_enhanced_route_table":    resourceEnhancedRouteTable(),
 			"checkpointsase_application":             resourceApplication(),
 			"checkpointsase_firewall_policy":         resourceFirewallPolicy(),
+			"checkpointsase_support_options":         resourceSupportOptions(),
+			"checkpointsase_user":                    resourceUser(),
+			"checkpointsase_group":                   resourceGroup(),
+			"checkpointsase_group_membership":        resourceGroupMembership(),
+			"checkpointsase_access_policy":           resourceAccessPolicy(),
+			"checkpointsase_https_inspection_policy": resourceHttpsInspectionPolicy(),
+			"checkpointsase_internet_access_status":  resourceInternetAccessStatus(),
+
+			"checkpointsase_enhanced_network_private_dns": resourceEnhancedNetworkPrivateDNS(),
+			"checkpointsase_enhanced_region_private_dns":  resourceEnhancedRegionPrivateDNS(),
+			"checkpointsase_split_tunneling":              resourceSplitTunneling(),
 		},
 		DataSourcesMap: map[string]*schema.Resource{
-			"checkpointsase_networks":                dataSourceNetworks(),
-			"checkpointsase_standard_networks":       dataSourceStandardNetworks(),
-			"checkpointsase_all_networks":            dataSourceAllNetworks(),
-			"checkpointsase_regions":                 dataSourceRegions(),
-			"checkpointsase_object_services":         dataSourceObjectServices(),
-			"checkpointsase_object_addresses":        dataSourceObjectAddresses(),
-			"checkpointsase_enhanced_networks":       dataSourceEnhancedNetworks(),
-			"checkpointsase_enhanced_regions":        dataSourceEnhancedRegions(),
-			"checkpointsase_applications":            dataSourceApplications(),
-			"checkpointsase_route_table":             dataSourceRouteTable(),
-			"checkpointsase_enhanced_route_table":    dataSourceEnhancedRouteTable(),
-			"checkpointsase_network_health":          dataSourceNetworkHealth(),
-			"checkpointsase_enhanced_network_health": dataSourceEnhancedNetworkHealth(),
-			"checkpointsase_enhanced_tunnels":        dataSourceEnhancedTunnels(),
-			"checkpointsase_customer_certificates":   dataSourceCustomerCertificates(),
-			"checkpointsase_status":                  dataSourceStatus(),
+			"checkpointsase_networks":                         dataSourceNetworks(),
+			"checkpointsase_standard_networks":                dataSourceStandardNetworks(),
+			"checkpointsase_all_networks":                     dataSourceAllNetworks(),
+			"checkpointsase_regions":                          dataSourceRegions(),
+			"checkpointsase_object_services":                  dataSourceObjectServices(),
+			"checkpointsase_object_addresses":                 dataSourceObjectAddresses(),
+			"checkpointsase_enhanced_networks":                dataSourceEnhancedNetworks(),
+			"checkpointsase_enhanced_regions":                 dataSourceEnhancedRegions(),
+			"checkpointsase_applications":                     dataSourceApplications(),
+			"checkpointsase_route_table":                      dataSourceRouteTable(),
+			"checkpointsase_enhanced_route_table":             dataSourceEnhancedRouteTable(),
+			"checkpointsase_network_health":                   dataSourceNetworkHealth(),
+			"checkpointsase_enhanced_network_health":          dataSourceEnhancedNetworkHealth(),
+			"checkpointsase_enhanced_tunnels":                 dataSourceEnhancedTunnels(),
+			"checkpointsase_customer_certificates":            dataSourceCustomerCertificates(),
+			"checkpointsase_status":                           dataSourceStatus(),
+			"checkpointsase_web_categories":                   dataSourceWebCategories(),
+			"checkpointsase_application_control_applications": dataSourceApplicationControlApplications(),
+			"checkpointsase_updatable_objects":                dataSourceUpdatableObjects(),
+			"checkpointsase_users":                            dataSourceUsers(),
+			"checkpointsase_groups":                           dataSourceGroups(),
+			"checkpointsase_access_policy":                    dataSourceAccessPolicy(),
+			"checkpointsase_https_inspection_policy":          dataSourceHttpsInspectionPolicy(),
+			// Read-only because the API is: the standard family declares `get`
+			// and nothing else on both privateDNS paths. The enhanced family's
+			// equivalents are RESOURCES, above.
+			"checkpointsase_standard_network_private_dns": dataSourceStandardNetworkPrivateDNS(),
+			"checkpointsase_standard_region_private_dns":  dataSourceStandardRegionPrivateDNS(),
 		},
 		ConfigureContextFunc: providerConfigure,
 	}
@@ -105,6 +128,6 @@ var descriptions map[string]string
 func init() {
 	descriptions = map[string]string{
 		"api_key":  "The API key for the Check Point SASE Public API.",
-		"base_url": "The base URL for the Check Point SASE REST API. Defaults to the US endpoint if not set.",
+		"base_url": "The base URL for the Check Point SASE REST API. Defaults to the US endpoint. Valid values: https://api.perimeter81.com/api/rest (US), https://api.eu.sase.checkpoint.com/api/rest (EU), https://api.au.sase.checkpoint.com/api/rest (AU), https://api.in.sase.checkpoint.com/api/rest (IN), https://api.ca.sase.checkpoint.com/api/rest (CA, added in v3).",
 	}
 }

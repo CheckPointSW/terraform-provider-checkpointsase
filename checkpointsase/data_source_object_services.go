@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v2"
+	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -62,10 +62,19 @@ func dataSourceObjectServices() *schema.Resource {
 									"value": {
 										Type:        schema.TypeList,
 										Computed:    true,
-										Description: "Port numbers. Shape depends on `value_type`.",
+										Description: "Port numbers. Shape depends on `value_type`. Empty for `icmp` entries, which have no ports.",
 										Elem: &schema.Schema{
 											Type: schema.TypeInt,
 										},
+									},
+									"protocol_options": {
+										Type:     schema.TypeInt,
+										Computed: true,
+										Description: "ICMP message type, as a numeric code (-1 means Any). " +
+											"Only meaningful for `icmp` entries; 0 for `tcp` and `udp`, " +
+											"which do not carry one. The server also returns a " +
+											"human-readable description for the code, which is derived " +
+											"from it and is deliberately not exposed.",
 									},
 								}},
 						},
@@ -87,11 +96,8 @@ dataSourceObjectServicesRead Use the SDK to query all ObjectServices
 func dataSourceObjectServicesRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	if ctx == nil {
-		ctx = context.Background()
-	}
 
-	objectServices, _, err := client.ObjectsServicesAPI.GetObjectsServices(ctx).Execute()
+	objectServices, _, err := client.ObjectsAPI.GetObjectsServices(ctx).Execute()
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to get object services", err)
