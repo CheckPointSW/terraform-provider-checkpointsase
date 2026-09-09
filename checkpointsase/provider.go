@@ -11,12 +11,38 @@ import (
 )
 
 /*
+ProviderVersion is the provider's own version, reported to the API in the
+User-Agent and in the X-CP-Client-Version header.
+
+Overwritten from main() at startup, where goreleaser's `-X main.version` lands.
+The default here matters anyway: `go test` and `go build` never run main(), so
+this value is what those builds report.
+
+SINGLE SOURCE ON PURPOSE. Before this, the version existed as a literal in the
+Makefile, another in the SDK's own User-Agent, and a third that goreleaser tried
+to inject into a symbol nobody had declared. A fourth copy inside the header
+strings would have been one more thing to miss at tag time.
+*/
+var ProviderVersion = "3.0.0"
+
+/*
+providerClientName is the value of the X-CP-Client header and the last segment
+of the User-Agent.
+
+SPELLED WITH THE HYPHEN BEFORE "sase" AT THE OPERATOR'S REQUEST, which is not
+how the provider is named anywhere else: the registry address, the binary and
+the resource prefix are all `checkpointsase`, unhyphenated. Anyone grepping API
+logs for the provider needs to know both spellings exist.
+*/
+const providerClientName = "terraform-provider-checkpointsase"
+
+/*
 Provider Set up the provider schema
 
 @return &schema.Provider
 */
 func Provider() *schema.Provider {
-	return &schema.Provider{
+	p := &schema.Provider{
 		Schema: map[string]*schema.Schema{
 			"api_key": {
 				Type:        schema.TypeString,
@@ -90,8 +116,29 @@ func Provider() *schema.Provider {
 			"checkpointsase_standard_network_private_dns": dataSourceStandardNetworkPrivateDNS(),
 			"checkpointsase_standard_region_private_dns":  dataSourceStandardRegionPrivateDNS(),
 		},
-		ConfigureContextFunc: providerConfigure,
 	}
+
+	/*
+		A CLOSURE RATHER THAN `ConfigureContextFunc: providerConfigure`, because
+		the User-Agent needs p itself.
+
+		p.TerraformVersion is filled in by the plugin SDK from the Configure
+		request (helper/schema/grpc_provider.go:540) immediately before this
+		runs, so it is only readable from here -- not at the time Provider()
+		builds the struct.
+	*/
+	p.ConfigureContextFunc = func(ctx context.Context, d *schema.ResourceData) (interface{}, diag.Diagnostics) {
+		// p.UserAgent does NOT guard an empty TerraformVersion, and it is empty
+		// under `go test` and under Terraform 0.11, which would put a bare
+		// "Terraform/ (+..." on the wire. "0.11+compatible" is the spelling the
+		// HashiCorp-maintained providers use for the same gap.
+		if p.TerraformVersion == "" {
+			p.TerraformVersion = "0.11+compatible"
+		}
+		return providerConfigure(ctx, d, p.UserAgent(providerClientName, ProviderVersion))
+	}
+
+	return p
 }
 
 /*
@@ -101,7 +148,8 @@ providerConfigure Intialize the provider client SDK configuration
 
 @return interface{} - the terraform meta data that contains the client, and diag.Diagnostics
 */
-func providerConfigure(con context.Context, d *schema.ResourceData) (interface{}, diag.Diagnostics) {
+func providerConfigure(con context.Context, d *schema.ResourceData,
+	userAgent string) (interface{}, diag.Diagnostics) {
 
 	// Get the api key and base url from the provider schema
 	apiKey := d.Get("api_key").(string)
@@ -110,7 +158,26 @@ func providerConfigure(con context.Context, d *schema.ResourceData) (interface{}
 	// Initialize the Check Point Check Point SASE client SDK
 	var client interface{}
 	if apiKey != "" {
-		client = perimeter81Sdk.NewAPIClient(perimeter81Sdk.NewConfiguration(apiKey, baseUrl))
+		cfg := perimeter81Sdk.NewConfiguration(apiKey, baseUrl)
+
+		// OVERRIDES THE SDK's OWN DEFAULT, which is the code generator's
+		// boilerplate "Swagger-Codegen/2.3.0/go" -- a string that identifies
+		// neither Check Point nor this provider to whoever reads the API logs.
+		// The SDK is a published module here (no replace directive in go.mod),
+		// so this is the only place it can be corrected.
+		cfg.UserAgent = userAgent
+
+		// Sent on every request: Configuration.DefaultHeader is applied to each
+		// outgoing request by the SDK's prepareRequest.
+		//
+		// Neither value is a credential, so both are literals rather than
+		// environment reads -- they identify the client, they do not
+		// authenticate it. The API key remains the only secret, and it still
+		// arrives from CHECKPOINT_SASE_API_KEY.
+		cfg.AddDefaultHeader("X-CP-Client", providerClientName)
+		cfg.AddDefaultHeader("X-CP-Client-Version", ProviderVersion)
+
+		client = perimeter81Sdk.NewAPIClient(cfg)
 	}
 
 	// check if the client is initialized correctly
