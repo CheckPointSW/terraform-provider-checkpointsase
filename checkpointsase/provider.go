@@ -34,7 +34,7 @@ how the provider is named anywhere else: the registry address, the binary and
 the resource prefix are all `checkpointsase`, unhyphenated. Anyone grepping API
 logs for the provider needs to know both spellings exist.
 */
-const providerClientName = "terraform-provider-checkpoint-sase"
+const providerClientName = "terraform-provider-checkpointsase"
 
 /*
 Provider Set up the provider schema

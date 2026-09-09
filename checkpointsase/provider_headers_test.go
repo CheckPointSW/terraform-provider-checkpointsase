@@ -79,7 +79,7 @@ func TestClientIdentityHeadersAreSentOnEveryRequest(t *testing.T) {
 	headers := configureAgainst(t, "1.9.5")
 
 	for header, want := range map[string]string{
-		"X-Cp-Client":         "terraform-provider-checkpoint-sase",
+		"X-Cp-Client":         "terraform-provider-checkpointsase",
 		"X-Cp-Client-Version": ProviderVersion,
 	} {
 		if got := headers.Get(header); got != want {
@@ -101,7 +101,7 @@ func TestUserAgentReportsTerraformAndTheProvider(t *testing.T) {
 
 	for _, want := range []string{
 		"Terraform/1.9.5",
-		"terraform-provider-checkpoint-sase/" + ProviderVersion,
+		"terraform-provider-checkpointsase/" + ProviderVersion,
 	} {
 		if !strings.Contains(userAgent, want) {
 			t.Errorf("User-Agent %q does not contain %q", userAgent, want)

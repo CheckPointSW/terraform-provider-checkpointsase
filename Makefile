@@ -39,10 +39,6 @@ PLUGIN_DIR=~/.terraform.d/plugins/${HOSTNAME}/${NAMESPACE}/${NAME}/${VERSION}/${
 install: build
 	mkdir -p ${PLUGIN_DIR}
 	mv ${BINARY} ${PLUGIN_DIR}
-	@echo "installed ${BINARY} ${VERSION} to ${PLUGIN_DIR}"
-	@echo "Terraform records a checksum per plugin binary, so an already-initialised"
-	@echo "directory refuses a fresh build with a lock-file mismatch. In each one:"
-	@echo "  rm -rf .terraform .terraform.lock.hcl && terraform init"
 
 test: 
 	go test -i $(TEST) || exit 1                                                   
