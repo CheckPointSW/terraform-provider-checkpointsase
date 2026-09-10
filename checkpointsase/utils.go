@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
-	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
@@ -391,68 +390,6 @@ type StandardNetworkRegionConfig struct {
 	Dns string
 	// DefaultGatewayIp is the IP of the default gateway.
 	DefaultGatewayIp string
-}
-
-// GatewayConfig holds the internal representation of a gateway.
-type GatewayConfig struct {
-	Name string
-	Idle bool
-	Id   string
-	Dns  string
-	Ip   string
-}
-
-/*
-flattenGatewaysData flatten gateways data
-  - @param gatewaysItems []interface{} - the gateways data that need to be flattened
-
-@return []GatewayConfig - the flattened gateways
-*/
-func flattenGatewaysData(gatewaysItems []interface{}) []GatewayConfig {
-	if gatewaysItems != nil {
-		gateways := make([]GatewayConfig, len(gatewaysItems))
-
-		for i, gatewayItem := range gatewaysItems {
-			gateway := GatewayConfig{}
-
-			gateway.Name = gatewayItem.(map[string]interface{})["name"].(string)
-			gateway.Idle = gatewayItem.(map[string]interface{})["idle"].(bool)
-			id := gatewayItem.(map[string]interface{})["id"]
-			if id != nil {
-				gateway.Id = id.(string)
-			}
-			gateways[i] = gateway
-		}
-
-		return gateways
-	}
-
-	return make([]GatewayConfig, 0)
-}
-
-/*
-flattenGateways flatten gateways data
-  - @param gatewaysItems []GatewayConfig - the gateways that need to be flattened
-
-@return []interface{} - the flattened gateways data
-*/
-func flattenGateways(gatewaysItems []GatewayConfig) []interface{} {
-	if gatewaysItems != nil {
-		gateways := make([]interface{}, len(gatewaysItems))
-
-		for i, gatewayItems := range gatewaysItems {
-			gateway := make(map[string]interface{})
-
-			gateway["name"] = gatewayItems.Name
-			gateway["idle"] = gatewayItems.Idle
-			gateway["id"] = gatewayItems.Id
-			gateway["dns"] = gatewayItems.Dns
-			gateway["ip"] = gatewayItems.Ip
-			gateways[i] = gateway
-		}
-		return gateways
-	}
-	return make([]interface{}, 0)
 }
 
 /*
@@ -996,44 +933,6 @@ func getNetworkTunnelHaTunnelId(tunnel perimeter81Sdk.NetworkTunnel) string {
 }
 
 /*
-getGatewayInfo get the gateway info
-  - @param ctx context.Context - the context
-  - @param networkId string - the network id
-  - @param regionId string - the region id
-  - @param client perimeter81Sdk.APIClient - the client
-  - @param diags diag.Diagnostics - the diagnostics
-
-@return string - the gateway id, the gateway dns, the gateway ip,  diag.Diagnostics - the diagnostics
-*/
-func getGatewayInfo(ctx context.Context, networkId string, regionId string, client perimeter81Sdk.APIClient, diags diag.Diagnostics) (string, string, string, diag.Diagnostics) {
-	network, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkFind(ctx, networkId).Execute()
-	if err != nil {
-		diags = appendErrorDiags(diags, "Unable to fetch network", err)
-		return "", "", "", diags
-	}
-	// find the gateway id based on that least recently created gateway
-	var gatewayId string
-	var gatewayDns string
-	var gatewayIp string
-	for _, region := range network.Regions {
-		if region.Id == regionId {
-			latest := region.Instances[0].CreatedAt
-			for _, gateway := range region.Instances {
-				currentTime := gateway.CreatedAt
-				gatewayId = gateway.Id
-				if currentTime.After(latest) {
-					latest = currentTime
-					gatewayId = gateway.Id
-					gatewayDns = gateway.Dns
-					gatewayIp = gateway.Ip
-				}
-			}
-		}
-	}
-	return gatewayId, gatewayDns, gatewayIp, diags
-}
-
-/*
 getRedundantTunnelId get the redundant tunnel id
   - @param ctx context.Context - the context
   - @param networkId string - the network id
@@ -1118,156 +1017,6 @@ func setNetworkRegionInfos(regionsData []perimeter81Sdk.Region, networkData *per
 			}
 		}
 	}
-}
-
-/*
-addGatewayToRegion add the gateway to region
-  - @param ctx context.Context - the context
-  - @param client *perimeter81Sdk.APIClient - the client
-  - @param gateways []GatewayConfig - the gateways
-  - @param network_id string - the network id
-  - @param region_id string - the region id
-  - @param diags diag.Diagnostics - the diagnostics
-
-@return diag.Diagnostics, error - the diagnostics, the error
-*/
-func addGatewayToRegion(ctx context.Context, client *perimeter81Sdk.APIClient, gateways []GatewayConfig, network_id string, region_id string, diags diag.Diagnostics) (diag.Diagnostics, error) {
-	if len(gateways) == 0 {
-		return diags, nil
-	}
-	for index, gateway := range gateways {
-		gatewayPayload := perimeter81Sdk.CreateInstancesInNetworkPayload{
-			RegionId: region_id,
-			Idle:     gateway.Idle,
-		}
-		status, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2AddNetworkInstance(ctx, network_id).CreateInstancesInNetworkPayload(gatewayPayload).Execute()
-		if err != nil {
-			diags = appendErrorDiags(diags, "Unable to create gateway", err)
-			return diags, err
-		}
-		statusId := getIdFromUrl(status.GetStatusUrl())
-		var gatewayId string
-		var gatewayDns string
-		var gatewayIp string
-		if err := pollStandardNetworkStatus(ctx, client, statusId, standardNetworkPollInterval); err != nil {
-			diags = appendErrorDiags(diags, "Unable to create gateway", err)
-			return diags, err
-		}
-		gatewayId, gatewayDns, gatewayIp, diags = getGatewayInfo(ctx, network_id, region_id, *client, diags)
-		gateways[index].Id = gatewayId
-		gateways[index].Dns = gatewayDns
-		gateways[index].Ip = gatewayIp
-	}
-	return diags, nil
-}
-
-/*
-deleteGatewayFromRegion delete the gateway from region
-  - @param ctx context.Context - the context
-  - @param client *perimeter81Sdk.APIClient - the client
-  - @param gateways []GatewayConfig - the gateways
-  - @param network_id string - the network id
-  - @param region_id string - the region id
-  - @param diags diag.Diagnostics - the diagnostics
-
-@return diag.Diagnostics, error - the diagnostics, the error
-*/
-func deleteGatewayFromRegion(ctx context.Context, client *perimeter81Sdk.APIClient, gateways []GatewayConfig, network_id string, region_id string, diags diag.Diagnostics) (diag.Diagnostics, error) {
-	if len(gateways) == 0 {
-		return diags, nil
-	}
-	gatewaysForDelete := perimeter81Sdk.RemoveRegionInstance{
-		Regions: []perimeter81Sdk.RemoveRegionPayload{
-			{
-				RegionId:  &region_id,
-				Instances: []perimeter81Sdk.RemoveInstancePayload{},
-			},
-		},
-	}
-
-	removedIds := make(map[string]bool, len(gateways))
-	for _, gateway := range gateways {
-		id := gateway.Id
-		removedIds[id] = true
-		gatewaysForDelete.Regions[0].Instances = append(gatewaysForDelete.Regions[0].Instances, perimeter81Sdk.RemoveInstancePayload{
-			Id: &id,
-		})
-	}
-	// DeleteNetworkInstance returns its AsyncOperationResult inline — there is
-	// no status URL to poll — so a non-2xx result.statusCode is the only
-	// signal that the delete was rejected.
-	result, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2DeleteNetworkInstance(ctx, network_id).RemoveRegionInstance(gatewaysForDelete).Execute()
-	if err != nil {
-		diags = appendErrorDiags(diags, "Unable to delete gateways", err)
-		return diags, err
-	}
-	if !isSuccessStatus(int(result.GetStatusCode())) {
-		err := &asyncFailedError{StatusCode: int(result.GetStatusCode()), Reasons: result.GetReason()}
-		diags = appendErrorDiags(diags, "Unable to delete gateways", err)
-		return diags, err
-	}
-
-	// The delete responded 2xx, but the gateway can still be listed in the
-	// network for a moment afterwards: it is eventually consistent. Callers
-	// read the network right after this function returns, so wait until none
-	// of the removed gateway ids are listed under this region any more —
-	// otherwise Read observes stale state.
-	what := fmt.Sprintf("gateway removal to take effect in region %s of network %s", region_id, network_id)
-	if pollErr := pollUntilConverged(ctx, func(ctx context.Context) (bool, *http.Response, error) {
-		network, resp, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkFind(ctx, network_id).Execute()
-		if err != nil {
-			return false, resp, err
-		}
-		for _, region := range network.Regions {
-			if region.Id != region_id {
-				continue
-			}
-			for _, instance := range region.Instances {
-				if removedIds[instance.Id] {
-					return false, resp, nil
-				}
-			}
-		}
-		return true, resp, nil
-	}, convergencePollInterval, convergenceTransientBudget, what); pollErr != nil {
-		diags = appendErrorDiags(diags, "Unable to delete gateways", pollErr)
-		return diags, pollErr
-	}
-	return diags, nil
-}
-
-/*
-getNewGateway get the new gateway
-  - @param oldGateways []GatewayConfig - the old gateways
-  - @param newGateways []GatewayConfig - the new gateways
-
-@return []GatewayConfig - the new gateways
-*/
-func getNewGateway(oldGateways []GatewayConfig, newGateways []GatewayConfig) []GatewayConfig {
-	var gateways []GatewayConfig
-	for _, newGateway := range newGateways {
-		if !gatewayExistsInArray(newGateway.Name, oldGateways) {
-			gateways = append(gateways, newGateway)
-		}
-	}
-	return gateways
-}
-
-/*
-getGatewayToBeDeleted get the gateway to be deleted
-  - @param oldGateways []GatewayConfig - the old gateways
-  - @param newGateways []GatewayConfig - the new gateways
-
-@return []GatewayConfig - the gateways
-*/
-func getGatewayToBeDeleted(oldGateways []GatewayConfig, newGateways []GatewayConfig) []GatewayConfig {
-	var gateways []GatewayConfig
-	for _, oldGateway := range oldGateways {
-		if !gatewayExistsInArray(oldGateway.Name, newGateways) {
-			gateways = append(gateways, oldGateway)
-		}
-	}
-	return gateways
 }
 
 /*
@@ -1415,45 +1164,6 @@ func regionExistsInArray(regionId string, regions []StandardNetworkRegionConfig)
 }
 
 /*
-gatewayExistsInArray check if gateway exists in array
-  - @param gateway_name string - the gateway name
-  - @param gateways []GatewayConfig - the gateways
-
-@return bool - the result
-*/
-func gatewayExistsInArray(gateway_name string, gateways []GatewayConfig) bool {
-	for _, gateway := range gateways {
-		if gateway.Name == gateway_name {
-			return true
-		}
-	}
-	return false
-}
-
-/*
-checkGatewayDuplicatesInArray check if gateway duplicates in array
-  - @param gateways []GatewayConfig - the gateways
-
-@return bool - the result, string - the gateway name
-*/
-func checkGatewayDuplicatesInArray(gateways []GatewayConfig) (bool, string) {
-	for _, gatewayToCheck := range gateways {
-
-		var count int
-		for _, currentGateway := range gateways {
-			if gatewayToCheck.Name == currentGateway.Name {
-				count++
-			}
-		}
-		if count > 1 {
-			return true, gatewayToCheck.Name
-		}
-	}
-
-	return false, ""
-}
-
-/*
 regionClonsInArray get the region clons in array
   - @param regionId string - the region id
   - @param regions []StandardNetworkRegionConfig - the regions
@@ -1516,6 +1226,19 @@ getGatewaysInArray get the manually added gateways inside a specific region insi
 */
 func getGatewaysInArray(regionId string, network *perimeter81Sdk.Network) []perimeter81Sdk.NetworkInstance {
 	clons := make([]perimeter81Sdk.NetworkInstance, 0)
+
+	// A NIL NETWORK IS A CALLER BUG THAT USED TO CRASH THE WHOLE PROVIDER.
+	//
+	// The gateway importer called this after a failed network read, having
+	// recorded the error in a diagnostics slice it did not return yet, so
+	// `network` was nil and the range below panicked -- SIGSEGV, plugin dead,
+	// "The terraform-provider-checkpointsase plugin crashed!" rather than a
+	// diagnostic. The importer is fixed, but the guard belongs here too: the
+	// next caller to make the same mistake should get an empty result, not a
+	// stack trace. Measured 2026-09-09 (P81-144756).
+	if network == nil {
+		return clons
+	}
 
 	for _, region := range network.Regions {
 		if region.Id == regionId {
