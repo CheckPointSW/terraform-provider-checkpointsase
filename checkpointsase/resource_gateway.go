@@ -13,161 +13,183 @@ import (
 )
 
 /*
-resourceGateway Setup the gateway Resource CRUD operations
+gatewayResourceTimeout is deliberately NOT asyncResourceTimeout (30 minutes).
+
+MEASURED 2026-09-10 against a live tenant, three creates: a single gateway
+completed in ~14 minutes, and two submitted simultaneously took 13.3 and 27.8
+minutes. The API accepts concurrent creates -- both answered 202 instantly with
+distinct status ids -- but the BACKEND BUILDS THEM ONE AT A TIME. The second
+took 2.1x the first: its own build plus the first one's, queued.
+
+So the wall clock for the Nth gateway in flight is roughly N * 14 minutes, and
+30 minutes runs out at three. Two nearly missed it, finishing with two minutes
+to spare. The old default was not a margin, it was a coin toss.
+
+Two hours covers eight queued gateways. Beyond that the operator raises it:
+
+	resource "checkpointsase_gateway" "example" {
+	  timeouts { create = "4h" }
+	}
+
+Terraform's own parallelism does not help here and can hurt: ten resources
+start ten timeout clocks at once while the server serves one at a time, so the
+tenth waits out all nine before it starts. -parallelism=1 makes the wait no
+longer and the diagnostics far easier to read.
+*/
+const gatewayResourceTimeout = 2 * time.Hour
+
+/*
+gatewayImportSeparator splits the composite import id `<network_id>-<gateway_id>`.
+
+SplitN with a limit of 2, not Split: an id containing a hyphen would otherwise
+yield three parts and be refused for a shape it actually has. Tenant ids
+observed so far are alphanumeric, but the provider should not fail on the day
+that changes.
+*/
+const gatewayImportSeparator = "-"
+
+/*
+resourceGateway Setup the Gateway resource CRUD operations
+
+ONE RESOURCE PER GATEWAY. It managed a whole region's gateway POOL until
+2026-09-10, as a list of `gateways` blocks each carrying a `name`. That shape
+caused every problem this resource had, and none of them were fixable inside it:
+
+  - The name was never sent to the server. CreateInstancesInNetworkPayload is
+    {regionId, idle} and nothing else, and no read model anywhere carries a
+    gateway name -- confirmed on the wire, not just in the spec. It existed
+    purely so the provider could tell one list entry from another.
+  - Import therefore could not recover it, and wrote a `$<id>$` placeholder,
+    so the first plan after an import was never empty (P81-144756).
+  - Update matched old against new BY NAME, so an `idle`-only change found
+    nothing to add and nothing to delete, wrote the new value into state, and
+    never called the API. Terraform reported success; the gateway was
+    untouched.
+  - A config declaring a different NUMBER of gateways than the region held sent
+    Update into add-then-delete against live gateways.
+
+With one resource per gateway the Terraform address (`checkpointsase_gateway.a`)
+is the identity, which is what a name was standing in for. All four go away.
+
+THIS IS A BREAKING CHANGE. See the migration note in the resource Description.
 
 @return &schema.Resource
 */
 func resourceGateway() *schema.Resource {
 	return &schema.Resource{
-		Description: "Manages the gateway pool of a single region within a `checkpointsase_network`. " +
-			"Each `gateways` block declares one gateway (named, with an `idle` flag). " +
-			"The resource is keyed by the composite `<network_id>-<region_id>` for import. " +
-			"**`network_id` and `region_id` are immutable** — changing either would orphan the " +
-			"managed gateway list from its region and is not supported.",
+		Description: "Manages a single gateway in one region of a `checkpointsase_network`.\n\n" +
+			"**Breaking change in 3.1.0.** This resource previously managed a region's whole " +
+			"gateway pool as a list of `gateways` blocks, each with a `name`. It now manages " +
+			"exactly one gateway and has no `name` at all — the API never accepted one and no " +
+			"endpoint returns one, so the attribute could only ever describe local state. " +
+			"Declare one resource per gateway and use the Terraform address as the identity. " +
+			"Existing state must be re-imported: `terraform state rm` the old resource, then " +
+			"`terraform import checkpointsase_gateway.<name> <network_id>-<gateway_id>` for each " +
+			"gateway.\n\n" +
+			"**Every attribute forces replacement.** The API exposes create, read and delete for " +
+			"a gateway and no update of any kind, so there is nothing that can be changed in " +
+			"place — `idle` included.\n\n" +
+			"**Creates are slow and the server serialises them.** One gateway takes about 14 " +
+			"minutes; two submitted at once took 13 and 28 minutes, because the backend builds " +
+			"them one after another. The default create timeout is 2 hours. For more than about " +
+			"eight gateways in a single apply, raise it with a `timeouts` block, and consider " +
+			"`-parallelism=1` so the diagnostics stay readable.",
 		CreateContext: resourceGatewayCreate,
 		ReadContext:   resourceGatewayRead,
-		UpdateContext: resourceGatewayUpdate,
 		DeleteContext: resourceGatewayDelete,
+		// No UpdateContext, and no attribute is updatable. Giving this resource
+		// an Update that could only rewrite state -- which is what the previous
+		// version effectively did for `idle` -- reports a change the server
+		// never made.
 		Schema: map[string]*schema.Schema{
-			"last_updated": {
+			"network_id": {
 				Type:        schema.TypeString,
-				Optional:    true,
-				Computed:    true,
-				Description: "Timestamp of the last update to this resource.",
+				Required:    true,
+				ForceNew:    true,
+				Description: "The ID of the standard network this gateway belongs to.",
 			},
 			"region_id": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
-				Description: "The ID of the network's region within which to manage the gateway pool. " +
-					"This is the network-region ID returned by `checkpointsase_network.region.region_id`, " +
-					"not the cloud region ID (`cpregion_id`).",
+				Description: "The ID of the network region to place the gateway in. This is the " +
+					"network-region ID returned by `checkpointsase_network.region.region_id`, not " +
+					"the cloud region ID (`cpregion_id`).",
 			},
-			"network_id": {
+			"idle": {
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  false,
+				ForceNew: true,
+				Description: "Whether the gateway is created idle (disabled for user traffic). " +
+					"Set at creation only: the API has no endpoint that changes it afterwards, so " +
+					"a change here forces replacement. No read model returns it, so Terraform " +
+					"keeps the value you configured and an **imported** gateway takes whatever " +
+					"the configuration says without verification — the API cannot be asked.",
+				// WITHOUT THIS, IMPORT DESTROYS THE GATEWAY IT JUST ADOPTED.
+				//
+				// Measured 2026-09-10 on a live gateway. No read model carries
+				// `idle`, so after an import state holds null while the config
+				// holds a value, and this attribute is ForceNew:
+				//
+				//   + idle = true # forces replacement
+				//   Plan: 1 to add, 0 to change, 1 to destroy.
+				//
+				// That is P81-144756's own complaint -- an import whose first
+				// plan proposes to rebuild live infrastructure -- reappearing
+				// through a different attribute after `name` was removed. The
+				// suppression is what makes the adoption real.
+				//
+				// It applies ONLY when the prior value is absent AND the
+				// resource already has an id, which is the import case and
+				// nothing else: `d.Id() != ""` is what keeps Create unaffected,
+				// and a genuine false -> true edit has a non-empty old value so
+				// it still forces replacement, correctly. Same helper and same
+				// reasoning as checkpointsase_group.description, which has the
+				// identical shape of a write-only field with no read model.
+				DiffSuppressFunc: suppressDiffOnEmptyOldValue,
+			},
+
+			// --- computed ------------------------------------------------------
+			"dns": {
 				Type:        schema.TypeString,
-				Required:    true,
-				ForceNew:    true,
-				Description: "The ID of the standard network whose gateways this resource manages.",
+				Computed:    true,
+				Description: "The DNS hostname assigned to the gateway by the server.",
 			},
-			"gateways": {
-				Type:        schema.TypeList,
-				Optional:    true,
-				Description: "List of gateways to provision in the region. Order is not significant.",
-				Elem: &schema.Resource{
-					Schema: map[string]*schema.Schema{
-						"name": {
-							Type:        schema.TypeString,
-							Required:    true,
-							Description: "The gateway name. Must be unique within the region.",
-						},
-						"id": {
-							Type:        schema.TypeString,
-							Computed:    true,
-							Description: "The unique ID assigned to the gateway by the server.",
-						},
-						"dns": {
-							Type:        schema.TypeString,
-							Computed:    true,
-							Description: "The DNS hostname assigned to the gateway.",
-						},
-						"ip": {
-							Type:        schema.TypeString,
-							Computed:    true,
-							Description: "The public IP address assigned to the gateway.",
-						},
-						"idle": {
-							Type:        schema.TypeBool,
-							Required:    true,
-							Description: "Whether the gateway is idle (disabled for user traffic). Set to `false` to make the gateway active.",
-						},
-					},
-				},
+			"ip": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: "The public IP address assigned to the gateway by the server.",
+			},
+			"instance_type": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: "The server-side instance size backing this gateway, e.g. `s-2vcpu-2gb`.",
+			},
+			"created_at": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: "Timestamp when the gateway was created (server-assigned).",
+			},
+			"updated_at": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: "Timestamp when the gateway was last updated server-side.",
 			},
 		},
 		Importer: &schema.ResourceImporter{
 			StateContext: resourceGatewayImportState,
 		},
 		Timeouts: &schema.ResourceTimeout{
-			Create: schema.DefaultTimeout(asyncResourceTimeout),
-			Update: schema.DefaultTimeout(asyncResourceTimeout),
-			Delete: schema.DefaultTimeout(asyncResourceTimeout),
+			Create: schema.DefaultTimeout(gatewayResourceTimeout),
+			Delete: schema.DefaultTimeout(gatewayResourceTimeout),
 		},
 	}
 }
 
 /*
-resourceGatewayImportState Import gateways
-  - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
-  - @param d *schema.ResourceData - the terraform resource data
-  - @param m interface{} - the terraform meta data that contains the client
+resourceGatewayCreate Create one gateway
 
-@return diag.Diagnostics
-*/
-func resourceGatewayImportState(ctx context.Context, d *schema.ResourceData, m interface{}) ([]*schema.ResourceData, error) {
-	var diagnostics diag.Diagnostics
-	client := m.(*perimeter81Sdk.APIClient)
-	// get the network and region id and validate
-	ids := strings.Split(d.Id(), "-")
-	if len(ids) != 2 {
-		return nil, fmt.Errorf("could not import gateways without provider the network_id and the region_id in format network_id-region_id\n")
-	}
-
-	// call the api and check if there is an error
-	networkData, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkFind(ctx, ids[0]).Execute()
-	if err != nil {
-		diagnostics = appendErrorDiags(diagnostics, "Unable to find Network", err)
-	}
-
-	// get the gateways that are available inside that region and validate
-	gateways := getGatewaysInArray(ids[1], networkData)
-	if len(gateways) == 0 {
-		return nil, fmt.Errorf("could not import gateways please make sure that the netwrok_id and the region_id are correct\n")
-	}
-	// LIMITATION: the wire-level NetworkInstance struct has no Name
-	// field — Name is HCL-only. On import we have no way to recover the
-	// user's intended names, so we use a `$<id>$` placeholder per
-	// gateway. After import, the user MUST either:
-	//   (a) update HCL to declare each gateways block with the matching
-	//       placeholder name (then run plan-clean), or
-	//   (b) add `lifecycle { ignore_changes = [gateways] }` and manage
-	//       gateways outside of terraform, or
-	//   (c) destroy + re-create through HCL to get user-chosen names.
-	// The Read function's adopt-style filter prevents NEW server-side
-	// additions from showing up in plan, but cannot retroactively know
-	// the names of gateways already in state.
-	newGateways := make([]GatewayConfig, 0)
-	for _, gateway := range gateways {
-		newGateways = append(newGateways, GatewayConfig{
-			Idle: false,
-			Id:   gateway.Id,
-			Name: "$" + gateway.Id + "$",
-			Dns:  gateway.Dns,
-			Ip:   gateway.Ip,
-		})
-	}
-	// set the gateway and ids after getting the gateway id to the resource data
-	if err := d.Set("gateways", flattenGateways(newGateways)); err != nil {
-		return nil, fmt.Errorf("Unable to set Gateway data after import\n")
-	}
-	if err := d.Set("network_id", ids[0]); err != nil {
-		return nil, fmt.Errorf("Unable to set network_id after import\n")
-	}
-	if err := d.Set("region_id", ids[1]); err != nil {
-		return nil, fmt.Errorf("Unable to set region_id after import\n")
-	}
-	d.SetId(ids[0] + "-" + ids[1])
-	if diagnostics.HasError() {
-		for _, diagnostic := range diagnostics {
-			if diagnostic.Severity == diag.Error {
-				return nil, fmt.Errorf("could not import gateways: %s, \n %s", diagnostic.Summary, diagnostic.Detail)
-			}
-		}
-	}
-	return []*schema.ResourceData{d}, nil
-}
-
-/*
-resourceGatewayCreate Create a gateway
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
   - @param m interface{} - the terraform meta data that contains the client
@@ -175,39 +197,62 @@ resourceGatewayCreate Create a gateway
 @return diag.Diagnostics
 */
 func resourceGatewayCreate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
-	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
 
-	// get the gateways data from the resource data
+	networkId := d.Get("network_id").(string)
+	regionId := d.Get("region_id").(string)
 
-	gateways := flattenGatewaysData(d.Get("gateways").([]interface{}))
-	network_id := d.Get("network_id").(string)
-	region_id := d.Get("region_id").(string)
-
-	if check, name := checkGatewayDuplicatesInArray(gateways); check {
-		d.Partial(true)
-		return appendErrorDiags(diags, "Unable to create Gateway", fmt.Errorf("gateway name %s is duplicated", name))
+	payload := perimeter81Sdk.CreateInstancesInNetworkPayload{
+		RegionId: regionId,
+		Idle:     d.Get("idle").(bool),
 	}
 
-	// add the gateways to the region and check for errors
-	diags, err := addGatewayToRegion(ctx, client, gateways, network_id, region_id, diags)
+	status, _, err := client.StandardNetworksAPI.
+		StandardNetworksControllerV2AddNetworkInstance(ctx, networkId).
+		CreateInstancesInNetworkPayload(payload).Execute()
 	if err != nil {
 		d.Partial(true)
-		return diags
+		return appendErrorDiags(diags, "Unable to create gateway", err)
 	}
 
-	// set the gateway after getting the gateway id to the resource data
-	if err := d.Set("gateways", flattenGateways(gateways)); err != nil {
+	// THE ID COMES FROM THE ASYNC RESULT, NOT FROM A GUESS.
+	//
+	// This replaced getGatewayInfo, which re-read the network after the create
+	// and picked the most recently created instance in the region. That was
+	// wrong three ways: it raced (two concurrent creates could each take the
+	// other's gateway), it returned an empty dns and ip whenever the region
+	// held a single gateway (the newest-wins comparison is false against
+	// itself), and it indexed Instances[0] with no length check.
+	//
+	// Measured 2026-09-10: result.resource IS populated for this operation, as
+	// an absolute URL on the v2.3 host --
+	//   https://<host>/api/rest/v2.3/networks/<network>/instances/<gatewayId>
+	// -- whose last segment is the gateway id. Same treatment statusUrl gets,
+	// and the same getIdFromUrl the application create path already uses.
+	statusId := getIdFromUrl(status.GetStatusUrl())
+	resource, err := pollStandardNetworkStatusForResource(ctx, client, statusId, standardNetworkPollInterval)
+	if err != nil {
 		d.Partial(true)
-		return appendErrorDiags(diags, "Unable to set Gateway data", err)
+		return appendErrorDiags(diags, "Unable to create gateway", err)
 	}
-	d.SetId(network_id + "-" + region_id)
-	return diags
+
+	gatewayId := getIdFromUrl(resource)
+	if gatewayId == "" {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to create gateway",
+			fmt.Errorf("the create completed but its async result carried no resource URL, so the "+
+				"new gateway's id is unknown. The gateway may exist -- check the region before "+
+				"retrying, or this apply will create a second one"))
+	}
+
+	d.SetId(gatewayId)
+	return resourceGatewayRead(ctx, d, m)
 }
 
 /*
-resourceGatewayRead Read a gateway
+resourceGatewayRead Read one gateway by its own id
+
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
   - @param m interface{} - the terraform meta data that contains the client
@@ -219,160 +264,59 @@ func resourceGatewayRead(ctx context.Context, d *schema.ResourceData, m interfac
 	client := m.(*perimeter81Sdk.APIClient)
 
 	networkId := d.Get("network_id").(string)
-	regionId := d.Get("region_id").(string)
 
-	networkData, resp, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkFind(ctx, networkId).Execute()
-
-	// A vanished parent network is DRIFT, not a failure (SI-D02). Without this,
-	// deleting the network out of band leaves every gateway under it unreadable:
-	// Read errors, so `plan` cannot even report that the gateway is gone, and the
-	// operator has to `terraform state rm` each one by hand to recover.
-	//
-	// This is safe here for the same reason it is safe on the Phase 5 private-DNS
-	// resources and NOT safe on a collection endpoint: the request addresses a
-	// SINGLE named network, so a 404 means that network is absent. On a
-	// collection, a 404 means the URL was wrong, and treating it as drift cleared
-	// live ids on a misconfiguration -- a defect this project shipped three times
-	// before recognising the distinction.
+	// Addressed by the gateway's own id, so a 404 unambiguously means THIS
+	// gateway is gone -- unlike the collection read the previous version used,
+	// where a 404 means the URL was wrong. Treating it as drift is therefore
+	// safe here, and lets `plan` report a deleted gateway instead of erroring.
+	instance, resp, err := client.StandardNetworksAPI.
+		StandardGetInstance(ctx, networkId, d.Id()).Execute()
 	if isNotFound(resp, err) {
 		d.SetId("")
 		return diags
 	}
 	if err != nil {
 		d.Partial(true)
-		return appendErrorDiags(diags, "Unable to find Network for gateway read", err)
+		return appendErrorDiags(diags, "Unable to read gateway", err)
 	}
-
-	serverGateways := getGatewaysInArray(regionId, networkData)
-	if len(serverGateways) == 0 {
-		// Region/network no longer has gateways — drop from state.
+	if instance == nil {
+		// A 2xx whose body decodes to JSON null leaves the SDK returning a nil
+		// pointer with no error. Every field access below would panic -- a
+		// provider crash with a stack trace rather than a diagnostic, which is
+		// exactly how the previous importer failed (P81-144756).
 		d.SetId("")
 		return diags
 	}
 
-	// Map server response by ID for lookup.
-	serverByID := make(map[string]perimeter81Sdk.NetworkInstance, len(serverGateways))
-	for _, g := range serverGateways {
-		serverByID[g.Id] = g
-	}
-
-	// Reconcile with prior state. The API doesn't return `name` / `idle`,
-	// so preserve those from the user's HCL/state and refresh only the
-	// server-computed fields (id/dns/ip).
-	prior := flattenGatewaysData(d.Get("gateways").([]interface{}))
-	refreshed := make([]GatewayConfig, 0, len(prior))
-	for _, p := range prior {
-		if srv, ok := serverByID[p.Id]; ok {
-			refreshed = append(refreshed, GatewayConfig{
-				Id:   srv.Id,
-				Dns:  srv.Dns,
-				Ip:   srv.Ip,
-				Name: p.Name, // preserve — API doesn't carry it
-				Idle: p.Idle, // preserve — API doesn't carry it
-			})
-			delete(serverByID, p.Id)
+	// `idle` is ABSENT here on purpose: no read model carries it, so there is
+	// nothing to refresh it from and Terraform keeps the configured value.
+	// There is no `name` either, and that is not an omission -- the API has
+	// never had one. See the type comment.
+	for key, value := range map[string]interface{}{
+		"region_id":     instance.Region,
+		"dns":           instance.Dns,
+		"ip":            instance.Ip,
+		"instance_type": instance.InstanceType,
+		"created_at":    instance.CreatedAt.Format(time.RFC3339),
+	} {
+		if err := d.Set(key, value); err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to set gateway "+key, err)
 		}
 	}
-	// Adopt-style: do NOT surface gateways that exist server-side but are
-	// not in our prior state. Standard networks auto-provision an initial
-	// gateway at network-create time; surfacing it here would cause every
-	// post-apply plan to flag the auto-gateway as extraneous and would
-	// destroy it on apply. To bring an unmanaged gateway under this
-	// resource, use `terraform import 'checkpointsase_gateway.X'
-	// <network_id>-<gateway_id>`.
-	if err := d.Set("gateways", flattenGateways(refreshed)); err != nil {
-		d.Partial(true)
-		return appendErrorDiags(diags, "Unable to set Gateway data", err)
-	}
-	return diags
-}
-
-/*
-resourceGatewayUpdate Update a gateway
-  - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
-  - @param d *schema.ResourceData - the terraform resource data
-  - @param m interface{} - the terraform meta data that contains the client
-
-@return diag.Diagnostics
-*/
-func resourceGatewayUpdate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
-	// intialize the client and the context if not exists
-	var diags diag.Diagnostics
-	client := m.(*perimeter81Sdk.APIClient)
-	// check if the region_id or network_id is changed
-	if d.HasChanges("region_id", "network_id") {
-		d.Partial(true)
-		return appendErrorDiags(diags, "Unable to change network_id or region_id", fmt.Errorf("region_id and network_id cannot be updated"))
-	}
-	// check if the gateways is changed
-	if d.HasChange("gateways") {
-		// get the old and new gateways and get the gateways info
-		oldGateways, newGateways := d.GetChange("gateways")
-		network_id := d.Get("network_id").(string)
-		region_id := d.Get("region_id").(string)
-
-		// flatten the gateways data to match the schema
-		oldGatewaysFlattened := flattenGatewaysData(oldGateways.([]interface{}))
-		newGatewaysFlattened := flattenGatewaysData(newGateways.([]interface{}))
-
-		// handle the name change
-		pass := false
-		if len(oldGatewaysFlattened) == len(newGatewaysFlattened) {
-			for _, gateway := range oldGatewaysFlattened {
-				if gateway.Name != "$"+gateway.Id+"$" {
-					pass = true
-					break
-				}
-
-			}
+	if instance.UpdatedAt != nil {
+		if err := d.Set("updated_at", instance.UpdatedAt.Format(time.RFC3339)); err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to set gateway updated_at", err)
 		}
-		if pass || len(oldGatewaysFlattened) != len(newGatewaysFlattened) {
-			if check, name := checkGatewayDuplicatesInArray(newGatewaysFlattened); check {
-				d.Partial(true)
-				return appendErrorDiags(diags, "Unable to create Gateway", fmt.Errorf("gateway name %s is duplicated", name))
-			}
-			// get the gateways to be added and add them to the region and check for errors
-			gateways := getNewGateway(oldGatewaysFlattened, newGatewaysFlattened)
-			diags, err := addGatewayToRegion(ctx, client, gateways, network_id, region_id, diags)
-			if err != nil {
-				return diags
-			}
-
-			// add the id to the new gateways after being created
-			for index, gateway := range newGatewaysFlattened {
-				if gateway.Id == "" {
-					for _, newGateway := range gateways {
-						if gateway.Name == newGateway.Name {
-							newGatewaysFlattened[index].Id = newGateway.Id
-						}
-					}
-				}
-			}
-			// get the gateways to be deleted and delete them from the region and check for errors
-			gateways = getGatewayToBeDeleted(oldGatewaysFlattened, newGatewaysFlattened)
-			diags, err = deleteGatewayFromRegion(ctx, client, gateways, network_id, region_id, diags)
-			if err != nil {
-				return diags
-			}
-			// set the gateway after getting the gateway id to the resource data
-			if err := d.Set("gateways", flattenGateways(newGatewaysFlattened)); err != nil {
-				return appendErrorDiags(diags, "Unable to set Gateway data", err)
-			}
-		} else {
-			// set the gateway after getting the gateway id to the resource data
-			if err := d.Set("gateways", flattenGateways(newGatewaysFlattened)); err != nil {
-				return appendErrorDiags(diags, "Unable to set Gateway data", err)
-			}
-		}
-
-		d.Set("last_updated", time.Now().Format(time.RFC850))
 	}
 
 	return diags
 }
 
 /*
-resourceGatewayDelete Delete a gateway
+resourceGatewayDelete Delete one gateway
+
   - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
   - @param m interface{} - the terraform meta data that contains the client
@@ -380,20 +324,99 @@ resourceGatewayDelete Delete a gateway
 @return diag.Diagnostics
 */
 func resourceGatewayDelete(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
-	// intialize the client and the context if not exists
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
-	// get the gateways data from the resource data
-	gateways := flattenGatewaysData(d.Get("gateways").([]interface{}))
-	network_id := d.Get("network_id").(string)
-	region_id := d.Get("region_id").(string)
 
-	// delete the gateways from the region and check for errors
-	diags, err := deleteGatewayFromRegion(ctx, client, gateways, network_id, region_id, diags)
-	if err != nil {
-		d.Partial(true)
+	networkId := d.Get("network_id").(string)
+	regionId := d.Get("region_id").(string)
+	gatewayId := d.Id()
+
+	// The endpoint is bulk-shaped -- regions, each with a list of instances --
+	// even to remove one gateway. One resource means one entry in each list.
+	payload := perimeter81Sdk.RemoveRegionInstance{
+		Regions: []perimeter81Sdk.RemoveRegionPayload{{
+			RegionId:  &regionId,
+			Instances: []perimeter81Sdk.RemoveInstancePayload{{Id: &gatewayId}},
+		}},
+	}
+
+	// DeleteNetworkInstance returns its AsyncOperationResult INLINE -- there is
+	// no status URL to poll -- so a non-2xx result.statusCode is the only
+	// signal that the delete was rejected.
+	result, resp, err := client.StandardNetworksAPI.
+		StandardNetworksControllerV2DeleteNetworkInstance(ctx, networkId).
+		RemoveRegionInstance(payload).Execute()
+	if isNotFound(resp, err) {
+		// Somebody already deleted it; destroy has nothing left to do, and
+		// reporting a failure would strand the resource in state forever.
+		d.SetId("")
 		return diags
 	}
+	if err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to delete gateway", err)
+	}
+	if result != nil && !isSuccessStatus(int(result.GetStatusCode())) {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to delete gateway",
+			&asyncFailedError{StatusCode: int(result.GetStatusCode()), Reasons: result.GetReason()})
+	}
+
 	d.SetId("")
 	return diags
+}
+
+/*
+resourceGatewayImportState Import one gateway by `<network_id>-<gateway_id>`.
+
+	terraform import checkpointsase_gateway.example <network_id>-<gateway_id>
+
+THE SECOND HALF IS THE GATEWAY ID, NOT THE REGION ID. The previous version took
+a region and adopted every gateway in it; a stale comment in the old Read said
+gateway while the code said region, and the two disagreeing is how an operator
+ends up passing the wrong one.
+
+`region_id` is not parsed from the import id because Read returns it -- the
+instance body carries its own region. One less thing for the caller to get
+right.
+
+`idle` cannot be recovered: no read model carries it. It defaults to false on
+import, so a gateway created idle shows a diff on the first plan and needs
+either the attribute set to match or a `terraform state` edit. That is a real
+gap and it is stated in the attribute description rather than papered over.
+
+  - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
+  - @param d *schema.ResourceData - the terraform resource data
+  - @param m interface{} - the terraform meta data that contains the client
+
+@return []*schema.ResourceData, error
+*/
+func resourceGatewayImportState(ctx context.Context, d *schema.ResourceData, m interface{}) ([]*schema.ResourceData, error) {
+	parts := strings.SplitN(d.Id(), gatewayImportSeparator, 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil, fmt.Errorf(
+			"a gateway import id is %q, and this one is %q: "+
+				"terraform import checkpointsase_gateway.<name> <network_id>%s<gateway_id>",
+			"<network_id>"+gatewayImportSeparator+"<gateway_id>", d.Id(), gatewayImportSeparator)
+	}
+	if err := d.Set("network_id", parts[0]); err != nil {
+		return nil, fmt.Errorf("could not set network_id after import: %w", err)
+	}
+	d.SetId(parts[1])
+
+	diagnostics := resourceGatewayRead(ctx, d, m)
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Severity == diag.Error {
+			return nil, fmt.Errorf("could not import gateway: %s\n%s",
+				diagnostic.Summary, diagnostic.Detail)
+		}
+	}
+	// Read clears the id when the gateway is absent and returns no diagnostics
+	// (see its 404 branch). Without this an import of a gateway that does not
+	// exist would report success and write an empty resource into state.
+	if d.Id() == "" {
+		return nil, fmt.Errorf(
+			"no gateway %q exists in network %q", parts[1], parts[0])
+	}
+	return []*schema.ResourceData{d}, nil
 }

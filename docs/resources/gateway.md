@@ -3,25 +3,47 @@
 page_title: "checkpointsase_gateway Resource - checkpointsase"
 subcategory: ""
 description: |-
-  Manages the gateway pool of a single region within a checkpointsase_network. Each gateways block declares one gateway (named, with an idle flag). The resource is keyed by the composite <network_id>-<region_id> for import. network_id and region_id are immutable — changing either would orphan the managed gateway list from its region and is not supported.
+  Manages a single gateway in one region of a checkpointsase_network.
+  Breaking change in 3.1.0. This resource previously managed a region's whole gateway pool as a list of gateways blocks, each with a name. It now manages exactly one gateway and has no name at all — the API never accepted one and no endpoint returns one, so the attribute could only ever describe local state. Declare one resource per gateway and use the Terraform address as the identity. Existing state must be re-imported: terraform state rm the old resource, then terraform import checkpointsase_gateway.<name> <network_id>-<gateway_id> for each gateway.
+  Every attribute forces replacement. The API exposes create, read and delete for a gateway and no update of any kind, so there is nothing that can be changed in place — idle included.
+  Creates are slow and the server serialises them. One gateway takes about 14 minutes; two submitted at once took 13 and 28 minutes, because the backend builds them one after another. The default create timeout is 2 hours. For more than about eight gateways in a single apply, raise it with a timeouts block, and consider -parallelism=1 so the diagnostics stay readable.
 ---
 
 # checkpointsase_gateway (Resource)
 
-Manages the gateway pool of a single region within a `checkpointsase_network`. Each `gateways` block declares one gateway (named, with an `idle` flag). The resource is keyed by the composite `<network_id>-<region_id>` for import. **`network_id` and `region_id` are immutable** — changing either would orphan the managed gateway list from its region and is not supported.
+Manages a single gateway in one region of a `checkpointsase_network`.
+
+**Breaking change in 3.1.0.** This resource previously managed a region's whole gateway pool as a list of `gateways` blocks, each with a `name`. It now manages exactly one gateway and has no `name` at all — the API never accepted one and no endpoint returns one, so the attribute could only ever describe local state. Declare one resource per gateway and use the Terraform address as the identity. Existing state must be re-imported: `terraform state rm` the old resource, then `terraform import checkpointsase_gateway.<name> <network_id>-<gateway_id>` for each gateway.
+
+**Every attribute forces replacement.** The API exposes create, read and delete for a gateway and no update of any kind, so there is nothing that can be changed in place — `idle` included.
+
+**Creates are slow and the server serialises them.** One gateway takes about 14 minutes; two submitted at once took 13 and 28 minutes, because the backend builds them one after another. The default create timeout is 2 hours. For more than about eight gateways in a single apply, raise it with a `timeouts` block, and consider `-parallelism=1` so the diagnostics stay readable.
 
 ## Example Usage
 
 ```terraform
-# Manage the gateway pool of a standard network's existing region.
-# region_id is the ID of the network's region (not the cloud region ID).
-resource "checkpointsase_gateway" "example" {
+# One resource per gateway. There is no `name`: the API neither accepts nor
+# returns one, so the Terraform address is the identity.
+#
+# region_id is the network-region ID (checkpointsase_network.region.region_id),
+# not the cloud region ID (cpregion_id).
+resource "checkpointsase_gateway" "primary" {
   network_id = "ZwAeo5wqiF"
   region_id  = "K7tEfRm9vQ"
+  idle       = false
+}
 
-  gateways {
-    name = "gw1"
-    idle = false
+# A second gateway in the same region is a second resource. Creates take about
+# 14 minutes each and the backend builds them one at a time, so this apply is
+# roughly 28 minutes.
+resource "checkpointsase_gateway" "standby" {
+  network_id = "ZwAeo5wqiF"
+  region_id  = "K7tEfRm9vQ"
+  idle       = true
+
+  # The default is 2 hours; raise it if you declare many gateways at once.
+  timeouts {
+    create = "4h"
   }
 }
 ```
@@ -31,33 +53,22 @@ resource "checkpointsase_gateway" "example" {
 
 ### Required
 
-- `network_id` (String) The ID of the standard network whose gateways this resource manages.
-- `region_id` (String) The ID of the network's region within which to manage the gateway pool. This is the network-region ID returned by `checkpointsase_network.region.region_id`, not the cloud region ID (`cpregion_id`).
+- `network_id` (String) The ID of the standard network this gateway belongs to.
+- `region_id` (String) The ID of the network region to place the gateway in. This is the network-region ID returned by `checkpointsase_network.region.region_id`, not the cloud region ID (`cpregion_id`).
 
 ### Optional
 
-- `gateways` (Block List) List of gateways to provision in the region. Order is not significant. (see [below for nested schema](#nestedblock--gateways))
-- `last_updated` (String) Timestamp of the last update to this resource.
+- `idle` (Boolean) Whether the gateway is created idle (disabled for user traffic). Set at creation only: the API has no endpoint that changes it afterwards, so a change here forces replacement. Not read back either — no read model returns it — so Terraform keeps the value you configured.
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
 
+- `created_at` (String) Timestamp when the gateway was created (server-assigned).
+- `dns` (String) The DNS hostname assigned to the gateway by the server.
 - `id` (String) The ID of this resource.
-
-<a id="nestedblock--gateways"></a>
-### Nested Schema for `gateways`
-
-Required:
-
-- `idle` (Boolean) Whether the gateway is idle (disabled for user traffic). Set to `false` to make the gateway active.
-- `name` (String) The gateway name. Must be unique within the region.
-
-Read-Only:
-
-- `dns` (String) The DNS hostname assigned to the gateway.
-- `id` (String) The unique ID assigned to the gateway by the server.
-- `ip` (String) The public IP address assigned to the gateway.
-
+- `instance_type` (String) The server-side instance size backing this gateway, e.g. `s-2vcpu-2gb`.
+- `ip` (String) The public IP address assigned to the gateway by the server.
+- `updated_at` (String) Timestamp when the gateway was last updated server-side.
 
 <a id="nestedblock--timeouts"></a>
 ### Nested Schema for `timeouts`
@@ -66,7 +77,6 @@ Optional:
 
 - `create` (String)
 - `delete` (String)
-- `update` (String)
 
 ## Import
 
@@ -75,6 +85,7 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
-# Import an existing gateway pool using composite ID: <network_id>-<region_id>
-terraform import checkpointsase_gateway.example <network_id>-<region_id>
+# The import id is <network_id>-<gateway_id>. The second half is the GATEWAY
+# id, not the region id -- region_id is read back from the API.
+terraform import checkpointsase_gateway.primary ZwAeo5wqiF-mAUsCoBybR
 ```
