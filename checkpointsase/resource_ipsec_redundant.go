@@ -38,10 +38,9 @@ So every attempt left a live HA pair the provider could not read, update or
 delete, on two gateways that had to be removed by hand. Refusing at plan time is
 the difference between a clear message and orphaned infrastructure.
 
-This mirrors resourceEnhancedRouteTableCustomizeDiff, which refuses for the same
-class of reason (1.1). One difference is worth knowing: there, create FAILS, so
-refusing early only improves the message. Here create WORKS, so refusing early
-prevents real damage.
+This mirrors the same class of reason (1.1) that closed checkpointsase_enhanced_route_table.
+One difference is worth knowing: there, create FAILS, so refusing early only
+improves the message. Here create WORKS, so refusing early prevents real damage.
 
 Delete this function and the CustomizeDiff registration when the API returns
 haTunnelID -- one field on the network-find tunnel objects would restore read,

@@ -367,8 +367,6 @@ var listAttributeEmptyPolicy = map[string]struct {
 	// provider cannot omit it either way: WireGuradDetails.ToMap writes remoteSubnets
 	// unconditionally, so plan time is the only place this can be caught.
 	"resource.checkpointsase_wireguard.remote_subnets": {mustReject, "baseWireguardTunnel.ts @ArrayMinSize(1)"},
-	// enhancedRouteTable.dto.ts: @IsArray() @ArrayMinSize(1), on the update DTO as well as create.
-	"resource.checkpointsase_enhanced_route_table.subnets": {mustReject, "enhancedRouteTable.dto.ts @ArrayMinSize(1)"},
 	// address.model.ts: @IsArray() @IsValidAddressValue(...). The custom validator requires exactly
 	// one element for ip/cidr/fqdn and at least one for list, so [] fails for every valueType.
 	"resource.checkpointsase_object_addresses.value": {mustReject, "address.model.ts @IsValidAddressValue"},
@@ -532,11 +530,6 @@ var listAttributeEmptyPolicy = map[string]struct {
 	// both-empty case is caught by resourceApplicationCustomizeDiff instead.
 	"resource.checkpointsase_application.users":  {mayBeEmpty, "applicationCreateBase.dto.ts cross-field UsersMinSize"},
 	"resource.checkpointsase_application.groups": {mayBeEmpty, "applicationCreateBase.dto.ts cross-field UsersMinSize"},
-	// enhancedRouteTable.dto.ts has no tunnelIds on the update DTO at all, and the endpoint's pipe
-	// sets forbidNonWhitelisted, so the provider never sends this — it is read-side and used only to
-	// re-identify a route entry locally. Nothing to constrain.
-	"resource.checkpointsase_enhanced_route_table.tunnel_ids": {mayBeEmpty, "never sent; local matching only"},
-
 	// --- mayBeEmpty by construction: object-element lists the provider iterates ------------------
 	// These carry no array of their own to the wire in a way an empty list could break: each is
 	// either a MaxItems-1 wrapper block, or a collection the provider loops over one request at a
