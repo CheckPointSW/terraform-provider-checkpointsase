@@ -71,7 +71,6 @@ func Provider() *schema.Provider {
 			"checkpointsase_enhanced_region":         resourceEnhancedRegion(),
 			"checkpointsase_enhanced_static_tunnel":  resourceEnhancedStaticTunnel(),
 			"checkpointsase_enhanced_dynamic_tunnel": resourceEnhancedDynamicTunnel(),
-			"checkpointsase_enhanced_route_table":    resourceEnhancedRouteTable(),
 			"checkpointsase_application":             resourceApplication(),
 			"checkpointsase_firewall_policy":         resourceFirewallPolicy(),
 			"checkpointsase_support_options":         resourceSupportOptions(),

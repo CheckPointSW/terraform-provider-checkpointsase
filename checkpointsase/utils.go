@@ -59,6 +59,53 @@ func validateRemoteID(v interface{}, k string) (warns []string, errs []error) {
 }
 
 /*
+maxASN is the top of the 4-byte BGP autonomous-system range, RFC 6793.
+
+DECLARED AS A TYPED int64, NOT LEFT UNTYPED. `validation.IntBetween` takes
+`int`, and on the 32-bit targets `make release` builds -- GOARCH=386 and
+GOARCH=arm -- `int` is 32 bits, so the untyped constant 4294967295 does not fit
+and the build fails outright:
+
+	cannot use 4294967295 (untyped int constant) as int value in argument
+	to validation.IntBetween (overflows)
+
+validateASN below compares in int64 instead, which is wide enough everywhere.
+*/
+const maxASN int64 = 4294967295
+
+/*
+validateASN enforces the 4-byte BGP ASN range on every platform.
+
+WHY NOT validation.IntBetween(1, maxASN): see the constant above -- it does not
+compile for 32-bit targets. Widening to int64 for the comparison is the whole
+of the fix.
+
+A LIMITATION THIS CANNOT REMOVE, only avoid crashing on: schema.TypeInt is
+backed by Go's `int`, so a 32-bit build genuinely cannot represent an ASN above
+2147483647 whatever this function says. Such a value never reaches here on
+those platforms. Operators needing the top half of the ASN space on a 32-bit
+build need a 64-bit build, or the attribute would have to become a string.
+
+  - @param v interface{} - the configured value, an int from schema.TypeInt
+  - @param k string - the attribute name, for the diagnostic
+
+@return warns []string, errs []error
+*/
+func validateASN(v interface{}, k string) (warns []string, errs []error) {
+	n, ok := v.(int)
+	if !ok {
+		errs = append(errs, fmt.Errorf("expected type of %q to be int", k))
+		return warns, errs
+	}
+	if asn := int64(n); asn < 1 || asn > maxASN {
+		errs = append(errs, fmt.Errorf(
+			"%q must be a BGP autonomous-system number between 1 and %d, got: %d",
+			k, maxASN, n))
+	}
+	return warns, errs
+}
+
+/*
 tunnelNamePattern is the API's shared `TunnelName` schema -- pattern
 ^[a-zA-Z0-9]*$, minLength 3, maxLength 15 (swagger.yaml:7517) -- reached from
 `BaseTunnelValues`, `CreateIPSecRedundantPayload` and `IPSecRedundantTunnels`,

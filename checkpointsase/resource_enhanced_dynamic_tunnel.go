@@ -76,7 +76,7 @@ func resourceEnhancedDynamicTunnel() *schema.Resource {
 				Description: "The local (Check Point SASE) BGP autonomous-system number for this dynamic tunnel. Required by the API; valid ranges per IsValidASN. " +
 					"**Effectively set-once:** the v3 update request body has no field for it (`leftASN` exists only on the create shape), so changing this value cannot be " +
 					"applied in place. The provider raises a warning and leaves the server-side ASN unchanged; use `terraform apply -replace=...` to change it.",
-				ValidateFunc: validation.IntBetween(1, 4294967295),
+				ValidateFunc: validateASN,
 			},
 			"tunnel": {
 				Type:     schema.TypeList,
@@ -132,7 +132,7 @@ func resourceEnhancedDynamicTunnel() *schema.Resource {
 							Type:         schema.TypeInt,
 							Required:     true,
 							Description:  "BGP autonomous-system number for the remote endpoint. Required by the API.",
-							ValidateFunc: validation.IntBetween(1, 4294967295),
+							ValidateFunc: validateASN,
 						},
 						"p81_gw_internal_ip": {
 							Type:        schema.TypeString,
