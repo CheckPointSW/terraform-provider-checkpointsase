@@ -3,6 +3,8 @@ package checkpointsase
 import (
 	"context"
 	"fmt"
+	"log"
+	"strings"
 	"time"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
@@ -26,7 +28,12 @@ func resourceEnhancedNetwork() *schema.Resource {
 			"`checkpointsase_enhanced_dynamic_tunnel`. Each tunnel carries its own route, " +
 			"set through that tunnel's `remote_gateway_subnets` and readable through the " +
 			"`checkpointsase_enhanced_route_table` **data source**. " +
-			"**`subnet` is immutable** — changing it forces resource replacement.",
+			"**`subnet` is immutable** — changing it forces resource replacement. " +
+			"**Import adopts every region currently on the network into this resource's `region` list**, " +
+			"including any you intend to manage separately via `checkpointsase_enhanced_region` — there is no " +
+			"API-side signal distinguishing the two, since ownership is a config-only concept. Prune `region` " +
+			"blocks down to the ones this resource should own before your first `plan`/`apply`; shrinking it is " +
+			"a state-only convergence, not a real deletion, since updates never call a region create/delete endpoint.",
 		CreateContext: resourceEnhancedNetworkCreate,
 		ReadContext:   resourceEnhancedNetworkRead,
 		UpdateContext: resourceEnhancedNetworkUpdate,
@@ -128,6 +135,19 @@ func resourceEnhancedNetworkImportState(ctx context.Context, d *schema.ResourceD
 	// state starts empty, so that cap leaves `region` empty entirely.
 	// Rebuild the full list here instead, restricted to the import path so
 	// normal plans don't pay the extra round trips.
+	//
+	// This adopts EVERY region currently on the network inline, including
+	// any meant to be managed by a separate checkpointsase_enhanced_region
+	// resource -- there is no API-side signal that distinguishes the two,
+	// ownership is a config-only concept, and StateContextFunc has no
+	// access to the user's .tf to know their intent. If some of the
+	// adopted regions are meant to live in their own
+	// checkpointsase_enhanced_region resource instead, prune this
+	// resource's `region` config down to the ones it should own before
+	// the first plan/apply -- Update never calls a region create/delete
+	// endpoint (see resourceEnhancedNetworkUpdate), so shrinking the
+	// config is a state-only, non-destructive convergence, not a real
+	// deletion.
 	client := m.(*perimeter81Sdk.APIClient)
 	networkId := d.Id()
 	apiRegions, _, err := client.EnhancedRegionsAPI.ListEnhancedRegions(ctx, networkId).Execute()
@@ -152,7 +172,13 @@ func resourceEnhancedNetworkImportState(ctx context.Context, d *schema.ResourceD
 		entry := map[string]interface{}{
 			"id":                     r.Id,
 			"scale_units":            int(r.ScaleUnits),
-			"idle":                   false,
+			// Fall back to the schema default (true), not false: a config
+			// that omits `idle` relies on that default, and
+			// resourceEnhancedNetworkUpdate never reconciles an existing
+			// region's idle state, so writing the wrong fallback here
+			// would plan a permanent true -> false diff against any config
+			// that never mentions idle at all.
+			"idle":                   true,
 			"harmony_sase_region_id": harmonyId,
 		}
 		if r.Attributes.RunningMode != nil {
@@ -162,6 +188,20 @@ func resourceEnhancedNetworkImportState(ctx context.Context, d *schema.ResourceD
 	}
 	if err := d.Set("region", regions); err != nil {
 		return nil, fmt.Errorf("could not import enhanced network: failed to set region: %w", err)
+	}
+
+	// ResourceImporter has no diag.Diagnostics slot (only ([]*ResourceData,
+	// error)), so a real warning diagnostic isn't possible here -- this is
+	// the closest available substitute, visible with TF_LOG=WARN or above.
+	if len(apiRegions) > 0 {
+		names := make([]string, len(apiRegions))
+		for i, r := range apiRegions {
+			names[i] = fmt.Sprintf("%s (id %s)", r.Name, r.Id)
+		}
+		log.Printf("[WARN] checkpointsase_enhanced_network %s: import adopted all %d region(s) inline: %s. "+
+			"If any of these should be managed by their own checkpointsase_enhanced_region resource instead, "+
+			"remove them from this resource's `region` config before the first apply.",
+			networkId, len(apiRegions), strings.Join(names, ", "))
 	}
 
 	return []*schema.ResourceData{d}, nil

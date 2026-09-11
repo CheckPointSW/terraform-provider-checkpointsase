@@ -1248,8 +1248,14 @@ func importRegions(networkData *perimeter81Sdk.Network, regionsData []perimeter8
 			// do with any region's idle state -- so a non-default network
 			// (the common case) always imported idle=false and any region
 			// declared idle=true showed permanent drift. Default to false
-			// like the gateway resource does, and let the real gap surface
-			// as a one-time diff instead of a wrong value.
+			// like the gateway resource does. This does not make the gap
+			// one-time: this false only gets written once, on the first
+			// Read after import (the only time `regions` is empty here),
+			// but nothing downstream ever corrects it afterward --
+			// resourceNetworkUpdate has no path that reconciles an
+			// existing region's idle state, so a config declaring
+			// idle=true keeps diffing on every subsequent plan until the
+			// state is corrected by hand.
 			region.Idle = false
 			region.RegionID = regionItem.Id
 			region.Name = regionItem.Name
