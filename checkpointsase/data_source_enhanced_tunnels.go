@@ -2,6 +2,7 @@ package checkpointsase
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -165,7 +166,7 @@ func dataSourceEnhancedTunnelsRead(ctx context.Context, d *schema.ResourceData, 
 	response, _, err := client.EnhancedTunnelsAPI.GetEnhancedRegionTunnelsPerNetwork(ctx, networkId).Execute()
 	if err != nil {
 		d.Partial(true)
-		return appendErrorDiags(diags, "Unable to get Enhanced Tunnels", err)
+		return appendErrorDiags(diags, fmt.Sprintf("Unable to get Enhanced Tunnels for network_id %q", networkId), err)
 	}
 
 	if err := d.Set("items_total", float64(response.GetItemsTotal())); err != nil {
