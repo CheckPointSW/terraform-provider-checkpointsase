@@ -548,8 +548,15 @@ func resourceEnhancedStaticTunnelRead(ctx context.Context, d *schema.ResourceDat
 	networkId := d.Get("network_id").(string)
 	tunnelId := d.Id()
 
-	tunnelData, _, err := client.EnhancedTunnelsAPI.GetStaticTunnel(ctx, networkId, tunnelId).Execute()
+	tunnelData, resp, err := client.EnhancedTunnelsAPI.GetStaticTunnel(ctx, networkId, tunnelId).Execute()
 	if err != nil {
+		if isNotFound(resp, err) {
+			// The tunnel was deleted out of band. Drift, not failure: clear the
+			// id so the next plan proposes recreating it, instead of wedging
+			// the workspace.
+			d.SetId("")
+			return diags
+		}
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to find Enhanced Static Tunnel", err)
 	}

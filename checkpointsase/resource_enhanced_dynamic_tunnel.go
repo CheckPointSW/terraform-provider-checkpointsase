@@ -616,8 +616,15 @@ func resourceEnhancedDynamicTunnelRead(ctx context.Context, d *schema.ResourceDa
 	networkId := d.Get("network_id").(string)
 	dynamicTunnelId := d.Id()
 
-	tunnelsData, _, err := client.EnhancedTunnelsAPI.GetDynamicTunnel(ctx, networkId, dynamicTunnelId).Execute()
+	tunnelsData, resp, err := client.EnhancedTunnelsAPI.GetDynamicTunnel(ctx, networkId, dynamicTunnelId).Execute()
 	if err != nil {
+		if isNotFound(resp, err) {
+			// The tunnel was deleted out of band. Drift, not failure: clear the
+			// id so the next plan proposes recreating it, instead of wedging
+			// the workspace.
+			d.SetId("")
+			return diags
+		}
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to find Enhanced Dynamic Tunnel", err)
 	}

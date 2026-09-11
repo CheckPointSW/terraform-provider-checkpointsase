@@ -258,8 +258,15 @@ func resourceNetworkRead(ctx context.Context, d *schema.ResourceData, m interfac
 	// get the network id from the resource data
 	networkId := d.Id()
 	// get the network data and check for errors
-	networkData, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkFind(ctx, networkId).Execute()
+	networkData, resp, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkFind(ctx, networkId).Execute()
 	if err != nil {
+		if isNotFound(resp, err) {
+			// The network was deleted out of band (console, or DELETE outside
+			// Terraform). That is drift, not failure: clear the id so the next
+			// plan proposes recreating it, instead of wedging the workspace.
+			d.SetId("")
+			return diags
+		}
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to find Network", err)
 	}
