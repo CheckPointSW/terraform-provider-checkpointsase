@@ -121,6 +121,49 @@ func resourceEnhancedNetworkImportState(ctx context.Context, d *schema.ResourceD
 			}
 		}
 	}
+
+	// Read caps how many regions it writes to state at len(existing state),
+	// to avoid showing drift for regions added out-of-band via
+	// checkpointsase_enhanced_region (see the comment in Read). On import
+	// state starts empty, so that cap leaves `region` empty entirely.
+	// Rebuild the full list here instead, restricted to the import path so
+	// normal plans don't pay the extra round trips.
+	client := m.(*perimeter81Sdk.APIClient)
+	networkId := d.Id()
+	apiRegions, _, err := client.EnhancedRegionsAPI.ListEnhancedRegions(ctx, networkId).Execute()
+	if err != nil {
+		return nil, fmt.Errorf("could not import enhanced network: failed to list regions: %w", err)
+	}
+	harmonyRegions, _, err := client.EnhancedRegionsAPI.EnhancedNetworksControllerV2GetRegions(ctx).Execute()
+	if err != nil {
+		return nil, fmt.Errorf("could not import enhanced network: failed to list harmony regions for name lookup: %w", err)
+	}
+	nameToHarmonyId := make(map[string]string, len(harmonyRegions))
+	for _, hr := range harmonyRegions {
+		nameToHarmonyId[hr.Name] = hr.Id
+	}
+
+	regions := make([]interface{}, 0, len(apiRegions))
+	for _, r := range apiRegions {
+		harmonyId, ok := nameToHarmonyId[r.Name]
+		if !ok {
+			return nil, fmt.Errorf("could not import enhanced network: no Harmony SASE region found matching region name %q (network region id %s)", r.Name, r.Id)
+		}
+		entry := map[string]interface{}{
+			"id":                     r.Id,
+			"scale_units":            int(r.ScaleUnits),
+			"idle":                   false,
+			"harmony_sase_region_id": harmonyId,
+		}
+		if r.Attributes.RunningMode != nil {
+			entry["idle"] = r.Attributes.RunningMode.Idle
+		}
+		regions = append(regions, entry)
+	}
+	if err := d.Set("region", regions); err != nil {
+		return nil, fmt.Errorf("could not import enhanced network: failed to set region: %w", err)
+	}
+
 	return []*schema.ResourceData{d}, nil
 }
 
