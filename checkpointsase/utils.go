@@ -1240,7 +1240,23 @@ func importRegions(networkData *perimeter81Sdk.Network, regionsData []perimeter8
 		regions = make([]StandardNetworkRegionConfig, len(networkData.Regions))
 		for i, regionItem := range networkData.Regions {
 			region := StandardNetworkRegionConfig{}
-			region.Idle = networkData.IsDefault
+			// `idle` cannot be recovered: no read model for a standard
+			// network's regions carries it (same documented gap as
+			// checkpointsase_gateway's `idle`, resource_gateway.go). It used
+			// to be seeded from networkData.IsDefault -- whether this
+			// network is the tenant's default network, which has nothing to
+			// do with any region's idle state -- so a non-default network
+			// (the common case) always imported idle=false and any region
+			// declared idle=true showed permanent drift. Default to false
+			// like the gateway resource does. This does not make the gap
+			// one-time: this false only gets written once, on the first
+			// Read after import (the only time `regions` is empty here),
+			// but nothing downstream ever corrects it afterward --
+			// resourceNetworkUpdate has no path that reconciles an
+			// existing region's idle state, so a config declaring
+			// idle=true keeps diffing on every subsequent plan until the
+			// state is corrected by hand.
+			region.Idle = false
 			region.RegionID = regionItem.Id
 			region.Name = regionItem.Name
 			region.Dns = regionItem.Dns
