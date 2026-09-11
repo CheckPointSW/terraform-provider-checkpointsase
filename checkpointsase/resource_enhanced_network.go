@@ -173,7 +173,6 @@ func resourceEnhancedNetworkCreate(ctx context.Context, d *schema.ResourceData, 
 	statusId := getIdFromUrl(status.GetStatusUrl())
 	resource, err := pollStandardNetworkStatusForResource(ctx, client, statusId, standardNetworkPollInterval)
 	if err != nil {
-		diags = appendErrorDiags(diags, "Unable to create Enhanced Network", err)
 		if isAsyncConflict(err) {
 			// A 409 means the name-match loop below is guaranteed to find the
 			// very network that caused the conflict. Adopting it would point
@@ -181,15 +180,19 @@ func resourceEnhancedNetworkCreate(ctx context.Context, d *schema.ResourceData, 
 			// later destroy would delete someone else's network. Fail the
 			// apply instead of adopting.
 			d.Partial(true)
-			return diags
+			return appendErrorDiags(diags, "Unable to create Enhanced Network", err)
 		}
 		networks, _, listErr := client.EnhancedNetworksAPI.GetEnhancedNetworks(ctx).Execute()
 		if listErr != nil {
 			d.Partial(true)
+			diags = appendErrorDiags(diags, "Unable to create Enhanced Network", err)
 			return appendErrorDiags(diags, "Unable to create Enhanced Network", listErr)
 		}
 		for _, networkData := range networks {
 			if networkData.Name == name {
+				// The poll failed but the network was adopted into state, so the
+				// apply succeeded overall: don't also surface the poll error as an
+				// Error diagnostic, or Terraform would exit 1 despite a good state.
 				d.SetId(networkData.Id)
 				diags = appendWarningDiags(diags, "Adopted existing Enhanced Network after failed create",
 					fmt.Sprintf("The create request's async poll failed, but an existing enhanced network named %q (id %s) was found and adopted into Terraform state. Confirm this is the network you intended to manage.", name, networkData.Id))
@@ -198,7 +201,7 @@ func resourceEnhancedNetworkCreate(ctx context.Context, d *schema.ResourceData, 
 			}
 		}
 		d.Partial(true)
-		return diags
+		return appendErrorDiags(diags, "Unable to create Enhanced Network", err)
 	}
 	networkId := getIdFromUrl(resource)
 
