@@ -3,69 +3,140 @@ package checkpointsase
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
 
 func TestAccIpsecRedundant_basic(t *testing.T) {
 	t.Parallel()
-	// BLOCKED ON THE API, not on this test. checkpointsase_ipsec_redundant now
-	// refuses every configuration at plan time, so this can never pass: the read,
-	// update and delete routes are all addressed by an haTunnelId that the API
-	// returns from no endpoint (API-FINDINGS.md 1.39, measured on a live pair).
-	//
-	// It is skipped rather than deleted so it is ready the day the API exposes
-	// haTunnelID -- the config below is known-good and did create a real pair.
-	// Deleting it would mean rebuilding a fixture that costs two gateways and
-	// ~26 minutes.
-	//
-	// Skipping rather than leaving it red is deliberate: a permanently failing
-	// test trains people to ignore a red suite, and this project already lost a
-	// whole phase's acceptance coverage to evidence that looked present and was
-	// measuring something else.
-	t.Skip("BLOCKED: the API returns no haTunnelId, so the resource refuses at " +
-		"plan time (API-FINDINGS.md 1.39). Unskip when haTunnelID is exposed.")
+	// This fixture costs two gateways in one region and takes ~26 minutes. It was
+	// skipped while Create stored a member id instead of the pair id, which made
+	// the post-create read 404; Create now takes the pair id from the async
+	// status, so it runs again.
 	var tunnel perimeter81Sdk.IPSecRedundantTunnels
+	const resourceName = "checkpointsase_ipsec_redundant.ipsr1"
+	networkName := randStringBytesRmndr()
+	var pairId string
+
+	want := func(ikeLifeTime string) *perimeter81Sdk.IPSecRedundantTunnels {
+		return &perimeter81Sdk.IPSecRedundantTunnels{
+			SharedSettings: &perimeter81Sdk.IPSecSharedSettings{
+				P81GatewaySubnets:    []string{"0.0.0.0/0"},
+				RemoteGatewaySubnets: []string{"0.0.0.0/0"},
+			},
+			AdvancedSettings: &perimeter81Sdk.IPSecAdvancedSettings{
+				KeyExchange: "ikev2",
+				IkeLifeTime: ikeLifeTime,
+				Lifetime:    "1h",
+				DpdDelay:    "10s",
+				DpdTimeout:  "30s",
+				Phase1: perimeter81Sdk.IPSecPhaseConfig{
+					Auth:       []string{"sha256"},
+					Encryption: []string{"3des"},
+					Dh:         []int32{14},
+				},
+				Phase2: perimeter81Sdk.IPSecPhaseConfig{
+					Auth:       []string{"sha256"},
+					Encryption: []string{"3des"},
+					Dh:         []int32{14},
+				},
+			},
+		}
+	}
+
 	resource.Test(t, resource.TestCase{
 		PreCheck:  func() { testAccPreCheck(t); testAccPreCheckRegion(t) },
 		Providers: testAccProviders,
 		Steps: []resource.TestStep{
 			{
-				Config: testAccIpsecRedundantConfig(),
+				Config: testAccIpsecRedundantConfig(networkName, "8h", "aXvgHEYt"),
 				Check: resource.ComposeTestCheckFunc(
-					testAccCheckIpsecRedundantExists("checkpointsase_ipsec_redundant.ipsr1", &tunnel),
-					testAccCheckIpsecRedundantAttributes(&tunnel, &perimeter81Sdk.IPSecRedundantTunnels{
-						SharedSettings: &perimeter81Sdk.IPSecSharedSettings{
-							P81GatewaySubnets:    []string{"0.0.0.0/0"},
-							RemoteGatewaySubnets: []string{"0.0.0.0/0"},
-						},
-						AdvancedSettings: &perimeter81Sdk.IPSecAdvancedSettings{
-							KeyExchange: "ikev2",
-							IkeLifeTime: "8h",
-							Lifetime:    "1h",
-							DpdDelay:    "10s",
-							DpdTimeout:  "30s",
-							Phase1: perimeter81Sdk.IPSecPhaseConfig{
-								Auth:       []string{"sha256"},
-								Encryption: []string{"3des"},
-								Dh:         []int32{14},
-							},
-							Phase2: perimeter81Sdk.IPSecPhaseConfig{
-								Auth:       []string{"sha256"},
-								Encryption: []string{"3des"},
-								Dh:         []int32{14},
-							},
-						},
-					}),
+					testAccCheckIpsecRedundantExists(resourceName, &tunnel),
+					testAccCheckIpsecRedundantAttributes(&tunnel, want("8h")),
+					testAccRecordIpsecRedundantId(resourceName, &pairId),
 				),
+			},
+			{
+				// Changes one field inside advanced_settings and one inside
+				// tunnel1, so both expansions are exercised. Neither is ForceNew,
+				// so this plans an in-place update and goes through PUT.
+				//
+				// The id assertion is the point of the step: a destroy+recreate
+				// would satisfy the value checks just as well while silently
+				// rebuilding both tunnels, and only the id tells them apart.
+				Config: testAccIpsecRedundantConfig(networkName, "4h", "bXvgHEYtZ"),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckIpsecRedundantExists(resourceName, &tunnel),
+					testAccCheckIpsecRedundantAttributes(&tunnel, want("4h")),
+					testAccCheckIpsecRedundantIdUnchanged(resourceName, &pairId),
+					resource.TestCheckResourceAttr(resourceName, "advanced_settings.0.ike_life_time", "4h"),
+					resource.TestCheckResourceAttr(resourceName, "tunnel1.0.passphrase", "bXvgHEYtZ"),
+					// Read must keep populating the member ids the PUT addresses.
+					resource.TestCheckResourceAttrSet(resourceName, "tunnel1.0.tunnel_id"),
+					resource.TestCheckResourceAttrSet(resourceName, "tunnel2.0.tunnel_id"),
+				),
+			},
+			{
+				ResourceName:      resourceName,
+				ImportState:       true,
+				ImportStateVerify: false,
+				// passphrase is write-only on the pair read for import purposes,
+				// so a full ImportStateVerify would diff on it.
+				ImportStateIdFunc: testAccIpsecRedundantImportId(resourceName),
 			},
 		},
 	})
+}
+
+/*
+testAccRecordIpsecRedundantId stores the resource id so a later step can assert
+the pair was updated in place rather than replaced.
+*/
+func testAccRecordIpsecRedundantId(n string, into *string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		rs, ok := s.RootModule().Resources[n]
+		if !ok {
+			return fmt.Errorf("Not Found: %s", n)
+		}
+		*into = rs.Primary.ID
+		return nil
+	}
+}
+
+func testAccCheckIpsecRedundantIdUnchanged(n string, want *string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		rs, ok := s.RootModule().Resources[n]
+		if !ok {
+			return fmt.Errorf("Not Found: %s", n)
+		}
+		if *want == "" {
+			return fmt.Errorf("no id was recorded by the earlier step")
+		}
+		if rs.Primary.ID != *want {
+			return fmt.Errorf("pair id changed from %s to %s, so the nested edit replaced the pair instead of updating it through PUT",
+				*want, rs.Primary.ID)
+		}
+		return nil
+	}
+}
+
+/*
+testAccIpsecRedundantImportId builds the composite id import expects, which is
+"<network_id>-<ha_tunnel_id>" rather than the bare id held in state.
+*/
+func testAccIpsecRedundantImportId(n string) resource.ImportStateIdFunc {
+	return func(s *terraform.State) (string, error) {
+		rs, ok := s.RootModule().Resources[n]
+		if !ok {
+			return "", fmt.Errorf("Not Found: %s", n)
+		}
+		return fmt.Sprintf("%s-%s", rs.Primary.Attributes["network_id"], rs.Primary.ID), nil
+	}
 }
 
 func testAccCheckIpsecRedundantExists(n string, tunnel *perimeter81Sdk.IPSecRedundantTunnels) resource.TestCheckFunc {
@@ -156,7 +227,15 @@ func testAccCheckIpsecRedundantAttributes(tunnel *perimeter81Sdk.IPSecRedundantT
 	}
 }
 
-func testAccIpsecRedundantConfig() string {
+/*
+testAccIpsecRedundantConfig takes the network name so two steps can share one
+network, and the two values the update step changes.
+
+The name has to be passed in rather than generated here: a fresh name on the
+second call would replace the network and the pair with it, which is exactly the
+thing the update step is trying to prove does NOT happen.
+*/
+func testAccIpsecRedundantConfig(networkName string, ikeLifeTime string, tunnel1Passphrase string) string {
 	config := `
 
 resource "checkpointsase_network" "n4" {
@@ -193,7 +272,7 @@ resource "checkpointsase_ipsec_redundant" "ipsr1" {
   network_id = checkpointsase_network.n4.id
   tunnel_name = "ipseed"
   tunnel1 {
-      passphrase = "aXvgHEYt"
+      passphrase = "%s"
       p81_gwinternal_ip = "169.254.100.19"
       remote_gwinternal_ip = "169.254.100.5"
       remote_public_ip = "169.254.100.7"
@@ -224,7 +303,7 @@ resource "checkpointsase_ipsec_redundant" "ipsr1" {
   }
   advanced_settings {
     key_exchange = "ikev2"
-    ike_life_time = "8h"
+    ike_life_time = "%s"
     lifetime = "1h"
     dpd_delay = "10s"
     dpd_timeout = "30s"
@@ -241,37 +320,68 @@ resource "checkpointsase_ipsec_redundant" "ipsr1" {
   }
 }
   `
-	return fmt.Sprintf(config, randStringBytesRmndr(), testAccRegionID())
+	return fmt.Sprintf(config, networkName, testAccRegionID(), tunnel1Passphrase, ikeLifeTime)
 }
 
 /*
-TestIpsecRedundantRefusesEveryConfiguration is the gate on the plan-time refusal.
+TestIpsecRedundantIsManageable pins the shape that makes this resource work.
 
-It matters more than an ordinary schema test because of what the refusal
-PREVENTS. Creating a redundant pair SUCCEEDS against the API -- two real tunnels
-on two real gateways -- and the failure lands on the read immediately after. So
-without this refusal an apply leaves infrastructure the provider can neither
-manage nor destroy, and the operator has to remove it by hand.
+It replaces a test that asserted the opposite. The resource used to refuse every
+configuration in CustomizeDiff, because Create guessed the pair id by searching
+network-find and could only ever find a MEMBER id, which every later read,
+update and delete then 404'd on. Create now takes the pair id from the async
+create status instead, so the refusal is gone on purpose -- if it comes back,
+this test says so rather than silently passing.
 
-If someone deletes the CustomizeDiff registration to "unblock" the resource, this
-test is what tells them what they have re-enabled.
+The ForceNew assertions are the other half. helper/schema propagates a list's
+ForceNew only for `Elem: *Schema`, never for `Elem: *Resource`, so a nested edit
+inside these four blocks has always planned an in-place update. Marking the
+blocks ForceNew therefore never prevented anything; it only made the plan lie.
+Update is wired to PUT now, so they are deliberately not ForceNew.
 */
-func TestIpsecRedundantRefusesEveryConfiguration(t *testing.T) {
+func TestIpsecRedundantIsManageable(t *testing.T) {
 	r := resourceIpsecRedundant()
 
-	if r.CustomizeDiff == nil {
-		t.Fatal("CustomizeDiff is not registered: the resource would create real " +
-			"tunnels it cannot then read, update or delete (API-FINDINGS.md 1.39)")
+	if r.CustomizeDiff != nil {
+		t.Error("CustomizeDiff is registered again; the plan-time refusal was removed " +
+			"because the pair id is available from the create status")
+	}
+	if r.UpdateContext == nil {
+		t.Error("UpdateContext is not registered, so nested edits cannot be applied")
 	}
 
-	err := r.CustomizeDiff(context.Background(), nil, nil)
-	if err == nil {
-		t.Fatal("CustomizeDiff accepted a configuration; it must refuse every one")
+	for _, name := range []string{"region_id", "network_id", "tunnel_name"} {
+		if s := r.Schema[name]; s == nil {
+			t.Errorf("%s is missing from the schema", name)
+		} else if !s.ForceNew {
+			t.Errorf("%s must stay ForceNew: the pair cannot be moved between "+
+				"networks, regions or names in place", name)
+		}
 	}
-	for _, want := range []string{"haTunnelId", "1.39", "ipsec_single"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal does not mention %q, so it does not tell the "+
-				"operator why or what to do instead:\n%s", want, err.Error())
+
+	for _, name := range []string{"tunnel1", "tunnel2", "shared_settings", "advanced_settings"} {
+		if s := r.Schema[name]; s == nil {
+			t.Errorf("%s is missing from the schema", name)
+		} else if s.ForceNew {
+			t.Errorf("%s must not be ForceNew: the SDK never propagated it into the "+
+				"element schema, so it only made the plan disagree with the apply", name)
+		}
+	}
+
+	// Update sends each member's own id, and it exists nowhere in the config --
+	// Read is what puts it into state.
+	for _, name := range []string{"tunnel1", "tunnel2"} {
+		elem, ok := r.Schema[name].Elem.(*schema.Resource)
+		if !ok {
+			t.Fatalf("%s.Elem is not a *schema.Resource", name)
+		}
+		tunnelId := elem.Schema["tunnel_id"]
+		if tunnelId == nil {
+			t.Errorf("%s.tunnel_id is missing; Update cannot address the member without it", name)
+			continue
+		}
+		if !tunnelId.Computed {
+			t.Errorf("%s.tunnel_id must be Computed: the server assigns it and Update reads it back from state", name)
 		}
 	}
 }

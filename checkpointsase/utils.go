@@ -966,76 +966,62 @@ func getNetworkTunnelId(tunnel perimeter81Sdk.NetworkTunnel) string {
 	if tunnel.NetworkTunnelOpenvpn != nil {
 		return tunnel.NetworkTunnelOpenvpn.Id
 	}
-	return ""
-}
-
-/*
-getNetworkTunnelHaTunnelId extract the HaTunnelID from a NetworkTunnel union type (for redundant tunnels).
-*/
-func getNetworkTunnelHaTunnelId(tunnel perimeter81Sdk.NetworkTunnel) string {
-	if tunnel.NetworkTunnelIpsecRedundant != nil {
-		return tunnel.NetworkTunnelIpsecRedundant.HaTunnelID.Id
+	if tunnel.NetworkTunnelBase != nil {
+		return tunnel.NetworkTunnelBase.Id
 	}
 	return ""
 }
 
 /*
-getRedundantTunnelId get the redundant tunnel id
-  - @param ctx context.Context - the context
-  - @param networkId string - the network id
-  - @param tunnelBody perimeter81Sdk.BaseTunnelValues - the tunnel body
-  - @param client perimeter81Sdk.APIClient - the client
-  - @param diags diag.Diagnostics - the diagnostics
-
-@return string - the redundant tunnel id, diag.Diagnostics - the diagnostics
+getNetworkTunnelIsHA extract isHA from a NetworkTunnel union type.
 */
-func getRedundantTunnelId(ctx context.Context, networkId string, tunnelBody perimeter81Sdk.BaseTunnelValues, client perimeter81Sdk.APIClient, diags diag.Diagnostics) (string, diag.Diagnostics) {
+func getNetworkTunnelIsHA(tunnel perimeter81Sdk.NetworkTunnel) bool {
+	if tunnel.NetworkTunnelWireguard != nil {
+		return tunnel.NetworkTunnelWireguard.IsHA
+	}
+	if tunnel.NetworkTunnelIpsecSingle != nil {
+		return tunnel.NetworkTunnelIpsecSingle.IsHA
+	}
+	if tunnel.NetworkTunnelIpsecRedundant != nil {
+		return tunnel.NetworkTunnelIpsecRedundant.IsHA
+	}
+	if tunnel.NetworkTunnelOpenvpn != nil {
+		return tunnel.NetworkTunnelOpenvpn.IsHA
+	}
+	if tunnel.NetworkTunnelBase != nil {
+		return tunnel.NetworkTunnelBase.GetIsHA()
+	}
+	return false
+}
+
+/*
+isTunnelHAMember reports whether a tunnel on a standard network is one half of
+an HA pair, and whether the network read listed the tunnel at all.
+
+This has to go through the network read because the single-tunnel read does not
+return isHA at all -- measured 2026-09-11 against both an HA member and a
+standalone tunnel, the field is absent from that response in both cases.
+
+"Not listed" is returned as its own outcome rather than folded into false. A
+caller guarding a destructive call cannot treat "the network read did not
+mention this tunnel" as "this tunnel is not an HA member": an incomplete or
+not-yet-consistent network response would then read as permission to proceed.
+*/
+func isTunnelHAMember(ctx context.Context, client *perimeter81Sdk.APIClient, networkId string, tunnelId string) (isHA bool, found bool, err error) {
 	network, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkFind(ctx, networkId).Execute()
 	if err != nil {
-		diags = appendErrorDiags(diags, "Unable to fetch network", err)
-		return "", diags
+		return false, false, err
 	}
-	// Find the redundant tunnel by walking ALL gateways in the target region.
-	// The wire response for the network-find endpoint does NOT include
-	// haTunnelID per-tunnel — instead, redundant tunnel members are returned
-	// as type="ipsec" with isHA=true and a per-tunnel id. The SDK's NetworkTunnel
-	// union dispatcher falls back to NetworkTunnelBase for these (because the
-	// NetworkTunnelIpsecRedundant schema requires haTunnelID which is absent
-	// from this endpoint's response). We use the base tunnel's Id as the
-	// haTunnelId — the API's GET /tunnels/ipsec/redundant/{id} accepts either
-	// member of the pair and returns the full redundant tunnel pair.
 	for _, region := range network.Regions {
-		if region.Id != tunnelBody.RegionID {
-			continue
-		}
 		for _, gateway := range region.Instances {
 			for _, tunnel := range gateway.Tunnels {
-				ifName := getNetworkTunnelInterfaceName(tunnel)
-				if ifName != tunnelBody.TunnelName+"01" && ifName != tunnelBody.TunnelName+"02" {
-					continue
-				}
-				// Prefer haTunnelID from the redundant-specific variant if present;
-				// otherwise fall back to the base/single-routed tunnel id —
-				// the API's redundant GET endpoint accepts either pair member's
-				// id. The wire structure for redundant tunnel members is
-				// identical to a single ipsec tunnel (type:"ipsec" + isHA:true),
-				// so the SDK union dispatcher routes redundant pair members
-				// into NetworkTunnelIpsecSingle.
-				if id := getNetworkTunnelHaTunnelId(tunnel); id != "" {
-					return id, diags
-				}
-				if tunnel.NetworkTunnelIpsecSingle != nil && tunnel.NetworkTunnelIpsecSingle.Id != "" {
-					return tunnel.NetworkTunnelIpsecSingle.Id, diags
-				}
-				if tunnel.NetworkTunnelBase != nil && tunnel.NetworkTunnelBase.Id != "" {
-					return tunnel.NetworkTunnelBase.Id, diags
+				if getNetworkTunnelId(tunnel) == tunnelId {
+					return getNetworkTunnelIsHA(tunnel), true, nil
 				}
 			}
 		}
 	}
-	diags = appendErrorDiags(diags, "Unable to find tunnel",
-		fmt.Errorf("no tunnel matched name=%s in region=%s; check tunnel fields or naming convention", tunnelBody.TunnelName, tunnelBody.RegionID))
-	return "", diags
+	return false, false, nil
 }
 
 /*
