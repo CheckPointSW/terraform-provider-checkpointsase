@@ -216,6 +216,39 @@ func TestNetworkDeleteWaitsForTheNetworkToActuallyGo(t *testing.T) {
 		}
 	})
 
+	t.Run("a retry after a timed-out wait is not an error", func(t *testing.T) {
+		// The sequel to the timeout case below. The first destroy gave up
+		// waiting and deliberately kept the id; the backend then finished the
+		// deletion, so the retry's DELETE answers 404. If that is reported as
+		// an error the resource is wedged in state forever -- the exact thing
+		// keeping the id was meant to prevent.
+		var gets int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method != http.MethodDelete {
+				gets++
+			}
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Network doesn't exist.","messageCode":"NOT_FOUND","status":404}`))
+		}))
+		defer srv.Close()
+
+		d := schema.TestResourceDataRaw(t, resourceNetwork().Schema, map[string]interface{}{})
+		d.SetId("net-1")
+
+		diags := resourceNetworkDelete(context.Background(), d, newTestUserAPIClient(srv.URL))
+
+		if diags.HasError() {
+			t.Fatalf("a 404 on an already-deleted network was reported as a failure: %v", diags)
+		}
+		if d.Id() != "" {
+			t.Errorf("id = %q, want cleared; the network is gone, which is the goal state", d.Id())
+		}
+		if gets != 0 {
+			t.Errorf("polled %d time(s) for a network the DELETE already said was absent", gets)
+		}
+	})
+
 	t.Run("a completed-but-rejected delete is not success", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")

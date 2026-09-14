@@ -399,7 +399,23 @@ func resourceNetworkDelete(ctx context.Context, d *schema.ResourceData, m interf
 	// that the delete was rejected. Discarding the whole response, as this
 	// code used to, meant a deletion the backend completed with a 409 was
 	// reported to Terraform as a successful destroy.
-	result, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkDelete(ctx, networkId).Execute()
+	result, resp, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkDelete(ctx, networkId).Execute()
+	if isNotFound(resp, err) {
+		// The network is already gone. That is the goal state, not a failure.
+		//
+		// This is reachable precisely BECAUSE the convergence wait below keeps
+		// the id in state when it gives up: the backend finishes the deletion
+		// afterwards, and the retry's DELETE then answers 404. Reporting an
+		// error here would wedge the resource in state permanently -- the one
+		// thing retaining the id was supposed to avoid. A plain re-run
+		// refreshes first and never reaches this, but `-refresh=false` and a
+		// saved plan both do.
+		//
+		// resourceGatewayDelete, resourceUserDelete and resourceGroupDelete
+		// all already treat a 404 this way.
+		d.SetId("")
+		return diags
+	}
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to delete network", err)
