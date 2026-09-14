@@ -3,12 +3,12 @@
 page_title: "checkpointsase_ipsec_redundant Resource - checkpointsase"
 subcategory: ""
 description: |-
-  Manages an active/standby IPsec redundant tunnel pair for a checkpointsase_network. Two tunnels (tunnel1 + tunnel2) terminate at distinct remote endpoints for failover; shared_settings (gateway subnets) and advanced_settings (IKE/IPSec parameters, phase1/phase2 proposals) apply to both tunnels uniformly. The resource id is the HA pair id (haTunnelId), which read, update and delete are all addressed by. It is not returned by the network read, the network list, the gateway or region reads, or the single-tunnel read, and there is no collection route that lists it — the pair endpoint answers 404 to each member tunnel's own id. It is taken instead from the asynchronous create status (result.resource), which is why Create must harvest it rather than search for the pair by name. region_id, network_id and tunnel_name are ForceNew; everything else is updated in place through PUT.
+  Manages an active/standby IPsec redundant tunnel pair for a checkpointsase_network. Two tunnels (tunnel1 + tunnel2) terminate at distinct remote endpoints for failover; shared_settings (gateway subnets) and advanced_settings (IKE/IPSec parameters, phase1/phase2 proposals) apply to both tunnels uniformly. The resource id is the HA pair id (haTunnelId), which read, update and delete are all addressed by. It is not returned by the network read, the network list, the gateway or region reads, or the single-tunnel read, and there is no collection route that lists it — the pair endpoint answers 404 to each member tunnel's own id. It is taken instead from the asynchronous create status (result.resource), which is why Create must harvest it rather than search for the pair by name. region_id, network_id and tunnel_name are ForceNew. The tunnel1, tunnel2, shared_settings and advanced_settings blocks are updated in place through PUT, with two exceptions inside them: shared_settings.peak_bandwidth is deprecated and is sent to no v3 endpoint, so changing it does not affect the tunnels, and last_updated is a local timestamp this provider writes after a successful update.
 ---
 
 # checkpointsase_ipsec_redundant (Resource)
 
-Manages an active/standby IPsec redundant tunnel pair for a `checkpointsase_network`. Two tunnels (`tunnel1` + `tunnel2`) terminate at distinct remote endpoints for failover; `shared_settings` (gateway subnets) and `advanced_settings` (IKE/IPSec parameters, phase1/phase2 proposals) apply to both tunnels uniformly. The resource id is the HA *pair* id (`haTunnelId`), which read, update and delete are all addressed by. It is not returned by the network read, the network list, the gateway or region reads, or the single-tunnel read, and there is no collection route that lists it — the pair endpoint answers 404 to each member tunnel's own id. It is taken instead from the asynchronous create status (`result.resource`), which is why Create must harvest it rather than search for the pair by name. `region_id`, `network_id` and `tunnel_name` are `ForceNew`; everything else is updated in place through `PUT`.
+Manages an active/standby IPsec redundant tunnel pair for a `checkpointsase_network`. Two tunnels (`tunnel1` + `tunnel2`) terminate at distinct remote endpoints for failover; `shared_settings` (gateway subnets) and `advanced_settings` (IKE/IPSec parameters, phase1/phase2 proposals) apply to both tunnels uniformly. The resource id is the HA *pair* id (`haTunnelId`), which read, update and delete are all addressed by. It is not returned by the network read, the network list, the gateway or region reads, or the single-tunnel read, and there is no collection route that lists it — the pair endpoint answers 404 to each member tunnel's own id. It is taken instead from the asynchronous create status (`result.resource`), which is why Create must harvest it rather than search for the pair by name. `region_id`, `network_id` and `tunnel_name` are `ForceNew`. The `tunnel1`, `tunnel2`, `shared_settings` and `advanced_settings` blocks are updated in place through `PUT`, with two exceptions inside them: `shared_settings.peak_bandwidth` is deprecated and is sent to no v3 endpoint, so changing it does not affect the tunnels, and `last_updated` is a local timestamp this provider writes after a successful update.
 
 ## Example Usage
 
@@ -152,7 +152,10 @@ Required:
 Optional:
 
 - `remote_id` (String) Optional remote tunnel ID. Computed if not supplied. Must be alphanumeric or a valid IP address.
-- `tunnel_id` (String) The server-assigned tunnel ID. Computed.
+
+Read-Only:
+
+- `tunnel_id` (String) The server-assigned member tunnel ID, populated on read.
 
 
 <a id="nestedblock--tunnel2"></a>
@@ -170,7 +173,10 @@ Required:
 Optional:
 
 - `remote_id` (String) Optional remote tunnel ID. Computed if not supplied. Must be alphanumeric or a valid IP address.
-- `tunnel_id` (String) The server-assigned tunnel ID. Computed.
+
+Read-Only:
+
+- `tunnel_id` (String) The server-assigned member tunnel ID, populated on read.
 
 
 <a id="nestedblock--timeouts"></a>

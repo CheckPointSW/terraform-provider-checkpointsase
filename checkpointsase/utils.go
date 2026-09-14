@@ -996,30 +996,32 @@ func getNetworkTunnelIsHA(tunnel perimeter81Sdk.NetworkTunnel) bool {
 
 /*
 isTunnelHAMember reports whether a tunnel on a standard network is one half of
-an HA pair.
+an HA pair, and whether the network read listed the tunnel at all.
 
 This has to go through the network read because the single-tunnel read does not
 return isHA at all -- measured 2026-09-11 against both an HA member and a
 standalone tunnel, the field is absent from that response in both cases.
 
-A tunnel the network read does not list is reported as not-HA, leaving the
-caller's own read to report the absence.
+"Not listed" is returned as its own outcome rather than folded into false. A
+caller guarding a destructive call cannot treat "the network read did not
+mention this tunnel" as "this tunnel is not an HA member": an incomplete or
+not-yet-consistent network response would then read as permission to proceed.
 */
-func isTunnelHAMember(ctx context.Context, client *perimeter81Sdk.APIClient, networkId string, tunnelId string) (bool, error) {
+func isTunnelHAMember(ctx context.Context, client *perimeter81Sdk.APIClient, networkId string, tunnelId string) (isHA bool, found bool, err error) {
 	network, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkFind(ctx, networkId).Execute()
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	for _, region := range network.Regions {
 		for _, gateway := range region.Instances {
 			for _, tunnel := range gateway.Tunnels {
 				if getNetworkTunnelId(tunnel) == tunnelId {
-					return getNetworkTunnelIsHA(tunnel), nil
+					return getNetworkTunnelIsHA(tunnel), true, nil
 				}
 			}
 		}
 	}
-	return false, nil
+	return false, false, nil
 }
 
 /*

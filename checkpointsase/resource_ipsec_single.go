@@ -391,10 +391,11 @@ func resourceIpsecSingleRead(ctx context.Context, d *schema.ResourceData, m inte
 	// record behind -- an orphan that blocks later HA operations on the network
 	// and cannot be deleted through the API. Refuse to adopt one instead.
 	//
-	// A failed check is ignored here and refuses in Delete: a read that cannot
-	// reach the network endpoint should not break every refresh, and Delete is
-	// where the damage would actually be done.
-	if isHA, haErr := isTunnelHAMember(ctx, client, networkId, tunnelId); haErr == nil && isHA {
+	// Only a confirmed HA member refuses here. An error, or a tunnel the network
+	// read does not list, is left alone: a read that cannot reach the network
+	// endpoint should not break every refresh, and Delete is where the damage
+	// would actually be done, so that is where the check fails closed.
+	if isHA, found, haErr := isTunnelHAMember(ctx, client, networkId, tunnelId); haErr == nil && found && isHA {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Refusing to manage an HA tunnel as ipsec-single",
 			fmt.Errorf("tunnel %s on network %s is one half of an HA pair; manage the pair with checkpointsase_ipsec_redundant instead", tunnelId, networkId))
@@ -601,15 +602,24 @@ func resourceIpsecSingleDelete(ctx context.Context, d *schema.ResourceData, m in
 	// existed can still hold an HA member, and this is the call that would
 	// strand the pair record.
 	//
-	// This check fails closed, unlike the one in Read. If it cannot be answered
-	// the delete does not proceed, because the two outcomes are not equally bad:
-	// refusing costs a retry, while deleting an HA member leaves a pair record
-	// that no API call can remove and that blocks every later HA operation on
-	// the network.
-	isHA, err := isTunnelHAMember(ctx, client, networkId, tunnelId)
+	// This check fails closed, unlike the one in Read: the delete proceeds only
+	// when the network read listed this tunnel AND said it is not an HA member.
+	// An error, or a response that does not mention the tunnel, both refuse.
+	//
+	// The outcomes are not equally bad. Refusing costs a retry, and for a tunnel
+	// that really is gone the delete below would answer 404 and fail anyway, so
+	// refusing loses nothing. Proceeding on an unconfirmed answer can delete an
+	// HA member, which leaves a pair record that no API call can remove and that
+	// blocks every later HA operation on the network.
+	isHA, found, err := isTunnelHAMember(ctx, client, networkId, tunnelId)
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to check whether the tunnel is an HA member before deleting it", err)
+	}
+	if !found {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Refusing to delete a tunnel the network does not list",
+			fmt.Errorf("tunnel %s is not listed on network %s, so it cannot be confirmed as a non-HA tunnel. If it was already removed out of band, drop it from state with `terraform state rm` instead", tunnelId, networkId))
 	}
 	if isHA {
 		d.Partial(true)

@@ -33,8 +33,12 @@ func resourceIpsecRedundant() *schema.Resource {
 			"to each member tunnel's own id. It is taken instead from the asynchronous " +
 			"create status (`result.resource`), which is why Create must harvest it " +
 			"rather than search for the pair by name. " +
-			"`region_id`, `network_id` and `tunnel_name` are `ForceNew`; everything else " +
-			"is updated in place through `PUT`.",
+			"`region_id`, `network_id` and `tunnel_name` are `ForceNew`. The `tunnel1`, " +
+			"`tunnel2`, `shared_settings` and `advanced_settings` blocks are updated in " +
+			"place through `PUT`, with two exceptions inside them: " +
+			"`shared_settings.peak_bandwidth` is deprecated and is sent to no v3 endpoint, " +
+			"so changing it does not affect the tunnels, and `last_updated` is a local " +
+			"timestamp this provider writes after a successful update.",
 		CreateContext: resourceIpsecRedundantCreate,
 		ReadContext:   resourceIpsecRedundantRead,
 		UpdateContext: resourceIpsecRedundantUpdate,
@@ -265,10 +269,12 @@ func resourceIpsecRedundant() *schema.Resource {
 							ValidateFunc: validateRemoteID,
 						},
 						"tunnel_id": {
-							Type:        schema.TypeString,
-							Optional:    true,
-							Computed:    true,
-							Description: "The server-assigned tunnel ID. Computed.",
+							Type:     schema.TypeString,
+							Computed: true,
+							// Computed-only on purpose. Update addresses each member
+							// by this id, so a config-supplied value would point the
+							// PUT at an arbitrary or stale member.
+							Description: "The server-assigned member tunnel ID, populated on read.",
 						},
 						"p81_gwinternal_ip": {
 							Type:        schema.TypeString,
@@ -309,10 +315,12 @@ func resourceIpsecRedundant() *schema.Resource {
 							),
 						},
 						"tunnel_id": {
-							Type:        schema.TypeString,
-							Optional:    true,
-							Computed:    true,
-							Description: "The server-assigned tunnel ID. Computed.",
+							Type:     schema.TypeString,
+							Computed: true,
+							// Computed-only on purpose. Update addresses each member
+							// by this id, so a config-supplied value would point the
+							// PUT at an arbitrary or stale member.
+							Description: "The server-assigned member tunnel ID, populated on read.",
 						},
 						"gateway_id": {
 							Type:        schema.TypeString,
