@@ -386,6 +386,20 @@ func resourceIpsecSingleRead(ctx context.Context, d *schema.ResourceData, m inte
 		tunnelId = ids[1]
 	}
 
+	// The single-tunnel endpoints resolve a member of an HA pair happily, and
+	// deleting one through them removes that member while leaving the pair
+	// record behind -- an orphan that blocks later HA operations on the network
+	// and cannot be deleted through the API. Refuse to adopt one instead.
+	//
+	// A failed check is ignored here and refuses in Delete: a read that cannot
+	// reach the network endpoint should not break every refresh, and Delete is
+	// where the damage would actually be done.
+	if isHA, haErr := isTunnelHAMember(ctx, client, networkId, tunnelId); haErr == nil && isHA {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Refusing to manage an HA tunnel as ipsec-single",
+			fmt.Errorf("tunnel %s on network %s is one half of an HA pair; manage the pair with checkpointsase_ipsec_redundant instead", tunnelId, networkId))
+	}
+
 	// get the ipsec-single tunnel and check for errors
 	tunnel, _, err := client.StandardTunnelsAPI.StandardGetIPSecSingleTunnel(ctx, networkId, tunnelId).Execute()
 	if err != nil {
@@ -582,6 +596,26 @@ func resourceIpsecSingleDelete(ctx context.Context, d *schema.ResourceData, m in
 	// get the ipsec-single tunnel id and the network id from the terraform resource data
 	tunnelId := d.Id()
 	networkId := d.Get("network_id").(string)
+
+	// Guarded here as well as in Read: state written before the Read guard
+	// existed can still hold an HA member, and this is the call that would
+	// strand the pair record.
+	//
+	// This check fails closed, unlike the one in Read. If it cannot be answered
+	// the delete does not proceed, because the two outcomes are not equally bad:
+	// refusing costs a retry, while deleting an HA member leaves a pair record
+	// that no API call can remove and that blocks every later HA operation on
+	// the network.
+	isHA, err := isTunnelHAMember(ctx, client, networkId, tunnelId)
+	if err != nil {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to check whether the tunnel is an HA member before deleting it", err)
+	}
+	if isHA {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Refusing to delete an HA tunnel through the ipsec-single endpoint",
+			fmt.Errorf("tunnel %s on network %s is one half of an HA pair; deleting it this way leaves a pair record that cannot be removed through the API. Destroy the pair with checkpointsase_ipsec_redundant instead", tunnelId, networkId))
+	}
 
 	// delete the ipsec-single tunnel and check for errors
 	status, _, err := client.StandardTunnelsAPI.StandardDeleteIPSecSingleTunnel(ctx, networkId, tunnelId).Execute()

@@ -3,33 +3,21 @@ package checkpointsase
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
 
 func TestAccIpsecRedundant_basic(t *testing.T) {
 	t.Parallel()
-	// BLOCKED ON THE API, not on this test. checkpointsase_ipsec_redundant now
-	// refuses every configuration at plan time, so this can never pass: the read,
-	// update and delete routes are all addressed by an haTunnelId that the API
-	// returns from no endpoint (API-FINDINGS.md 1.39, measured on a live pair).
-	//
-	// It is skipped rather than deleted so it is ready the day the API exposes
-	// haTunnelID -- the config below is known-good and did create a real pair.
-	// Deleting it would mean rebuilding a fixture that costs two gateways and
-	// ~26 minutes.
-	//
-	// Skipping rather than leaving it red is deliberate: a permanently failing
-	// test trains people to ignore a red suite, and this project already lost a
-	// whole phase's acceptance coverage to evidence that looked present and was
-	// measuring something else.
-	t.Skip("BLOCKED: the API returns no haTunnelId, so the resource refuses at " +
-		"plan time (API-FINDINGS.md 1.39). Unskip when haTunnelID is exposed.")
+	// This fixture costs two gateways in one region and takes ~26 minutes. It was
+	// skipped while Create stored a member id instead of the pair id, which made
+	// the post-create read 404; Create now takes the pair id from the async
+	// status, so it runs again.
 	var tunnel perimeter81Sdk.IPSecRedundantTunnels
 	resource.Test(t, resource.TestCase{
 		PreCheck:  func() { testAccPreCheck(t); testAccPreCheckRegion(t) },
@@ -245,33 +233,64 @@ resource "checkpointsase_ipsec_redundant" "ipsr1" {
 }
 
 /*
-TestIpsecRedundantRefusesEveryConfiguration is the gate on the plan-time refusal.
+TestIpsecRedundantIsManageable pins the shape that makes this resource work.
 
-It matters more than an ordinary schema test because of what the refusal
-PREVENTS. Creating a redundant pair SUCCEEDS against the API -- two real tunnels
-on two real gateways -- and the failure lands on the read immediately after. So
-without this refusal an apply leaves infrastructure the provider can neither
-manage nor destroy, and the operator has to remove it by hand.
+It replaces a test that asserted the opposite. The resource used to refuse every
+configuration in CustomizeDiff, because Create guessed the pair id by searching
+network-find and could only ever find a MEMBER id, which every later read,
+update and delete then 404'd on. Create now takes the pair id from the async
+create status instead, so the refusal is gone on purpose -- if it comes back,
+this test says so rather than silently passing.
 
-If someone deletes the CustomizeDiff registration to "unblock" the resource, this
-test is what tells them what they have re-enabled.
+The ForceNew assertions are the other half. helper/schema propagates a list's
+ForceNew only for `Elem: *Schema`, never for `Elem: *Resource`, so a nested edit
+inside these four blocks has always planned an in-place update. Marking the
+blocks ForceNew therefore never prevented anything; it only made the plan lie.
+Update is wired to PUT now, so they are deliberately not ForceNew.
 */
-func TestIpsecRedundantRefusesEveryConfiguration(t *testing.T) {
+func TestIpsecRedundantIsManageable(t *testing.T) {
 	r := resourceIpsecRedundant()
 
-	if r.CustomizeDiff == nil {
-		t.Fatal("CustomizeDiff is not registered: the resource would create real " +
-			"tunnels it cannot then read, update or delete (API-FINDINGS.md 1.39)")
+	if r.CustomizeDiff != nil {
+		t.Error("CustomizeDiff is registered again; the plan-time refusal was removed " +
+			"because the pair id is available from the create status")
+	}
+	if r.UpdateContext == nil {
+		t.Error("UpdateContext is not registered, so nested edits cannot be applied")
 	}
 
-	err := r.CustomizeDiff(context.Background(), nil, nil)
-	if err == nil {
-		t.Fatal("CustomizeDiff accepted a configuration; it must refuse every one")
+	for _, name := range []string{"region_id", "network_id", "tunnel_name"} {
+		if s := r.Schema[name]; s == nil {
+			t.Errorf("%s is missing from the schema", name)
+		} else if !s.ForceNew {
+			t.Errorf("%s must stay ForceNew: the pair cannot be moved between "+
+				"networks, regions or names in place", name)
+		}
 	}
-	for _, want := range []string{"haTunnelId", "1.39", "ipsec_single"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal does not mention %q, so it does not tell the "+
-				"operator why or what to do instead:\n%s", want, err.Error())
+
+	for _, name := range []string{"tunnel1", "tunnel2", "shared_settings", "advanced_settings"} {
+		if s := r.Schema[name]; s == nil {
+			t.Errorf("%s is missing from the schema", name)
+		} else if s.ForceNew {
+			t.Errorf("%s must not be ForceNew: the SDK never propagated it into the "+
+				"element schema, so it only made the plan disagree with the apply", name)
+		}
+	}
+
+	// Update sends each member's own id, and it exists nowhere in the config --
+	// Read is what puts it into state.
+	for _, name := range []string{"tunnel1", "tunnel2"} {
+		elem, ok := r.Schema[name].Elem.(*schema.Resource)
+		if !ok {
+			t.Fatalf("%s.Elem is not a *schema.Resource", name)
+		}
+		tunnelId := elem.Schema["tunnel_id"]
+		if tunnelId == nil {
+			t.Errorf("%s.tunnel_id is missing; Update cannot address the member without it", name)
+			continue
+		}
+		if !tunnelId.Computed {
+			t.Errorf("%s.tunnel_id must be Computed: the server assigns it and Update reads it back from state", name)
 		}
 	}
 }

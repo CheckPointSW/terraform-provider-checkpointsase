@@ -2,10 +2,10 @@ package checkpointsase
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
@@ -19,94 +19,22 @@ resourceIpsecRedundant Setup the IpSec-Redundant Resource CRUD operations
 
 @return &schema.Resource
 */
-/*
-ipsecRedundantCannotBeManaged is the whole explanation, not "invalid value",
-because nothing the user wrote is wrong. The API cannot return the identifier
-this resource needs, so no configuration can succeed.
-
-MEASURED 2026-08-27 on a live HA pair (API-FINDINGS.md 1.39). The read, update
-and delete routes all live at
-/v3/networks/standard/{networkId}/tunnels/ipsec/redundant/{haTunnelId}, and
-haTunnelID is returned by NO endpoint on this API: not the network detail, not
-the network list, not the gateway or region reads, not the single-tunnel read,
-and there is no redundant collection route to list it from. The redundant GET
-was tested with BOTH member ids and answered 404 to each.
-
-WHY THIS REFUSES RATHER THAN LETTING THE APPLY RUN. Create SUCCEEDS -- the
-tunnels are really built -- and the failure lands on the read immediately after.
-So every attempt left a live HA pair the provider could not read, update or
-delete, on two gateways that had to be removed by hand. Refusing at plan time is
-the difference between a clear message and orphaned infrastructure.
-
-This mirrors the same class of reason (1.1) that closed checkpointsase_enhanced_route_table.
-One difference is worth knowing: there, create FAILS, so refusing early only
-improves the message. Here create WORKS, so refusing early prevents real damage.
-
-Delete this function and the CustomizeDiff registration when the API returns
-haTunnelID -- one field on the network-find tunnel objects would restore read,
-update and delete together.
-*/
-const ipsecRedundantCannotBeManaged = `checkpointsase_ipsec_redundant cannot be managed on the v3 API.
-
-The read, update and delete endpoints are all addressed by an "haTunnelId" -- the
-identifier of the HA PAIR -- and the API returns that value from no endpoint. It
-is absent from the network read, the network list, the gateway and region reads,
-and the single-tunnel read, and there is no collection route that lists it. The
-pair endpoint was tested with each member tunnel's own id and returned 404 for
-both.
-
-This is refused at plan time on purpose. Creating the pair SUCCEEDS, so without
-this refusal an apply builds two real tunnels and then fails on the read that
-follows, leaving infrastructure this provider can neither manage nor destroy.
-
-Until the API exposes haTunnelID, use the Harmony SASE console for redundant
-IPsec tunnels. checkpointsase_ipsec_single is unaffected and works normally.
-
-Measured and recorded in API-FINDINGS.md section 1.39.`
-
-/*
-resourceIpsecRedundantCustomizeDiff refuses every configuration.
-
-See ipsecRedundantCannotBeManaged for why. Destroy plans do not reach
-CustomizeDiff in SDKv2, which is deliberate: anyone already holding a pair in
-state can still remove it from state.
-*/
-func resourceIpsecRedundantCustomizeDiff(_ context.Context, _ *schema.ResourceDiff, _ interface{}) error {
-	return errors.New(ipsecRedundantCannotBeManaged)
-}
-
 func resourceIpsecRedundant() *schema.Resource {
 	return &schema.Resource{
-		CustomizeDiff: resourceIpsecRedundantCustomizeDiff,
-		Description: "**UNAVAILABLE ON THE v3 API — every configuration is refused at " +
-			"plan time.** The read, update and delete endpoints are all addressed by an " +
-			"`haTunnelId` (the id of the HA *pair*), and the API returns that value from " +
-			"no endpoint: not the network read or list, not the gateway or region reads, " +
-			"not the single-tunnel read, and there is no collection route that lists it. " +
-			"The pair endpoint answers 404 to each member tunnel's own id. Creating the " +
-			"pair *succeeds*, so this resource refuses at plan time rather than building " +
-			"two real tunnels it could neither manage nor destroy. Use the Harmony SASE " +
-			"console until the API exposes `haTunnelID`; `checkpointsase_ipsec_single` is " +
-			"unaffected. Measured in API-FINDINGS.md §1.39. " +
-			"Manages an active/standby IPsec redundant tunnel pair for a " +
+		Description: "Manages an active/standby IPsec redundant tunnel pair for a " +
 			"`checkpointsase_network`. Two tunnels (`tunnel1` + `tunnel2`) terminate at " +
 			"distinct remote endpoints for failover; `shared_settings` (gateway subnets) " +
 			"and `advanced_settings` (IKE/IPSec parameters, phase1/phase2 proposals) " +
 			"apply to both tunnels uniformly. " +
-			"**This resource has no in-place update path.** `region_id`, `network_id` and " +
-			"`tunnel_name` are `ForceNew`, so changing one of those plans a full " +
-			"replacement (destroy + recreate). **Changing anything else fails the apply " +
-			"instead**, with `ipsec-redundant tunnel update is not available yet` — this " +
-			"resource's Update handler makes no API call at all. That covers " +
-			"`last_updated` and, more importantly, every field nested inside " +
-			"`tunnel1`, `tunnel2`, `shared_settings` and `advanced_settings`: those four " +
-			"blocks are marked `ForceNew`, but the SDK does not propagate `ForceNew` from " +
-			"a list into the schema of its element object, so editing a passphrase or an " +
-			"IKE lifetime produces an in-place plan that then errors. **To change any of " +
-			"them, taint or replace the resource explicitly** (`terraform apply " +
-			"-replace=...`). A `PUT` for this tunnel type does exist in the API and is " +
-			"simply not wired up here. Updating in place will be supported in a future " +
-			"version.",
+			"The resource id is the HA *pair* id (`haTunnelId`), which read, update and " +
+			"delete are all addressed by. It is not returned by the network read, the " +
+			"network list, the gateway or region reads, or the single-tunnel read, and " +
+			"there is no collection route that lists it — the pair endpoint answers 404 " +
+			"to each member tunnel's own id. It is taken instead from the asynchronous " +
+			"create status (`result.resource`), which is why Create must harvest it " +
+			"rather than search for the pair by name. " +
+			"`region_id`, `network_id` and `tunnel_name` are `ForceNew`; everything else " +
+			"is updated in place through `PUT`.",
 		CreateContext: resourceIpsecRedundantCreate,
 		ReadContext:   resourceIpsecRedundantRead,
 		UpdateContext: resourceIpsecRedundantUpdate,
@@ -143,7 +71,6 @@ func resourceIpsecRedundant() *schema.Resource {
 			"advanced_settings": {
 				Type:        schema.TypeList,
 				Required:    true,
-				ForceNew:    true,
 				Description: "IKE/IPSec parameters and phase1/phase2 proposals shared by both tunnels.",
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
@@ -256,7 +183,6 @@ func resourceIpsecRedundant() *schema.Resource {
 			"shared_settings": {
 				Type:        schema.TypeList,
 				Required:    true,
-				ForceNew:    true,
 				Description: "Subnet routing settings shared by both tunnels.",
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
@@ -313,7 +239,6 @@ func resourceIpsecRedundant() *schema.Resource {
 			"tunnel1": {
 				Type:        schema.TypeList,
 				Required:    true,
-				ForceNew:    true,
 				Description: "Primary tunnel endpoint configuration.",
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
@@ -370,7 +295,6 @@ func resourceIpsecRedundant() *schema.Resource {
 			"tunnel2": {
 				Type:        schema.TypeList,
 				Required:    true,
-				ForceNew:    true,
 				Description: "Standby tunnel endpoint configuration. Same shape as `tunnel1`.",
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
@@ -579,26 +503,24 @@ func resourceIpsecRedundantCreate(ctx context.Context, d *schema.ResourceData, m
 		return appendErrorDiags(diags, "Unable to create ipsec-redundant tunnel", err)
 	}
 
-	// get the status id of the ipsec-redundant tunnel creation
-	var ipSecRedundantTunnelId string
 	statusId := getIdFromUrl(status.GetStatusUrl())
 
-	// check the status of the network that contains the ipsec-redundant tunnel and check for errors
-	if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+	// The pair id lives only in the async status's result.resource. There is no
+	// searching for it afterwards: the pair route 404s for either member's own id,
+	// and no read endpoint returns haTunnelID, so an id guessed from network-find
+	// would be a member id and every later read, update and delete would 404.
+	resource, err := pollStandardNetworkStatusForResource(ctx, client, statusId, standardTunnelPollInterval)
+	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to create ipsec-redundant tunnel", err)
 	}
-	// get the ipsec-redundant tunnel id
-	baseTunnelBody := perimeter81Sdk.BaseTunnelValues{
-		RegionID:   regionId,
-		GatewayID:  gatewayId1,
-		TunnelName: tunnelName,
+	haTunnelId := getIdFromUrl(resource)
+	if haTunnelId == "" {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to extract ipsec-redundant pair id post-Create",
+			fmt.Errorf("async status completed but result.resource was empty; the pair exists on network %s under tunnel_name=%s and must be removed by hand", networkId, tunnelName))
 	}
-	ipSecRedundantTunnelId, diags = getRedundantTunnelId(ctx, networkId, baseTunnelBody, *client, diags)
-	if ipSecRedundantTunnelId == "" {
-		return diags
-	}
-	d.SetId(ipSecRedundantTunnelId)
+	d.SetId(haTunnelId)
 
 	return resourceIpsecRedundantRead(ctx, d, m)
 }
@@ -687,19 +609,104 @@ resourceIpsecRedundantUpdate Update a Ipsec Redundant Tunnel
 */
 func resourceIpsecRedundantUpdate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
-	// THIS IS REACHABLE. An earlier reading called it dead code on the grounds
-	// that every top-level attribute is ForceNew, and that reading was wrong
-	// twice over. `last_updated` is Optional+Computed and NOT ForceNew; and
-	// helper/schema's diffList propagates the parent's ForceNew only for
-	// `Elem: *Schema` and for the synthetic `<key>.#` count -- for
-	// `Elem: *Resource` it diffs each nested field against that field's OWN
-	// schema, none of which sets ForceNew. Measured against
-	// terraform-plugin-sdk/v2 v2.26.1 on 2026-08-26: changing
-	// tunnel1.0.passphrase on a ForceNew TypeList yields RequiresNew=false, so
-	// Terraform plans an update and lands here. The summary said "Unable to
-	// delete" until then -- a copy-paste from Delete that told an operator
-	// changing a passphrase that the provider could not destroy their tunnel.
-	return appendErrorDiags(diags, "Unable to update ipsec-redundant tunnel", fmt.Errorf("ipsec-redundant tunnel update is not available yet"))
+	client := m.(*perimeter81Sdk.APIClient)
+
+	if d.HasChanges("tunnel1", "tunnel2", "shared_settings", "advanced_settings") {
+		haTunnelId := d.Id()
+		networkId := d.Get("network_id").(string)
+
+		tunnel1Data := d.Get("tunnel1").([]interface{})[0].(map[string]interface{})
+		tunnel2Data := d.Get("tunnel2").([]interface{})[0].(map[string]interface{})
+		// The update payload needs each member's own id alongside the pair id.
+		// It is never in the config: Read persists it from the pair read into the
+		// Computed tunnelN.tunnel_id, so an update before a successful read has
+		// nothing to send.
+		tunnel1, err := expandRedundantTunnelUpdate(tunnel1Data)
+		if err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to update ipsec-redundant tunnel", fmt.Errorf("tunnel1: %w", err))
+		}
+		tunnel2, err := expandRedundantTunnelUpdate(tunnel2Data)
+		if err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to update ipsec-redundant tunnel", fmt.Errorf("tunnel2: %w", err))
+		}
+
+		sharedSettingsData := d.Get("shared_settings").([]interface{})[0].(map[string]interface{})
+		advancedSettingsData := d.Get("advanced_settings").([]interface{})[0].(map[string]interface{})
+		phase1Data := advancedSettingsData["phase1"].([]interface{})[0].(map[string]interface{})
+		phase2Data := advancedSettingsData["phase2"].([]interface{})[0].(map[string]interface{})
+
+		ipSecRedundantBody := perimeter81Sdk.UpdateIPSecRedundantPayload{
+			Tunnel1: tunnel1,
+			Tunnel2: tunnel2,
+			SharedSettings: perimeter81Sdk.IPSecSharedSettings{
+				// peak_bandwidth is not sent: v3 removed the field from every
+				// IPSecSharedSettings-family type, update included.
+				P81GatewaySubnets:    flattenStringsArrayData(sharedSettingsData["p81_gateway_subnets"].([]interface{})),
+				RemoteGatewaySubnets: flattenStringsArrayData(sharedSettingsData["remote_gateway_subnets"].([]interface{})),
+			},
+			AdvancedSettings: perimeter81Sdk.IPSecAdvancedSettings{
+				KeyExchange: advancedSettingsData["key_exchange"].(string),
+				IkeLifeTime: advancedSettingsData["ike_life_time"].(string),
+				Lifetime:    advancedSettingsData["lifetime"].(string),
+				DpdTimeout:  advancedSettingsData["dpd_timeout"].(string),
+				DpdDelay:    advancedSettingsData["dpd_delay"].(string),
+				Phase1: perimeter81Sdk.IPSecPhaseConfig{
+					Auth:       flattenStringsArrayData(phase1Data["auth"].([]interface{})),
+					Encryption: flattenStringsArrayData(phase1Data["encryption"].([]interface{})),
+					Dh:         flattenIntsArrayData(phase1Data["dh"].([]interface{})),
+				},
+				Phase2: perimeter81Sdk.IPSecPhaseConfig{
+					Auth:       flattenStringsArrayData(phase2Data["auth"].([]interface{})),
+					Encryption: flattenStringsArrayData(phase2Data["encryption"].([]interface{})),
+					Dh:         flattenIntsArrayData(phase2Data["dh"].([]interface{})),
+				},
+			},
+		}
+
+		status, _, err := client.StandardTunnelsAPI.StandardUpdateIPSecRedundantTunnel(ctx, networkId, haTunnelId).UpdateIPSecRedundantPayload(ipSecRedundantBody).Execute()
+		if err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to update ipsec-redundant tunnel", err)
+		}
+
+		statusId := getIdFromUrl(status.GetStatusUrl())
+		if err := pollStandardNetworkStatus(ctx, client, statusId, standardTunnelPollInterval); err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to update ipsec-redundant tunnel", err)
+		}
+		if err := d.Set("last_updated", time.Now().Format(time.RFC850)); err != nil {
+			d.Partial(true)
+			return appendErrorDiags(diags, "Unable to set last_updated", err)
+		}
+	}
+
+	return resourceIpsecRedundantRead(ctx, d, m)
+}
+
+/*
+expandRedundantTunnelUpdate builds one member's update payload from its state.
+
+The read returns the member id as "tunnelID" and the update sends it as
+"tunnelId"; the two tags differ by one character, so they are easy to cross.
+*/
+func expandRedundantTunnelUpdate(tunnelData map[string]interface{}) (*perimeter81Sdk.IPSecRedundantTunnelUpdatePayload, error) {
+	tunnelId := tunnelData["tunnel_id"].(string)
+	if tunnelId == "" {
+		return nil, fmt.Errorf("tunnel_id is empty in state, so the member this update addresses is unknown; refresh the resource before changing it")
+	}
+	remoteId := tunnelData["remote_id"].(string)
+	return &perimeter81Sdk.IPSecRedundantTunnelUpdatePayload{
+		TunnelId:           tunnelId,
+		Passphrase:         tunnelData["passphrase"].(string),
+		GatewayID:          tunnelData["gateway_id"].(string),
+		P81GWInternalIP:    tunnelData["p81_gwinternal_ip"].(string),
+		RemoteGWInternalIP: tunnelData["remote_gwinternal_ip"].(string),
+		RemotePublicIP:     tunnelData["remote_public_ip"].(string),
+		RemoteASN:          parseASNString(tunnelData["remote_asn"].(string)),
+		RemoteID:           perimeter81Sdk.StringAsRemoteID(&remoteId),
+	}, nil
 }
 
 /*

@@ -1083,6 +1083,108 @@ func TestPayloadMarshalIPSecRedundantCreate(t *testing.T) {
 }
 
 /*
+TestPayloadMarshalIPSecRedundantUpdate is the golden body for the redundant-pair PUT.
+
+It exists for one field. The update payload carries each member's own id as
+"tunnelId", while the read that supplies that id returns it as "tunnelID" --
+one character apart, in opposite directions, and a Go struct tag typo would send
+the whole request with the member unidentified rather than fail to compile. The
+key name below is the assertion.
+
+The other asymmetry worth pinning: the update wrapper takes IPSecSharedSettings
+where create takes IPSecSharedSettingsCreate, and tunnel1/tunnel2 are optional
+pointers here where create takes values.
+*/
+func TestPayloadMarshalIPSecRedundantUpdate(t *testing.T) {
+	remoteID1 := "203.0.113.50"
+	remoteID2 := "203.0.113.60"
+
+	payload := perimeter81Sdk.UpdateIPSecRedundantPayload{
+		Tunnel1: &perimeter81Sdk.IPSecRedundantTunnelUpdatePayload{
+			TunnelId:           "fake-member-1",
+			Passphrase:         "fake-passphrase-t1",
+			GatewayID:          "fake-gateway-2",
+			P81GWInternalIP:    "10.8.0.1",
+			RemoteGWInternalIP: "10.8.0.2",
+			RemotePublicIP:     "203.0.113.50",
+			RemoteASN:          65030,
+			RemoteID:           perimeter81Sdk.StringAsRemoteID(&remoteID1),
+		},
+		Tunnel2: &perimeter81Sdk.IPSecRedundantTunnelUpdatePayload{
+			TunnelId:           "fake-member-2",
+			Passphrase:         "fake-passphrase-t2",
+			GatewayID:          "fake-gateway-3",
+			P81GWInternalIP:    "10.9.0.1",
+			RemoteGWInternalIP: "10.9.0.2",
+			RemotePublicIP:     "203.0.113.60",
+			RemoteASN:          65040,
+			RemoteID:           perimeter81Sdk.StringAsRemoteID(&remoteID2),
+		},
+		SharedSettings: perimeter81Sdk.IPSecSharedSettings{
+			// No bandwidth field on update either; v3 removed it from the whole
+			// IPSecSharedSettings family.
+			P81GatewaySubnets:    []string{"10.10.0.0/24"},
+			RemoteGatewaySubnets: []string{"10.11.0.0/24"},
+		},
+		AdvancedSettings: perimeter81Sdk.IPSecAdvancedSettings{
+			KeyExchange: "ikev2",
+			IkeLifeTime: "28800s",
+			Lifetime:    "3600s",
+			DpdTimeout:  "30s",
+			DpdDelay:    "30s",
+			Phase1: perimeter81Sdk.IPSecPhaseConfig{
+				Auth:       []string{"sha256"},
+				Encryption: []string{"aes-cbc-256"},
+				Dh:         []int32{14},
+			},
+			Phase2: perimeter81Sdk.IPSecPhaseConfig{
+				Auth:       []string{"sha256"},
+				Encryption: []string{"aes-cbc-256"},
+				Dh:         []int32{14},
+			},
+		},
+	}
+
+	want := `{
+		"tunnel1": {
+			"tunnelId": "fake-member-1",
+			"passphrase": "fake-passphrase-t1",
+			"p81GWInternalIP": "10.8.0.1",
+			"remoteGWInternalIP": "10.8.0.2",
+			"remotePublicIP": "203.0.113.50",
+			"remoteASN": 65030,
+			"remoteID": "203.0.113.50",
+			"gatewayID": "fake-gateway-2"
+		},
+		"tunnel2": {
+			"tunnelId": "fake-member-2",
+			"passphrase": "fake-passphrase-t2",
+			"p81GWInternalIP": "10.9.0.1",
+			"remoteGWInternalIP": "10.9.0.2",
+			"remotePublicIP": "203.0.113.60",
+			"remoteASN": 65040,
+			"remoteID": "203.0.113.60",
+			"gatewayID": "fake-gateway-3"
+		},
+		"sharedSettings": {
+			"p81GatewaySubnets": ["10.10.0.0/24"],
+			"remoteGatewaySubnets": ["10.11.0.0/24"]
+		},
+		"advancedSettings": {
+			"keyExchange": "ikev2",
+			"ikeLifeTime": "28800s",
+			"lifetime": "3600s",
+			"dpdDelay": "30s",
+			"dpdTimeout": "30s",
+			"phase1": {"auth": ["sha256"], "encryption": ["aes-cbc-256"], "dh": [14]},
+			"phase2": {"auth": ["sha256"], "encryption": ["aes-cbc-256"], "dh": [14]}
+		}
+	}`
+
+	assertMarshalsTo(t, payload, want)
+}
+
+/*
 TestPayloadMarshalApplicationCreate is the golden body for the application create request, and the
 regression test for the first live application create failure (2026-08-19):
 
