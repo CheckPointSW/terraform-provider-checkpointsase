@@ -186,3 +186,105 @@ resource "checkpointsase_openvpn" "ovpn2" {
   `
 	return fmt.Sprintf(config, randNameOpenVpn, testAccRegionID())
 }
+
+/*
+diffOpenvpnVersionBump runs the SDK's real diff machinery -- including
+CustomizeDiff -- over a `version` change on an already-created tunnel, the way
+`terraform plan` does for an update.
+
+Going through r.Diff rather than calling resourceOpenvpnCustomizeDiff directly is
+deliberate: it covers the WIRING (the function being registered on the resource at
+all) as well as the rule. A CustomizeDiff nobody calls is exactly the defect a
+direct call would miss.
+
+The prior state carries an ID because the rule is update-only -- on create every
+computed attribute is already unknown and d.Id() is empty.
+
+  - @param t *testing.T
+  - @param oldVersion, newVersion string - the version values either side of the plan
+
+@return *terraform.InstanceDiff - what `terraform plan` would produce
+*/
+func diffOpenvpnVersionBump(t *testing.T, oldVersion, newVersion string) *terraform.InstanceDiff {
+	t.Helper()
+
+	r := resourceOpenvpn()
+	prior := &terraform.InstanceState{
+		ID: "9E00LwOQVD",
+		Attributes: map[string]string{
+			"id":                "9E00LwOQVD",
+			"version":           oldVersion,
+			"network_id":        "SbrV9IZhgq",
+			"region_id":         "fksPscPIX2",
+			"gateway_id":        "enaLicxLwX",
+			"tunnel_name":       "qaovpnprobe",
+			"access_key_id":     "d5626591cf58aaaa",
+			"secret_access_key": "an-existing-32-character-secret!",
+		},
+	}
+	cfg := terraform.NewResourceConfigRaw(map[string]interface{}{
+		"version":     newVersion,
+		"network_id":  "SbrV9IZhgq",
+		"region_id":   "fksPscPIX2",
+		"gateway_id":  "enaLicxLwX",
+		"tunnel_name": "qaovpnprobe",
+	})
+
+	diff, err := r.Diff(context.Background(), prior, cfg, nil)
+	if err != nil {
+		t.Fatalf("diff failed: %v", err)
+	}
+	return diff
+}
+
+/*
+TestOpenvpnCustomizeDiffMarksSecretComputedOnVersionBump pins the plan-honesty
+rule behind P81-145415.
+
+A `version` bump rotates the tunnel's credentials server-side. Both credential
+attributes are Computed, so without the CustomizeDiff the plan shows only the
+version integer moving and says nothing about the live secret being replaced.
+That silence is what made the rotation look like a no-op.
+
+The negative half matters as much as the positive: `access_key_id` is verified NOT
+to rotate (the API returns a byte-identical 16-character id before and after), so
+marking it known-after-apply would promise a change that never arrives.
+*/
+func TestOpenvpnCustomizeDiffMarksSecretComputedOnVersionBump(t *testing.T) {
+	diff := diffOpenvpnVersionBump(t, "1", "2")
+
+	secret, ok := diff.Attributes["secret_access_key"]
+	if !ok {
+		t.Fatalf("secret_access_key absent from the diff; a rotation plan must surface it.\ndiff: %#v", diff.Attributes)
+	}
+	if !secret.NewComputed {
+		t.Errorf("secret_access_key is not NewComputed, so the plan would not show "+
+			"'(known after apply)' for a credential that is about to be replaced. got: %#v", secret)
+	}
+
+	if key, ok := diff.Attributes["access_key_id"]; ok && key.NewComputed {
+		t.Errorf("access_key_id was marked NewComputed, promising a rotation the server "+
+			"never performs -- it is a stable identifier. got: %#v", key)
+	}
+}
+
+/*
+TestOpenvpnCustomizeDiffLeavesSecretAloneWithoutAVersionChange is the other half of
+the rule: a plan that does not touch `version` is not a rotation, so the stored
+secret must not be advertised as changing.
+
+Without this, any unrelated plan would claim the credential is about to move, and
+since the API discloses the secret only once there would be no way for a user to
+tell a real rotation from noise.
+*/
+func TestOpenvpnCustomizeDiffLeavesSecretAloneWithoutAVersionChange(t *testing.T) {
+	diff := diffOpenvpnVersionBump(t, "2", "2")
+
+	if diff == nil {
+		return // no diff at all is the ideal outcome
+	}
+	if secret, ok := diff.Attributes["secret_access_key"]; ok && secret.NewComputed {
+		t.Errorf("secret_access_key marked NewComputed without a version change; "+
+			"an unrelated plan must not claim a credential rotation. got: %#v", secret)
+	}
+}

@@ -34,6 +34,7 @@ func resourceOpenvpn() *schema.Resource {
 		ReadContext:   resourceOpenvpnRead,
 		UpdateContext: resourceOpenvpnUpdate,
 		DeleteContext: resourceOpenvpnDelete,
+		CustomizeDiff: resourceOpenvpnCustomizeDiff,
 		Schema: map[string]*schema.Schema{
 			"last_updated": {
 				Type:        schema.TypeString,
@@ -111,6 +112,41 @@ func resourceOpenvpn() *schema.Resource {
 			Delete: schema.DefaultTimeout(asyncResourceTimeout),
 		},
 	}
+}
+
+/*
+resourceOpenvpnCustomizeDiff marks `secret_access_key` as known-after-apply whenever
+`version` changes.
+
+A `version` bump is a credential rotation. Verified against the live API: the update
+`PUT` returns a freshly minted 32-character `secretAccessKey`, while `accessKeyId` is a
+stable 16-character identifier that does NOT rotate -- it is byte-identical before and
+after, and a plain `GET` returns the secret as an empty string at all times.
+
+Both credential attributes are Computed, so without this the plan for a rotation shows
+only the version integer moving:
+
+	~ version = 1 -> 2
+
+and gives no sign that a live credential is about to be replaced. That silence is the
+core complaint in P81-145415. Marking the secret known-after-apply makes the plan say so:
+
+	~ secret_access_key = (sensitive value) -> (known after apply)
+
+Deliberately NOT applied to `access_key_id`: it provably does not rotate, so marking it
+would promise a change that never arrives.
+
+  - @param d *schema.ResourceDiff - the terraform resource diff
+
+@return error
+*/
+func resourceOpenvpnCustomizeDiff(_ context.Context, d *schema.ResourceDiff, _ interface{}) error {
+	// Only on update. A create has everything known-after-apply already, and
+	// d.Id() is empty there.
+	if d.Id() != "" && d.HasChange("version") {
+		return d.SetNewComputed("secret_access_key")
+	}
+	return nil
 }
 
 /*
