@@ -3,12 +3,17 @@ package checkpointsase
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
 
@@ -423,5 +428,94 @@ func testAccCheckApplicationGrantsTheDefaultGroup() resource.TestCheckFunc {
 				got, defaultID)
 		}
 		return nil
+	}
+}
+
+// TestApplicationDeleteWarnsAndMakesNoRequest pins the fix for P81-144746.
+//
+// Before it, resourceApplicationDelete was `d.SetId(""); return nil` — a
+// destroy that printed "Destroy complete!" for an application that is still on
+// the tenant. The customer reads that as "the application is gone". It is not,
+// and nothing in the run said otherwise.
+//
+// The Public API exposes no DELETE for applications and no key can ever reach
+// one: measured 2026-09-09 against production, `DELETE /v3/applications/{id}`
+// returns 403 at the gateway authorizer, and minting a key with
+// APPLICATION_DELETE is refused with 422 because the tenant's allowed-scope
+// list holds only APPLICATION_READ and APPLICATION_CREATE. So the provider is
+// right that it cannot delete. It was wrong to say it did.
+//
+// Three things are asserted, and the first is the load-bearing one:
+//
+//   - NO request is made. The warning is not a substitute for trying; there is
+//     nothing to try. If somebody later "fixes" this by calling an endpoint,
+//     this test fails rather than the customer discovering a 403 at destroy.
+//   - The id is cleared, so Terraform stops tracking a resource it was told to
+//     release. Dropping it from state is the agreed behaviour, not a bug.
+//   - Exactly one warning, naming the application by name AND id, and no error.
+//     The name and id are what an operator types into the Infinity Portal to
+//     finish the job by hand, so a warning that omits them is a warning that
+//     cannot be acted on. The severity is Warning rather than Error on purpose:
+//     erroring would break `terraform destroy` for every existing user to tell
+//     them something they can do nothing about from Terraform.
+func TestApplicationDeleteWarnsAndMakesNoRequest(t *testing.T) {
+	log := &requestLog{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.record(r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	const (
+		appName = "test-web"
+		appID   = "p78Wxyx57A"
+	)
+
+	d := schema.TestResourceDataRaw(t, resourceApplication().Schema, map[string]interface{}{
+		"name":    appName,
+		"type":    "https",
+		"network": "ueaPRfjsC5",
+		"host":    "10.99.0.20",
+		"port":    443,
+	})
+	d.SetId(appID)
+
+	diags := resourceApplicationDelete(context.Background(), d, newTestUserAPIClient(srv.URL))
+
+	if diags.HasError() {
+		t.Fatalf("destroy reported an error: %v. Destroy must still succeed — the customer "+
+			"cannot delete the application from Terraform no matter what they do, so failing "+
+			"their destroy tells them nothing actionable and strands the rest of the run.", diags)
+	}
+
+	if calls, _ := log.snapshot(); len(calls) != 0 {
+		t.Fatalf("destroy issued %d request(s), %v, and must issue NONE. The Public API has no "+
+			"DELETE for applications and no customer key can be granted one, so any request "+
+			"here can only return 403.", len(calls), calls)
+	}
+
+	if d.Id() != "" {
+		t.Errorf("the id is still %q after destroy; Terraform would keep tracking a resource "+
+			"it was told to release", d.Id())
+	}
+
+	var warnings []diag.Diagnostic
+	for _, dg := range diags {
+		if dg.Severity == diag.Warning {
+			warnings = append(warnings, dg)
+		}
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("got %d warning(s), want exactly 1. A silent destroy is the bug (P81-144746); "+
+			"diagnostics were %v", len(warnings), diags)
+	}
+
+	text := warnings[0].Summary + " " + warnings[0].Detail
+	for _, want := range []string{appName, appID} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the warning does not mention %q, so it does not tell the operator which "+
+				"application to delete by hand. Got: %s", want, text)
+		}
 	}
 }

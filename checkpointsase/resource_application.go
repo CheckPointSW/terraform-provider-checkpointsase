@@ -89,9 +89,9 @@ func resourceApplication() *schema.Resource {
 		Description: "Manages an Application in Check Point SASE. " +
 			"**All attributes are immutable**: any change to a field on this resource " +
 			"forces full replacement (destroy + re-create), not in-place update. " +
-			"**`terraform destroy` only removes the resource from state.** " +
-			"The Harmony SASE v2.3 API does not expose a delete endpoint for " +
-			"applications, so the application continues to exist on the server. " +
+			"**`terraform destroy` only removes the resource from state, and warns " +
+			"that it did so.** The Harmony SASE Public API exposes no delete endpoint " +
+			"for applications, so the application continues to exist on the server. " +
 			"Delete it manually via the Infinity Portal if needed.",
 		CreateContext: resourceApplicationCreate,
 		ReadContext:   resourceApplicationRead,
@@ -487,17 +487,84 @@ func resourceApplicationRead(ctx context.Context, d *schema.ResourceData, m inte
 }
 
 /*
-resourceApplicationDelete is a no-op since there is no delete endpoint in the v2.3 API.
-The resource is removed from state only.
-  - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
+resourceApplicationDelete removes the application from Terraform state and makes
+NO API call, because there is no call it could make.
+
+# Why no request
+
+The Public API exposes no DELETE for applications, and none can be authorised.
+Measured 2026-09-09 against a production tenant (P81-144746):
+
+	GET    /v3/applications/{id} -> 404  NETWORKAPPLICATION_NOT_FOUND
+	DELETE /v3/applications/{id} -> 403  explicit deny in an identity-based policy
+	PUT    /v3/applications/{id} -> 403  explicit deny in an identity-based policy
+
+GET reaches the service; DELETE and PUT are stopped at the gateway authorizer.
+Nor is this a key-scoping mistake that a better key would fix: minting a key with
+APPLICATION_DELETE or APPLICATION_UPDATE is refused with 422, and the tenant's
+own allowed-scope list contains only APPLICATION_READ and APPLICATION_CREATE. So
+a request from here could only ever return 403.
+
+# Why a warning rather than silence, which is the bug being fixed
+
+Until this warning existed the function was `d.SetId(""); return nil`, and a
+destroy therefore printed "Destroy complete!" for an application that is still on
+the tenant, still reachable by every user and group it grants. A customer reads
+that message as "the application is gone". The provider was right that it could
+not delete; it was wrong to report that it had. The warning is the whole fix.
+
+The name and the id are both in the message on purpose: they are what an operator
+types into the Infinity Portal to finish the job by hand, and a warning that
+cannot be acted on is barely better than the silence it replaced. Both are read
+before SetId clears the id.
+
+# Why a warning rather than an error
+
+Erroring would break `terraform destroy` for every existing configuration in
+order to report something the customer cannot do anything about from Terraform —
+no key can reach a delete, so there is no corrected run that would succeed. The
+agreed behaviour (P81-144746, 2026-09-14) is to inform and drop from state.
+
+The same reasoning rules out refusing at plan time, and the SDK rules it out
+twice over: a destroy plan returns from PlanResourceChange before any provider
+code runs (grpc_provider.go, `if proposedNewStateVal.IsNull()`), so CustomizeDiff
+is never reached on a destroy and there is no hook to warn from.
+
+# The replacement case, which this same message covers
+
+Every attribute on this resource is ForceNew, so any change plans a replacement
+whose destroy half is this function. The customer ends up holding the old
+application AND the new one, with no cleanup path, and repeated runs accumulate.
+Delete runs in both paths, so the message says so rather than leaving a
+replacement to look identical to a plain destroy.
+
+TestApplicationDeleteWarnsAndMakesNoRequest is the half of this that stays true
+when somebody edits the function.
+
+  - @param _ context.Context - unused; there is no request to make.
   - @param d *schema.ResourceData - the terraform resource data
-  - @param m interface{} - the terraform meta data that contains the client
+  - @param _ interface{} - unused; the client is never called.
 
 @return diag.Diagnostics
 */
-func resourceApplicationDelete(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
-	// No delete endpoint exists for applications in the v2.3 API.
-	// Remove from state only.
+func resourceApplicationDelete(_ context.Context, d *schema.ResourceData, _ interface{}) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	// Read both before SetId: the id is gone after it, and a warning naming
+	// neither the name nor the id cannot be acted on.
+	appName := d.Get("name").(string)
+	applicationId := d.Id()
+
+	diags = appendWarningDiags(diags,
+		fmt.Sprintf("Application %q was left on the tenant", appName),
+		fmt.Sprintf("Terraform has stopped tracking application %q (id %s) and made no API "+
+			"call. The Harmony SASE Public API exposes no DELETE for applications, so it is "+
+			"still on the tenant and still reachable by the users and groups it grants. "+
+			"Delete it manually in the Infinity Portal if you no longer want it.\n\n"+
+			"If this destroy was the first half of a replacement (every attribute on this "+
+			"resource is immutable, so any change forces one), you now have both the old "+
+			"application and its replacement.", appName, applicationId))
+
 	d.SetId("")
-	return nil
+	return diags
 }

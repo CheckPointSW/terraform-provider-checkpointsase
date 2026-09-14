@@ -3,12 +3,12 @@
 page_title: "checkpointsase_application Resource - checkpointsase"
 subcategory: ""
 description: |-
-  Manages an Application in Check Point SASE. All attributes are immutable: any change to a field on this resource forces full replacement (destroy + re-create), not in-place update. terraform destroy only removes the resource from state. The Harmony SASE v2.3 API does not expose a delete endpoint for applications, so the application continues to exist on the server. Delete it manually via the Infinity Portal if needed.
+  Manages an Application in Check Point SASE. All attributes are immutable: any change to a field on this resource forces full replacement (destroy + re-create), not in-place update. terraform destroy only removes the resource from state, and warns that it did so. The Harmony SASE Public API exposes no delete endpoint for applications, so the application continues to exist on the server. Delete it manually via the Infinity Portal if needed.
 ---
 
 # checkpointsase_application (Resource)
 
-Manages an Application in Check Point SASE. **All attributes are immutable**: any change to a field on this resource forces full replacement (destroy + re-create), not in-place update. **`terraform destroy` only removes the resource from state.** The Harmony SASE v2.3 API does not expose a delete endpoint for applications, so the application continues to exist on the server. Delete it manually via the Infinity Portal if needed.
+Manages an Application in Check Point SASE. **All attributes are immutable**: any change to a field on this resource forces full replacement (destroy + re-create), not in-place update. **`terraform destroy` only removes the resource from state, and warns that it did so.** The Harmony SASE Public API exposes no delete endpoint for applications, so the application continues to exist on the server. Delete it manually via the Infinity Portal if needed.
 
 ## Example Usage
 
