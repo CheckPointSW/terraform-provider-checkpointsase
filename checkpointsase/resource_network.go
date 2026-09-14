@@ -108,9 +108,9 @@ func resourceNetwork() *schema.Resource {
 							Description: "DNS suffix for the region (server-assigned).",
 						},
 						"idle": {
-							Type:        schema.TypeBool,
-							Optional:    true,
-							Default:     false,
+							Type:     schema.TypeBool,
+							Optional: true,
+							Default:  false,
 							Description: "Whether the region's gateways are idle (disabled for user traffic). Set to `false` to make the region active. " +
 								"Set at creation only: no read model returns it (same gap as `checkpointsase_gateway.idle`), and there is no update " +
 								"path for an existing region either — changing this on a region that already exists is a silent no-op. An " +

@@ -3,6 +3,7 @@ package checkpointsase
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -360,6 +361,44 @@ func resourceGatewayDelete(ctx context.Context, d *schema.ResourceData, m interf
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to delete gateway",
 			&asyncFailedError{StatusCode: int(result.GetStatusCode()), Reasons: result.GetReason()})
+	}
+
+	// A 2xx here means the removal was ACCEPTED, not that it happened. The
+	// backend carries it out afterwards, and returning at this point is
+	// exactly what P81-145437 measured: a destroy that exited 0 while the
+	// region still reported both gateways. Terraform had already dropped the
+	// resource from state by then, so nothing would ever reconcile the one
+	// left behind.
+	//
+	// There is no status URL to poll -- see the comment on the call above --
+	// so completion is observed the only way this endpoint allows: re-read
+	// the gateway by its own id until it is absent. resourceRegionDelete
+	// already does this for the sibling DeleteNetworkRegion endpoint, which
+	// answers with the same inline shape.
+	what := fmt.Sprintf("gateway %s to disappear from network %s", gatewayId, networkId)
+	pollErr := pollUntilConverged(ctx, func(ctx context.Context) (bool, *http.Response, error) {
+		instance, resp, err := client.StandardNetworksAPI.
+			StandardGetInstance(ctx, networkId, gatewayId).Execute()
+		if isNotFound(resp, err) {
+			return true, resp, nil
+		}
+		if err != nil {
+			return false, resp, err
+		}
+		// A 2xx whose body decodes to JSON null leaves the SDK returning a nil
+		// pointer with no error. resourceGatewayRead already reads that as
+		// absence, and the two must not disagree about whether the gateway is
+		// there.
+		return instance == nil, resp, nil
+	}, convergencePollInterval, convergenceTransientBudget, what)
+	if pollErr != nil {
+		// THE ID STAYS IN STATE. A wait that gave up means the gateway may
+		// still be on the tenant; clearing the id here would orphan it in
+		// precisely the way the un-waited delete did, and would do it while
+		// reporting success. Keeping the resource is what lets a re-run
+		// finish the job.
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to delete gateway", pollErr)
 	}
 
 	d.SetId("")
