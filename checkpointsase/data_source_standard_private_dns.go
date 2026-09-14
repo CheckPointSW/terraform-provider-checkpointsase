@@ -2,6 +2,7 @@ package checkpointsase
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
@@ -472,7 +473,7 @@ func dataSourceStandardNetworkPrivateDNSRead(ctx context.Context, d *schema.Reso
 	customDns, resp, err := getStandardNetworkPrivateDNS(ctx, client, networkId)
 	if err != nil {
 		return standardPrivateDNSReadError(diags, d,
-			"Unable to read standard network private DNS", resp, err)
+			fmt.Sprintf("Unable to read standard network private DNS for network_id %q", networkId), resp, err)
 	}
 
 	if diags := setStandardPrivateDNSState(diags, d, customDns,
