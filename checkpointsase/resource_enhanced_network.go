@@ -170,8 +170,8 @@ func resourceEnhancedNetworkImportState(ctx context.Context, d *schema.ResourceD
 			return nil, fmt.Errorf("could not import enhanced network: no Harmony SASE region found matching region name %q (network region id %s)", r.Name, r.Id)
 		}
 		entry := map[string]interface{}{
-			"id":                     r.Id,
-			"scale_units":            int(r.ScaleUnits),
+			"id":          r.Id,
+			"scale_units": int(r.ScaleUnits),
 			// Fall back to the schema default (true), not false: a config
 			// that omits `idle` relies on that default, and
 			// resourceEnhancedNetworkUpdate never reconciles an existing
