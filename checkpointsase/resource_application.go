@@ -533,10 +533,19 @@ is never reached on a destroy and there is no hook to warn from.
 # The replacement case, which this same message covers
 
 Every attribute on this resource is ForceNew, so any change plans a replacement
-whose destroy half is this function. The customer ends up holding the old
-application AND the new one, with no cleanup path, and repeated runs accumulate.
-Delete runs in both paths, so the message says so rather than leaving a
-replacement to look identical to a plain destroy.
+whose destroy half is this function. A replacement that completes leaves the
+customer holding the old application AND the new one, with no cleanup path, and
+repeated runs accumulate. Delete runs in both paths, so the message says so
+rather than leaving a replacement to look identical to a plain destroy.
+
+The wording is deliberately order-neutral and makes no claim that the
+replacement exists, because from in here neither is knowable. Under the default
+destroy-before-create the new application has not been created yet when this
+runs, and if its create then fails it never will; under
+`lifecycle { create_before_destroy = true }` it already exists. This function
+cannot tell those apart, nor whether a create still to come will succeed, so it
+states only what it knows: the application it is releasing is the old one, and
+that one is staying.
 
 TestApplicationDeleteWarnsAndMakesNoRequest is the half of this that stays true
 when somebody edits the function.
@@ -561,9 +570,11 @@ func resourceApplicationDelete(_ context.Context, d *schema.ResourceData, _ inte
 			"call. The Harmony SASE Public API exposes no DELETE for applications, so it is "+
 			"still on the tenant and still reachable by the users and groups it grants. "+
 			"Delete it manually in the Infinity Portal if you no longer want it.\n\n"+
-			"If this destroy was the first half of a replacement (every attribute on this "+
-			"resource is immutable, so any change forces one), you now have both the old "+
-			"application and its replacement.", appName, applicationId))
+			"If this destroy is part of a replacement (every attribute on this resource is "+
+			"immutable, so any change forces one), the application named above is the OLD "+
+			"one, and it stays on the tenant whether or not the replacement is created. A "+
+			"replacement that completes therefore leaves two applications behind.",
+			appName, applicationId))
 
 	d.SetId("")
 	return diags

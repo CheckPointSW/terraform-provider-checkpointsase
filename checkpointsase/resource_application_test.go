@@ -518,4 +518,22 @@ func TestApplicationDeleteWarnsAndMakesNoRequest(t *testing.T) {
 				"application to delete by hand. Got: %s", want, text)
 		}
 	}
+
+	// The replacement half of the message must not assert that the replacement
+	// exists (PR #18 review). Under the default destroy-before-create this
+	// function runs BEFORE the new application is created, and if that create
+	// then fails there will only ever be the old one; under
+	// create_before_destroy it already exists. Delete cannot tell those apart,
+	// so a present-tense "you now have both" is a claim the provider is not in
+	// a position to make. The conditional phrasing is the assertion.
+	if strings.Contains(text, "you now have both") {
+		t.Errorf("the warning asserts the replacement already exists. It may not: with the "+
+			"default destroy-before-create lifecycle the new application has not been created "+
+			"when this runs, and a failed create means it never will. Got: %s", text)
+	}
+	if !strings.Contains(text, "whether or not the replacement is created") {
+		t.Errorf("the warning does not state the order-neutral fact it can actually vouch for "+
+			"— that the OLD application stays regardless of what happens to the replacement. "+
+			"Got: %s", text)
+	}
 }
