@@ -80,8 +80,8 @@ func resourceRegionCreate(ctx context.Context, networkId string, oldRegions []St
 // regionDisplayNameByCpRegionId resolves a harmony-sase region id (as used in
 // CreateRegionInNetworkPayload) to the display name the standard-networks API
 // reports back on NetworkRegion.Name. There is no other link between the two:
-// setNetworkRegionInfos and importRegions rely on the same display-name match
-// to go the other direction.
+// cpRegionIdForRegionName relies on the same display-name match to go the
+// other direction.
 func regionDisplayNameByCpRegionId(ctx context.Context, client *perimeter81Sdk.APIClient, cpRegionId string) (string, error) {
 	regionsData, _, err := client.StandardRegionsAPI.StandardNetworksControllerV2GetRegions(ctx).Execute()
 	if err != nil {
