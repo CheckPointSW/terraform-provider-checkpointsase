@@ -3,6 +3,7 @@ terraform-provider-perimeter81
 terraform-provider-checkpoint-sase
 terraform-provider-checkpointsase
 bin
+dist
 
 # Created by https://www.toptal.com/developers/gitignore/api/go,terraform
 # Edit at https://www.toptal.com/developers/gitignore?templates=go,terraform
