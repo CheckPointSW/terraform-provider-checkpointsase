@@ -284,12 +284,11 @@ func resourceNetworkRead(ctx context.Context, d *schema.ResourceData, m interfac
 		return appendErrorDiags(diags, "Unable to get CpRegions", err)
 	}
 
-	// handle regions terraform import
-	regions := flattenRegionsData(d.Get("region").([]interface{}))
-	regions = importRegions(networkData, regionsData, regions)
-
-	// flatten the regions data and set the network region infos
-	setNetworkRegionInfos(regionsData, networkData, regions)
+	// Reconcile the footprint against what the tenant actually reports, rather
+	// than copying state forward: a region added or removed out of band has to
+	// reach the diff as drift (P81-145407).
+	regions := reconcileNetworkRegions(networkData, regionsData,
+		flattenRegionsData(d.Get("region").([]interface{})))
 	CreateNetworkPayload := perimeter81Sdk.CreateNetworkPayload{
 		Name:   networkData.Name,
 		Tags:   networkData.Tags,

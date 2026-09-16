@@ -1025,34 +1025,6 @@ func isTunnelHAMember(ctx context.Context, client *perimeter81Sdk.APIClient, net
 }
 
 /*
-setNetworkRegionInfos set the network region infos
-  - @param regionsData []perimeter81Sdk.Region - the regions data
-  - @param networkData *perimeter81Sdk.Network - the network data
-  - @param regions []StandardNetworkRegionConfig - the regions
-
-@return void
-*/
-func setNetworkRegionInfos(regionsData []perimeter81Sdk.Region, networkData *perimeter81Sdk.Network, regions []StandardNetworkRegionConfig) {
-	newRegionsData := make([]StandardNetworkRegionConfig, 0)
-	for _, networkRegions := range networkData.Regions {
-		for _, regionData := range regionsData {
-			if networkRegions.Name == regionData.GetDisplayName() {
-				newRegionsData = append(newRegionsData, StandardNetworkRegionConfig{RegionID: networkRegions.Id, CpRegionId: regionData.GetId(), Dns: networkRegions.Dns, Name: networkRegions.Name})
-			}
-		}
-	}
-	for index, regionData := range regions {
-		for _, networkRegions := range newRegionsData {
-			if regionData.CpRegionId == networkRegions.CpRegionId {
-				regions[index].RegionID = networkRegions.RegionID
-				regions[index].Dns = networkRegions.Dns
-				regions[index].Name = networkRegions.Name
-			}
-		}
-	}
-}
-
-/*
 appendErrorDiags append the error diagnostics
   - @param diags diag.Diagnostics - the diagnostics
   - @param summary string - the summary
@@ -1214,56 +1186,162 @@ func regionClonsInArray(regionId string, regions []StandardNetworkRegionConfig) 
 }
 
 /*
-importRegions import the manually added regions
-  - @param networkData *perimeter81Sdk.Network - the network data
-  - @param regionsData []perimeter81Sdk.Region - the regions date list
-  - @param regions []StandardNetworkRegionConfig - the regions inside the configuration file if exists
+reconcileNetworkRegions build the `region` list a standard network's Read should
+write to state: the footprint the API actually reports, ordered to match prior
+state.
 
-@return []StandardNetworkRegionConfig - the result
+WHY IT EXISTS (P81-145407). The Read used to seed this list from state -- it
+called flattenRegionsData(d.Get("region")) and then only ever patched those
+entries in place. The API's region count never reached the diff. Delete a region
+out of band (console, or DELETE /v3/networks/standard/{id}/regions/{regionId})
+and its stale entry, dead region_id included, stayed in state; `terraform plan`
+proposed nothing at all, so an operator running plan as a scheduled drift check
+was told the estate matched while a whole region and the gateway in it were
+gone. The same blindness hid the inverse, a region added out of band.
+checkpointsase_network is the sole owner of a standard network's footprint --
+there is no standalone region resource for standard networks, only
+checkpointsase_enhanced_region -- so both directions are real drift here.
+
+Only the Read had to change. Once a removed region drops out of state the list
+is shorter than the config, and resourceNetworkUpdate's existing
+resourceRegionCreate path puts it back.
+
+ORDER IS LOAD-BEARING. `region` is a TypeList, so rebuilding it in the API's
+order would show a reshuffle on every plan of an untouched network. Prior state
+is walked first for exactly that reason, and API-only regions are appended after.
+
+  - @param networkData *perimeter81Sdk.Network - the network as the API reports it
+  - @param regionsData []perimeter81Sdk.Region - the tenant-wide cloud-region catalogue
+  - @param stateRegions []StandardNetworkRegionConfig - the regions currently in state
+
+@return []StandardNetworkRegionConfig - the reconciled regions
 */
-func importRegions(networkData *perimeter81Sdk.Network, regionsData []perimeter81Sdk.Region, regions []StandardNetworkRegionConfig) []StandardNetworkRegionConfig {
-	if len(regions) == 0 {
-		regions = make([]StandardNetworkRegionConfig, len(networkData.Regions))
-		for i, regionItem := range networkData.Regions {
-			region := StandardNetworkRegionConfig{}
-			// `idle` cannot be recovered: no read model for a standard
-			// network's regions carries it (same documented gap as
-			// checkpointsase_gateway's `idle`, resource_gateway.go). It used
-			// to be seeded from networkData.IsDefault -- whether this
-			// network is the tenant's default network, which has nothing to
-			// do with any region's idle state -- so a non-default network
-			// (the common case) always imported idle=false and any region
-			// declared idle=true showed permanent drift. Default to false
-			// like the gateway resource does. This does not make the gap
-			// one-time: this false only gets written once, on the first
-			// Read after import (the only time `regions` is empty here),
-			// but nothing downstream ever corrects it afterward --
-			// resourceNetworkUpdate has no path that reconciles an
-			// existing region's idle state, so a config declaring
-			// idle=true keeps diffing on every subsequent plan until the
-			// state is corrected by hand.
+func reconcileNetworkRegions(networkData *perimeter81Sdk.Network, regionsData []perimeter81Sdk.Region, stateRegions []StandardNetworkRegionConfig) []StandardNetworkRegionConfig {
+	// A nil network is a caller bug; return an empty footprint rather than
+	// panic, for the same reason getGatewaysInArray guards (P81-144756).
+	if networkData == nil {
+		return make([]StandardNetworkRegionConfig, 0)
+	}
+
+	// The API's view of the footprint, one entry per region the tenant reports.
+	apiRegions := make([]StandardNetworkRegionConfig, 0, len(networkData.Regions))
+	for _, networkRegion := range networkData.Regions {
+		apiRegions = append(apiRegions, StandardNetworkRegionConfig{
+			RegionID:   networkRegion.Id,
+			CpRegionId: cpRegionIdForRegionName(regionsData, networkRegion.Name),
+			Name:       networkRegion.Name,
+			Dns:        networkRegion.Dns,
+		})
+	}
+
+	claimed := make([]bool, len(apiRegions))
+	reconciled := make([]StandardNetworkRegionConfig, 0, len(apiRegions))
+
+	// Prior state first, so an unchanged footprint reads back in the order the
+	// config declares it.
+	for _, stateRegion := range stateRegions {
+		match := matchAPIRegion(apiRegions, claimed, stateRegion)
+		if match < 0 {
+			// Gone on the tenant. Dropping it is the whole point: that is what
+			// makes the removal visible to the plan.
+			continue
+		}
+		claimed[match] = true
+
+		region := apiRegions[match]
+		// `idle` cannot be refreshed: no read model for a standard network's
+		// regions carries it (the same documented gap as
+		// checkpointsase_gateway's `idle`, resource_gateway.go). Carry the
+		// state value forward -- dropping it would make every config
+		// declaring idle=true diff on every plan. This does not close the
+		// gap: resourceNetworkUpdate still has no path that reconciles an
+		// existing region's idle state, so a config declaring idle=true on a
+		// region imported as false keeps diffing until the state is corrected
+		// by hand.
+		region.Idle = stateRegion.Idle
+		if region.CpRegionId == "" {
+			// The catalogue lookup is by name and can miss (a region renamed
+			// tenant-side, a catalogue entry withdrawn). Keeping the state
+			// value beats writing an empty string, which would read as a
+			// removal and propose destroying a region that is still there.
+			region.CpRegionId = stateRegion.CpRegionId
+		}
+		reconciled = append(reconciled, region)
+	}
+
+	// Whatever state did not claim is either an out-of-band addition or, when
+	// state was empty, the whole footprint of a freshly imported network.
+	for i, region := range apiRegions {
+		if !claimed[i] {
+			// Nothing to carry forward, and the API cannot be asked; false
+			// matches what the gateway resource defaults to. On the import
+			// path this false is written once and nothing downstream ever
+			// corrects it.
 			region.Idle = false
-			region.RegionID = regionItem.Id
-			region.Name = regionItem.Name
-			region.Dns = regionItem.Dns
-			for _, regionInfo := range regionsData {
-				if regionInfo.GetDisplayName() == regionItem.Name {
-					region.CpRegionId = regionInfo.GetId()
-					break
-				}
-			}
-			if region.CpRegionId == "" {
-				for _, regionInfo := range regionsData {
-					if regionInfo.GetName() == regionItem.Name {
-						region.CpRegionId = regionInfo.GetId()
-						break
-					}
-				}
-			}
-			regions[i] = region
+			reconciled = append(reconciled, region)
 		}
 	}
-	return regions
+
+	return reconciled
+}
+
+/*
+matchAPIRegion find the API region a state region refers to.
+
+region_id is the server-assigned identity and is matched first. cpregion_id is
+the fallback for a state entry written before the id was known. A claimed entry
+is never matched twice, so two state blocks on the same cloud region resolve to
+two different API regions rather than collapsing onto one.
+
+  - @param apiRegions []StandardNetworkRegionConfig - the API's view of the footprint
+  - @param claimed []bool - which API regions are already spoken for
+  - @param stateRegion StandardNetworkRegionConfig - the state region to place
+
+@return int - the index into apiRegions, or -1 when the region is gone
+*/
+func matchAPIRegion(apiRegions []StandardNetworkRegionConfig, claimed []bool, stateRegion StandardNetworkRegionConfig) int {
+	if stateRegion.RegionID != "" {
+		for i, apiRegion := range apiRegions {
+			if !claimed[i] && apiRegion.RegionID == stateRegion.RegionID {
+				return i
+			}
+		}
+	}
+	if stateRegion.CpRegionId != "" {
+		for i, apiRegion := range apiRegions {
+			if !claimed[i] && apiRegion.CpRegionId == stateRegion.CpRegionId {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+/*
+cpRegionIdForRegionName resolve a network region's name to a cloud-region id.
+
+The network's regions carry a name, not the catalogue id the config declares as
+cpregion_id, so the two have to be joined by name. displayName is tried first
+and name second -- the same order resource_region.go's
+regionDisplayNameByCpRegionId relies on.
+
+  - @param regionsData []perimeter81Sdk.Region - the tenant-wide cloud-region catalogue
+  - @param name string - the network region's name
+
+@return string - the cloud-region id, or "" when the catalogue has no match
+*/
+func cpRegionIdForRegionName(regionsData []perimeter81Sdk.Region, name string) string {
+	for _, regionInfo := range regionsData {
+		if regionInfo.GetDisplayName() == name {
+			return regionInfo.GetId()
+		}
+	}
+	for _, regionInfo := range regionsData {
+		if regionInfo.GetName() == name {
+			return regionInfo.GetId()
+		}
+	}
+	return ""
 }
 
 /*
