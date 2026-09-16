@@ -313,8 +313,17 @@ func resourceEnhancedNetworkRead(ctx context.Context, d *schema.ResourceData, m 
 	client := m.(*perimeter81Sdk.APIClient)
 
 	networkId := d.Id()
-	networkData, _, err := client.EnhancedNetworksAPI.GetEnhancedNetwork(ctx, networkId).Execute()
+	networkData, resp, err := client.EnhancedNetworksAPI.GetEnhancedNetwork(ctx, networkId).Execute()
 	if err != nil {
+		if isNotFound(resp, err) {
+			// The network was deleted out of band, or (via ImportState) never
+			// existed. Clear the id so a normal refresh proposes a recreate,
+			// and so the importer's missing-id check (which relies on this)
+			// can return an error naming the id instead of adopting an empty
+			// resource. Mirrors resourceNetworkRead.
+			d.SetId("")
+			return diags
+		}
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to find Enhanced Network", err)
 	}
