@@ -1049,6 +1049,13 @@ func appendErrorDiags(diags diag.Diagnostics, summary string, err error) diag.Di
 	} else {
 		errMsg = err.Error()
 	}
+	// A bare {"message":"Unauthorized"} names no cause an operator can act on --
+	// see isUnauthorizedError.
+	if isUnauthorizedError(err) {
+		errMsg = strings.TrimSpace(errMsg) + fmt.Sprintf(
+			"\n\nThis error usually means your API key is invalid. "+
+				"Please verify your base_url (%s) and api_key.", configuredBaseUrl)
+	}
 	diags = append(diags, diag.Diagnostic{
 		Severity: diag.Error,
 		Summary:  summary,
@@ -1097,6 +1104,28 @@ func appendErrorDiagsWithGuidance(diags diag.Diagnostics, summary, guidance stri
 		last.Detail = strings.TrimSpace(last.Detail) + "\n\n" + guidance
 	}
 	return diags
+}
+
+/*
+isUnauthorizedError reports whether err is the SDK's GenericOpenAPIError for a
+401 Unauthorized response.
+
+Detected by a string match on Body()/Error() rather than a status code,
+because GenericOpenAPIError does not expose the HTTP status separately --
+see formatErrorMessage in the SDK, which folds "401 Unauthorized" and the
+body's "message" into the same string.
+
+  - @param err error - the error
+
+@return bool - true if err is an Unauthorized GenericOpenAPIError
+*/
+func isUnauthorizedError(err error) bool {
+	var apiErr *perimeter81Sdk.GenericOpenAPIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(apiErr.Body())), "unauthorized") ||
+		strings.Contains(strings.ToLower(apiErr.Error()), "unauthorized")
 }
 
 /*
