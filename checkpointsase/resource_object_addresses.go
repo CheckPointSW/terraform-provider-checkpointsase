@@ -5,10 +5,73 @@ import (
 	"fmt"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 )
+
+/*
+resourceObjectAddressesCustomizeDiff enforces two plan-time rules ValidateFunc
+cannot express because they need value_type, a sibling attribute: the value
+list's element count must match what value_type allows (exactly 1 for `ip` /
+`cidr` / `fqdn`, 1+ for `list`), and a `cidr` entry's value must be a
+well-formed CIDR block, matching the guard network.subnet already has via
+validation.IsCIDR. Without this, both gaps let a bad configuration through
+`terraform plan` and on to the server, which returns a 422.
+
+Mirrors resourceObjectServicesCustomizeDiff's use of GetRawConfig; unlike that
+resource's protocols list of blocks, value_type and value are plain top-level
+attributes here, so no per-element raw-config fallback is needed.
+*/
+func resourceObjectAddressesCustomizeDiff(_ context.Context, d *schema.ResourceDiff, _ interface{}) error {
+	rawConfig := d.GetRawConfig()
+	if rawConfig.IsNull() {
+		return nil
+	}
+
+	valueTypeVal := rawConfig.GetAttr("value_type")
+	valueVal := rawConfig.GetAttr("value")
+	// IsKnown, not IsWhollyKnown: a list's own length is known even when one
+	// of its elements is an unresolved interpolation, so the count check
+	// below must not be skipped just because a value inside it is unknown.
+	if !valueTypeVal.IsKnown() || !valueVal.IsKnown() {
+		return nil
+	}
+	if valueTypeVal.IsNull() || valueVal.IsNull() {
+		return nil
+	}
+
+	valueType := valueTypeVal.AsString()
+	count := valueVal.LengthInt()
+
+	switch valueType {
+	case "ip", "cidr", "fqdn":
+		if count != 1 {
+			return fmt.Errorf("value: value_type %q requires exactly 1 value, got %d", valueType, count)
+		}
+	case "list":
+		if count == 0 {
+			return fmt.Errorf("value: value_type %q requires at least 1 value, got %d", valueType, count)
+		}
+	}
+
+	if valueType == "cidr" {
+		element := valueVal.Index(cty.NumberIntVal(0))
+		if !element.IsKnown() {
+			// Not yet resolved; the CIDR check is deferred to the next plan.
+			return nil
+		}
+		if element.IsNull() {
+			return fmt.Errorf("value[0]: must not be null")
+		}
+		if _, errs := validation.IsCIDR(element.AsString(), "value"); len(errs) > 0 {
+			return fmt.Errorf("value[0]: %v", errs[0])
+		}
+	}
+
+	return nil
+}
 
 /*
 resourceObjectAddresses Setup the Object Addresses Resource CRUD operations
@@ -26,6 +89,7 @@ func resourceObjectAddresses() *schema.Resource {
 		ReadContext:   resourceObjectAddressesRead,
 		UpdateContext: resourceObjectAddressesUpdate,
 		DeleteContext: resourceObjectAddressesDelete,
+		CustomizeDiff: resourceObjectAddressesCustomizeDiff,
 		Schema: map[string]*schema.Schema{
 			"last_updated": {
 				Type:        schema.TypeString,
