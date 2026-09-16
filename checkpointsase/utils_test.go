@@ -59,6 +59,23 @@ func TestAppendErrorDiagsEnrichesUnauthorized(t *testing.T) {
 			t.Errorf("Detail %q should not carry the Unauthorized guidance", diags[0].Detail)
 		}
 	})
+
+	// Regression for the Copilot review on PR #25: a 403 (authenticated but
+	// forbidden) whose JSON message happens to read "Unauthorized" must not
+	// get the "your API key is invalid" guidance -- that message is about
+	// permissions, not the credential itself, and isUnauthorizedError must key
+	// off the response's status line rather than the body text.
+	t.Run("a 403 with an Unauthorized-looking body is left alone", func(t *testing.T) {
+		err := apiErrorFromStub(t, http.StatusForbidden, `{"message":"Unauthorized"}`)
+
+		diags := appendErrorDiags(nil, "Unable to list regions", err)
+		if len(diags) != 1 {
+			t.Fatalf("got %d diagnostics, want 1", len(diags))
+		}
+		if strings.Contains(diags[0].Detail, "your API key is invalid") {
+			t.Errorf("Detail %q should not carry the Unauthorized guidance for a 403", diags[0].Detail)
+		}
+	})
 }
 
 // apiErrorFromStub drives StandardRegionsAPI's list-regions call against a
