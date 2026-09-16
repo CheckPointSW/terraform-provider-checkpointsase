@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
@@ -31,8 +32,10 @@ func resourceObjectAddressesCustomizeDiff(_ context.Context, d *schema.ResourceD
 
 	valueTypeVal := rawConfig.GetAttr("value_type")
 	valueVal := rawConfig.GetAttr("value")
-	if !valueTypeVal.IsWhollyKnown() || !valueVal.IsWhollyKnown() {
-		// Unresolved interpolation; nothing to check yet.
+	// IsKnown, not IsWhollyKnown: a list's own length is known even when one
+	// of its elements is an unresolved interpolation, so the count check
+	// below must not be skipped just because a value inside it is unknown.
+	if !valueTypeVal.IsKnown() || !valueVal.IsKnown() {
 		return nil
 	}
 	if valueTypeVal.IsNull() || valueVal.IsNull() {
@@ -40,25 +43,29 @@ func resourceObjectAddressesCustomizeDiff(_ context.Context, d *schema.ResourceD
 	}
 
 	valueType := valueTypeVal.AsString()
-	values := make([]string, 0, valueVal.LengthInt())
-	for it := valueVal.ElementIterator(); it.Next(); {
-		_, v := it.Element()
-		values = append(values, v.AsString())
-	}
+	count := valueVal.LengthInt()
 
 	switch valueType {
 	case "ip", "cidr", "fqdn":
-		if len(values) != 1 {
-			return fmt.Errorf("value: value_type %q requires exactly 1 value, got %d", valueType, len(values))
+		if count != 1 {
+			return fmt.Errorf("value: value_type %q requires exactly 1 value, got %d", valueType, count)
 		}
 	case "list":
-		if len(values) == 0 {
-			return fmt.Errorf("value: value_type %q requires at least 1 value, got %d", valueType, len(values))
+		if count == 0 {
+			return fmt.Errorf("value: value_type %q requires at least 1 value, got %d", valueType, count)
 		}
 	}
 
 	if valueType == "cidr" {
-		if _, errs := validation.IsCIDR(values[0], "value"); len(errs) > 0 {
+		element := valueVal.Index(cty.NumberIntVal(0))
+		if !element.IsKnown() {
+			// Not yet resolved; the CIDR check is deferred to the next plan.
+			return nil
+		}
+		if element.IsNull() {
+			return fmt.Errorf("value[0]: must not be null")
+		}
+		if _, errs := validation.IsCIDR(element.AsString(), "value"); len(errs) > 0 {
 			return fmt.Errorf("value[0]: %v", errs[0])
 		}
 	}

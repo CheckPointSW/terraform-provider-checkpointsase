@@ -299,3 +299,73 @@ func TestObjectAddressesValueRulesAreRefusedAtPlanTime(t *testing.T) {
 		})
 	}
 }
+
+/*
+objectAddressesRawConfigWithElements is objectAddressesRawConfig's low-level
+sibling: it takes the `value` elements as cty.Value directly, so a test can hand
+it a null or an unknown element instead of always a concrete string.
+*/
+func objectAddressesRawConfigWithElements(t *testing.T, valueType string, valueElements ...cty.Value) cty.Value {
+	t.Helper()
+	resourceType := resourceObjectAddresses().CoreConfigSchema().ImpliedType()
+
+	valueValue := cty.ListValEmpty(cty.String)
+	if len(valueElements) > 0 {
+		valueValue = cty.ListVal(valueElements)
+	}
+
+	attributes := map[string]cty.Value{}
+	for name, attributeType := range resourceType.AttributeTypes() {
+		attributes[name] = cty.NullVal(attributeType)
+	}
+	attributes["name"] = cty.StringVal("fake-addr")
+	attributes["value_type"] = cty.StringVal(valueType)
+	attributes["value"] = valueValue
+	return cty.ObjectVal(attributes)
+}
+
+/*
+TestObjectAddressesValueRulesToleratePartiallyKnownOrNullElements is the
+regression test for the two issues Copilot's PR review raised against
+resourceObjectAddressesCustomizeDiff:
+
+ 1. A list with a known length but an unresolved (unknown) element — e.g.
+    `value = [aws_x.a.id, aws_x.b.id]` — must still be checked against
+    value_type's arity, since the count is already known even though the
+    content is not. The original code bailed out on ANY unknown element via
+    IsWhollyKnown, which let a 2-element `cidr` value through uncaught.
+ 2. A null element (`value = [null]`) must be refused as a configuration
+    error, not reach AsString() and panic the provider.
+*/
+func TestObjectAddressesValueRulesToleratePartiallyKnownOrNullElements(t *testing.T) {
+	unknown := cty.UnknownVal(cty.String)
+
+	t.Run("cidr with two unknown-but-present elements is rejected on count, not silently accepted", func(t *testing.T) {
+		err := planObjectAddresses(t, objectAddressesRawConfigWithElements(t, "cidr", unknown, unknown))
+		if err == nil {
+			t.Fatal("this configuration has 2 values under value_type \"cidr\"; it must fail even though both are unresolved")
+		}
+		if !strings.Contains(err.Error(), `value_type "cidr" requires exactly 1 value, got 2`) {
+			t.Errorf("got error %q, want it to mention the count mismatch", err)
+		}
+	})
+
+	t.Run("cidr with a single unresolved element is accepted, deferring the CIDR check", func(t *testing.T) {
+		err := planObjectAddresses(t, objectAddressesRawConfigWithElements(t, "cidr", unknown))
+		if err != nil {
+			t.Fatalf("a single not-yet-known value must not be refused before it is known: %v", err)
+		}
+	})
+
+	t.Run("cidr with a null element is refused as a config error, not a panic", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("plan panicked instead of returning a diagnostic: %v", r)
+			}
+		}()
+		err := planObjectAddresses(t, objectAddressesRawConfigWithElements(t, "cidr", cty.NullVal(cty.String)))
+		if err == nil {
+			t.Fatal("a null value cannot be a valid CIDR; the plan must refuse it")
+		}
+	})
+}
