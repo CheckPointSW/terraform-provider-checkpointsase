@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
@@ -189,5 +190,37 @@ func TestObjectAddressesDeleteSwallowsA404ButNothingElse(t *testing.T) {
 				t.Errorf("id cleared = %v, want %v (id is %q)", gone, tc.wantIDGone, d.Id())
 			}
 		})
+	}
+}
+
+/*
+TestObjectAddressesImportStateErrorsOnMissingId pins P81-145138: importing an
+id that the list endpoint doesn't return must fail with an error naming the
+id, not silently produce a zero-value resource via d.SetId(""). The latter is
+what previously reached Terraform as "The provider returned a resource
+missing an identifier during ImportResourceState" -- a message that sends
+customers to report a provider bug instead of checking the id they pasted.
+*/
+func TestObjectAddressesImportStateErrorsOnMissingId(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	d := schema.TestResourceDataRaw(t, resourceObjectAddresses().Schema, map[string]interface{}{})
+	d.SetId("000000000000000000000000")
+
+	_, err := resourceObjectAddressesImportState(context.Background(), d, newTestUserAPIClient(srv.URL))
+
+	if err == nil {
+		t.Fatal("expected an error importing a nonexistent id, got nil")
+	}
+	if !strings.Contains(err.Error(), "000000000000000000000000") {
+		t.Errorf("error %q does not name the missing id", err.Error())
+	}
+	if d.Id() != "" {
+		t.Errorf("id = %q, want empty: a failed import must not leave a partial resource behind", d.Id())
 	}
 }

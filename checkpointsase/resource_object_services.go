@@ -356,6 +356,7 @@ resourceObjectServicesImportState Import an object services entry by its ID
 @return diag.Diagnostics
 */
 func resourceObjectServicesImportState(ctx context.Context, d *schema.ResourceData, m interface{}) ([]*schema.ResourceData, error) {
+	importId := d.Id()
 	diagnostics := resourceObjectServicesRead(ctx, d, m)
 	if diagnostics.HasError() {
 		for _, diagnostic := range diagnostics {
@@ -363,6 +364,13 @@ func resourceObjectServicesImportState(ctx context.Context, d *schema.ResourceDa
 				return nil, fmt.Errorf("could not import object services: %s, \n %s", diagnostic.Summary, diagnostic.Detail)
 			}
 		}
+	}
+	// Read clears the id when the service is absent and returns no error
+	// diagnostic (see its not-found branch). Without this check, an import
+	// of a nonexistent id would report success and write an empty resource
+	// into state.
+	if d.Id() == "" {
+		return nil, fmt.Errorf("no object service %q exists in this tenant", importId)
 	}
 	return []*schema.ResourceData{d}, nil
 }
