@@ -11,6 +11,62 @@ import (
 )
 
 /*
+resourceObjectAddressesCustomizeDiff enforces two plan-time rules ValidateFunc
+cannot express because they need value_type, a sibling attribute: the value
+list's element count must match what value_type allows (exactly 1 for `ip` /
+`cidr` / `fqdn`, 1+ for `list`), and a `cidr` entry's value must be a
+well-formed CIDR block, matching the guard network.subnet already has via
+validation.IsCIDR. Without this, both gaps let a bad configuration through
+`terraform plan` and on to the server, which returns a 422.
+
+Mirrors resourceObjectServicesCustomizeDiff's use of GetRawConfig; unlike that
+resource's protocols list of blocks, value_type and value are plain top-level
+attributes here, so no per-element raw-config fallback is needed.
+*/
+func resourceObjectAddressesCustomizeDiff(_ context.Context, d *schema.ResourceDiff, _ interface{}) error {
+	rawConfig := d.GetRawConfig()
+	if rawConfig.IsNull() {
+		return nil
+	}
+
+	valueTypeVal := rawConfig.GetAttr("value_type")
+	valueVal := rawConfig.GetAttr("value")
+	if !valueTypeVal.IsWhollyKnown() || !valueVal.IsWhollyKnown() {
+		// Unresolved interpolation; nothing to check yet.
+		return nil
+	}
+	if valueTypeVal.IsNull() || valueVal.IsNull() {
+		return nil
+	}
+
+	valueType := valueTypeVal.AsString()
+	values := make([]string, 0, valueVal.LengthInt())
+	for it := valueVal.ElementIterator(); it.Next(); {
+		_, v := it.Element()
+		values = append(values, v.AsString())
+	}
+
+	switch valueType {
+	case "ip", "cidr", "fqdn":
+		if len(values) != 1 {
+			return fmt.Errorf("value: value_type %q requires exactly 1 value, got %d", valueType, len(values))
+		}
+	case "list":
+		if len(values) == 0 {
+			return fmt.Errorf("value: value_type %q requires at least 1 value, got %d", valueType, len(values))
+		}
+	}
+
+	if valueType == "cidr" {
+		if _, errs := validation.IsCIDR(values[0], "value"); len(errs) > 0 {
+			return fmt.Errorf("value[0]: %v", errs[0])
+		}
+	}
+
+	return nil
+}
+
+/*
 resourceObjectAddresses Setup the Object Addresses Resource CRUD operations
 
 @return &schema.Resource
@@ -26,6 +82,7 @@ func resourceObjectAddresses() *schema.Resource {
 		ReadContext:   resourceObjectAddressesRead,
 		UpdateContext: resourceObjectAddressesUpdate,
 		DeleteContext: resourceObjectAddressesDelete,
+		CustomizeDiff: resourceObjectAddressesCustomizeDiff,
 		Schema: map[string]*schema.Schema{
 			"last_updated": {
 				Type:        schema.TypeString,

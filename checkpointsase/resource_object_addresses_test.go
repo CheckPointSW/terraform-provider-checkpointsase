@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
@@ -187,6 +189,112 @@ func TestObjectAddressesDeleteSwallowsA404ButNothingElse(t *testing.T) {
 			}
 			if gone := d.Id() == ""; gone != tc.wantIDGone {
 				t.Errorf("id cleared = %v, want %v (id is %q)", gone, tc.wantIDGone, d.Id())
+			}
+		})
+	}
+}
+
+/*
+objectAddressesRawConfig builds the cty configuration value Terraform sends for
+this resource, filling every attribute the schema declares — nulls for the ones
+a case does not set — so the value's type matches the resource's ImpliedType()
+exactly, as Terraform's does. Modelled on objectServicesRawConfig.
+*/
+func objectAddressesRawConfig(t *testing.T, valueType string, values ...string) cty.Value {
+	t.Helper()
+	resourceType := resourceObjectAddresses().CoreConfigSchema().ImpliedType()
+
+	valueElements := make([]cty.Value, len(values))
+	for i, v := range values {
+		valueElements[i] = cty.StringVal(v)
+	}
+	valueValue := cty.ListValEmpty(cty.String)
+	if len(valueElements) > 0 {
+		valueValue = cty.ListVal(valueElements)
+	}
+
+	attributes := map[string]cty.Value{}
+	for name, attributeType := range resourceType.AttributeTypes() {
+		attributes[name] = cty.NullVal(attributeType)
+	}
+	attributes["name"] = cty.StringVal("fake-addr")
+	attributes["value_type"] = cty.StringVal(valueType)
+	attributes["value"] = valueValue
+	return cty.ObjectVal(attributes)
+}
+
+/*
+planObjectAddresses runs the SDK's real diff machinery — including CustomizeDiff
+— over a configuration, the way `terraform plan` does. Modelled on
+planObjectServices.
+*/
+func planObjectAddresses(t *testing.T, config cty.Value) error {
+	t.Helper()
+	r := resourceObjectAddresses()
+	_, err := r.Diff(
+		context.Background(),
+		&terraform.InstanceState{RawConfig: config},
+		terraform.NewResourceConfigShimmed(config, r.CoreConfigSchema()),
+		nil,
+	)
+	return err
+}
+
+/*
+TestObjectAddressesValueRulesAreRefusedAtPlanTime is the unit test for P81-144755:
+`value` had no plan-time CIDR validation for a `cidr` entry (unlike
+`network.subnet`), and nothing checked the value count against `value_type`. Both
+gaps let a bad configuration through `terraform plan` and on to the server, which
+returns a 422.
+*/
+func TestObjectAddressesValueRulesAreRefusedAtPlanTime(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		valueType string
+		values    []string
+		wantErr   string
+	}{
+		{name: "ip with one value is accepted", valueType: "ip", values: []string{"193.168.3.1"}},
+		{
+			name:      "ip with two values is rejected",
+			valueType: "ip",
+			values:    []string{"193.168.3.1", "193.168.3.2"},
+			wantErr:   `value_type "ip" requires exactly 1 value, got 2`,
+		},
+		{name: "cidr with a valid cidr is accepted", valueType: "cidr", values: []string{"10.50.0.0/16"}},
+		{
+			name:      "cidr with a malformed cidr is rejected",
+			valueType: "cidr",
+			values:    []string{"10.50.0.0/99"},
+			wantErr:   `to be a valid IPv4 Value`,
+		},
+		{
+			name:      "cidr with two values is rejected on count before ever reaching IsCIDR",
+			valueType: "cidr",
+			values:    []string{"10.50.0.0/16", "10.60.0.0/16"},
+			wantErr:   `value_type "cidr" requires exactly 1 value, got 2`,
+		},
+		{name: "fqdn with one value is accepted", valueType: "fqdn", values: []string{"example.com"}},
+		{
+			name:      "fqdn with two values is rejected",
+			valueType: "fqdn",
+			values:    []string{"a.example.com", "b.example.com"},
+			wantErr:   `value_type "fqdn" requires exactly 1 value, got 2`,
+		},
+		{name: "list with one value is accepted", valueType: "list", values: []string{"193.168.3.1"}},
+		{name: "list with several values is accepted", valueType: "list", values: []string{"193.168.3.1", "193.168.3.2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := planObjectAddresses(t, objectAddressesRawConfig(t, tc.valueType, tc.values...))
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("this configuration is valid but the plan refused it: %v", err)
+			case tc.wantErr == "":
+				return
+			case err == nil:
+				t.Fatalf("this configuration planned cleanly; it must fail with %q", tc.wantErr)
+			case !strings.Contains(err.Error(), tc.wantErr):
+				t.Errorf("the plan error does not say %q, so it cannot be acted on:\n%v", tc.wantErr, err)
 			}
 		})
 	}
