@@ -73,7 +73,10 @@ GET and PUT /v3/networks/enhanced/{networkId}/regions/{regionId}/privateDNS.
 It is the sibling of checkpointsase_enhanced_network_private_dns and everything
 that file's header says applies here: it is a SETTING on an object that already
 exists rather than an object, so "create" is adopt-and-write, "update" is the
-identical call, "destroy" makes no request (D9), and the write is ASYNCHRONOUS --
+identical call, "destroy" now sends that same call with `enabled = false` and
+empty `attributes` (P81-145399 retired decision D9, which made destroy a no-op
+and left a destroyed region's configuration live on the tenant), and the write is
+ASYNCHRONOUS --
 the PUT declares no success response but 202 -- there is no 200 in its response map
 (swagger.yaml:699) -- so the write has not happened when
 the call returns. The body, the schema, the expander, the flattener, the diff
@@ -208,12 +211,12 @@ func resourceEnhancedRegionPrivateDNS() *schema.Resource {
 		// resources in this package already declare asyncResourceTimeout for the
 		// same reason.
 		//
-		// THERE IS DELIBERATELY NO Delete TIMEOUT. Delete makes no API call at all
-		// (D9, privateDNSNoOpDeleteNote) -- it clears the id and returns -- so
-		// declaring a budget for it would advertise a wait that cannot happen.
+		// Delete now PUTs and polls too (P81-145399, privateDNSNoOpDeleteNote), so
+		// it needs the same budget Create and Update have.
 		Timeouts: &schema.ResourceTimeout{
 			Create: schema.DefaultTimeout(asyncResourceTimeout),
 			Update: schema.DefaultTimeout(asyncResourceTimeout),
+			Delete: schema.DefaultTimeout(asyncResourceTimeout),
 		},
 	}
 }
@@ -233,8 +236,10 @@ BOTH address attributes are Required and ForceNew, for the reason the network
 resource's network_id is: they are the object's ADDRESS. This resource does not
 own a network or a region, it owns one setting on the region those two ids name
 together, so pointing it at a different region is a different object rather than
-a change to this one. There is nothing to migrate and nothing to destroy on the
-way -- Delete makes no request (D9) -- so the replace is free.
+a change to this one. A replace now costs one real write: Delete turns private
+DNS off on the OLD region before Create adopts and writes the new one
+(P81-145399 retired D9's no-op) -- there is nothing to migrate, but it is no
+longer free.
 
 @return map[string]*schema.Schema
 */
@@ -528,37 +533,52 @@ func resourceEnhancedRegionPrivateDNSUpdate(ctx context.Context, d *schema.Resou
 }
 
 /*
-resourceEnhancedRegionPrivateDNSDelete removes the resource from Terraform state
-and makes NO API call. That is decision D9, not an unfinished function -- read
-privateDNSNoOpDeleteNote before changing it.
+resourceEnhancedRegionPrivateDNSDelete turns private DNS off on the region and
+then removes the resource from Terraform state.
 
-The warning is part of the behaviour rather than decoration. A destroy that
-silently changes nothing and a destroy that silently rewrites a production
-region's DNS resolution print the same thing in the console; the diagnostic is
-the only thing that tells the operator which one happened, and "a no-op that
-explains itself" is what D9 asks for.
+THIS USED TO MAKE NO API CALL AT ALL (decision D9), and that no-op is what
+P81-145399 retired -- see resourceEnhancedNetworkPrivateDNSDelete's comment,
+which this mirrors exactly bar the second address attribute.
 
-  - @param ctx context.Context - unused; there is no request to make.
+THE ID IS ONLY CLEARED ON SUCCESS. If the write is refused or never completes,
+this resource stays tracked so the operator can look and retry, rather than
+Terraform reporting a destroy that may not have landed.
+
+  - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
-  - @param m interface{} - unused; there is no request to make.
+  - @param m interface{} - the terraform meta data that contains the client
 
 @return diag.Diagnostics
 */
-func resourceEnhancedRegionPrivateDNSDelete(_ context.Context, d *schema.ResourceData,
-	_ interface{}) diag.Diagnostics {
+func resourceEnhancedRegionPrivateDNSDelete(ctx context.Context, d *schema.ResourceData,
+	m interface{}) diag.Diagnostics {
 
 	var diags diag.Diagnostics
+	client := m.(*perimeter81Sdk.APIClient)
 
 	networkId := d.Get(privateDNSAttrNetworkID).(string)
 	regionId := d.Get(privateDNSAttrRegionID).(string)
-	diags = appendWarningDiags(diags,
-		"Private DNS left unchanged on the region",
-		fmt.Sprintf("Terraform has stopped tracking the private DNS configuration of region %q "+
-			"in network %q and made no API call. The region keeps whatever private DNS "+
-			"configuration was last applied — destroying this resource does not turn private "+
-			"DNS off, because changing how a live region resolves names as a side effect of "+
-			"removing a Terraform resource is not something a destroy should do. To turn it "+
-			"off, apply `enabled = false` first and then destroy.", regionId, networkId))
+	payload := defaultCustomDnsUpdate()
+
+	accepted, err := putPrivateDNSAndWait(ctx, client,
+		func(ctx context.Context) (*perimeter81Sdk.AsyncOperationResponse, *http.Response, error) {
+			return client.EnhancedPrivateDNSAPI.
+				UpdateEnhancedRegionPrivateDNS(ctx, networkId, regionId).
+				CustomDnsUpdate(payload).
+				Execute()
+		})
+	if err != nil {
+		d.Partial(true)
+
+		if accepted {
+			return appendErrorDiagsWithGuidance(diags,
+				"The enhanced region private DNS destroy write was accepted but did not complete",
+				privateDNSWriteAcceptedButNotCompleted, err)
+		}
+		return appendErrorDiagsWithGuidance(diags,
+			"Unable to turn off enhanced region private DNS on destroy",
+			privateDNSWriteRefused, err)
+	}
 
 	d.SetId("")
 	return diags
@@ -574,7 +594,10 @@ exactly the same rules. Neither is expressible as MinItems or as a TypeSet -- se
 that function for why each would be wrong rather than merely inconvenient.
 
 Destroy plans never reach CustomizeDiff in SDKv2, which is what we want: a destroy
-has no configuration to check, and this resource's destroy does nothing anyway.
+has no configuration to check, and Delete's own payload is the fixed
+defaultCustomDnsUpdate() body rather than anything read from the diff, so there is
+nothing here for CustomizeDiff to validate even now that destroy writes
+(P81-145399).
 
   - @param ctx context.Context - unused
   - @param d *schema.ResourceDiff - the diff
