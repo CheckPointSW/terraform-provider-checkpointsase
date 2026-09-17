@@ -184,8 +184,15 @@ func resourceEnhancedRegionRead(ctx context.Context, d *schema.ResourceData, m i
 	networkId := d.Get("network_id").(string)
 	regionId := d.Id()
 
-	regionData, _, err := client.EnhancedRegionsAPI.GetEnhancedRegion(ctx, networkId, regionId).Execute()
+	regionData, resp, err := client.EnhancedRegionsAPI.GetEnhancedRegion(ctx, networkId, regionId).Execute()
 	if err != nil {
+		if isNotFound(resp, err) {
+			// The region was removed out of band. That is drift, not
+			// failure: clear the id so the next plan proposes recreating it,
+			// instead of wedging the workspace.
+			d.SetId("")
+			return diags
+		}
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to find Enhanced Region", err)
 	}
