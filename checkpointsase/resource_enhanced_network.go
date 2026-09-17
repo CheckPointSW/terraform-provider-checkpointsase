@@ -120,6 +120,7 @@ resourceEnhancedNetworkImportState Import an enhanced network by its ID.
 @return []*schema.ResourceData, error
 */
 func resourceEnhancedNetworkImportState(ctx context.Context, d *schema.ResourceData, m interface{}) ([]*schema.ResourceData, error) {
+	importId := d.Id()
 	diagnostics := resourceEnhancedNetworkRead(ctx, d, m)
 	if diagnostics.HasError() {
 		for _, diagnostic := range diagnostics {
@@ -127,6 +128,13 @@ func resourceEnhancedNetworkImportState(ctx context.Context, d *schema.ResourceD
 				return nil, fmt.Errorf("could not import enhanced network: %s, \n %s", diagnostic.Summary, diagnostic.Detail)
 			}
 		}
+	}
+	// Read clears the id when the network is absent and returns no error
+	// diagnostic (see its not-found branch). Without this check, an import
+	// of a nonexistent id would report success and write an empty resource
+	// into state; the region-rebuild below would also operate on a stale id.
+	if d.Id() == "" {
+		return nil, fmt.Errorf("no enhanced network %q exists in this tenant", importId)
 	}
 
 	// Read caps how many regions it writes to state at len(existing state),
@@ -305,8 +313,17 @@ func resourceEnhancedNetworkRead(ctx context.Context, d *schema.ResourceData, m 
 	client := m.(*perimeter81Sdk.APIClient)
 
 	networkId := d.Id()
-	networkData, _, err := client.EnhancedNetworksAPI.GetEnhancedNetwork(ctx, networkId).Execute()
+	networkData, resp, err := client.EnhancedNetworksAPI.GetEnhancedNetwork(ctx, networkId).Execute()
 	if err != nil {
+		if isNotFound(resp, err) {
+			// The network was deleted out of band, or (via ImportState) never
+			// existed. Clear the id so a normal refresh proposes a recreate,
+			// and so the importer's missing-id check (which relies on this)
+			// can return an error naming the id instead of adopting an empty
+			// resource. Mirrors resourceNetworkRead.
+			d.SetId("")
+			return diags
+		}
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to find Enhanced Network", err)
 	}
