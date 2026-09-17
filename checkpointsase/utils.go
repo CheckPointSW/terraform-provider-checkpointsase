@@ -896,6 +896,67 @@ func flattenTunnelData(tunnelItem *perimeter81Sdk.IPSecRedundantTunnel, priorTun
 }
 
 /*
+matchRedundantTunnelsToSlots matches an ipsec-redundant pair's two API tunnel
+members back to the "tunnel1"/"tunnel2" config slots by remote_id, instead of
+trusting the API's Tunnel1/Tunnel2 response order. The order is not guaranteed
+stable across requests — a destroy+re-create can come back with the pair
+swapped — which otherwise surfaces as a permanent tunnel1/tunnel2 diff after
+every re-create (P81-144743).
+
+remote_id is the field used for the match because it round-trips: whatever
+this resource last wrote for a slot is what the API hands back for that same
+tunnel. When a prior remote_id is empty (never set, e.g. import) or does not
+match either API member, that slot falls back to positional order, same as
+before this fix.
+
+  - @param tunnel1, tunnel2 *perimeter81Sdk.IPSecRedundantTunnel - the API's pair members, in API response order
+  - @param priorTunnel1, priorTunnel2 []interface{} - this resource's prior "tunnel1"/"tunnel2" state, used only to read the previously known remote_id per slot
+
+@return the API members reordered so the first return value belongs in "tunnel1" and the second in "tunnel2"
+*/
+func matchRedundantTunnelsToSlots(
+	tunnel1, tunnel2 *perimeter81Sdk.IPSecRedundantTunnel,
+	priorTunnel1, priorTunnel2 []interface{},
+) (*perimeter81Sdk.IPSecRedundantTunnel, *perimeter81Sdk.IPSecRedundantTunnel) {
+	wantSlot1RemoteID := remoteIDFromPriorTunnelData(priorTunnel1)
+	wantSlot2RemoteID := remoteIDFromPriorTunnelData(priorTunnel2)
+	if wantSlot1RemoteID == "" && wantSlot2RemoteID == "" {
+		return tunnel1, tunnel2
+	}
+
+	apiTunnel1RemoteID := remoteIDFromAPITunnel(tunnel1)
+	apiTunnel2RemoteID := remoteIDFromAPITunnel(tunnel2)
+
+	if wantSlot1RemoteID == apiTunnel2RemoteID && wantSlot2RemoteID == apiTunnel1RemoteID {
+		return tunnel2, tunnel1
+	}
+	return tunnel1, tunnel2
+}
+
+// remoteIDFromAPITunnel reads remote_id off an API tunnel member the same way
+// flattenTunnelData does; RemoteID is a union type wrapping an optional string.
+func remoteIDFromAPITunnel(tunnelItem *perimeter81Sdk.IPSecRedundantTunnel) string {
+	if tunnelItem != nil && tunnelItem.RemoteID != nil && tunnelItem.RemoteID.String != nil {
+		return *tunnelItem.RemoteID.String
+	}
+	return ""
+}
+
+// remoteIDFromPriorTunnelData reads remote_id off a "tunnel1"/"tunnel2" block
+// as it was in state before the current Read overwrites it.
+func remoteIDFromPriorTunnelData(priorTunnelData []interface{}) string {
+	if len(priorTunnelData) == 0 {
+		return ""
+	}
+	priorMap, ok := priorTunnelData[0].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	remoteID, _ := priorMap["remote_id"].(string)
+	return remoteID
+}
+
+/*
 getTunnelId get the tunnel id
   - @param ctx context.Context - the context
   - @param networkId string - the network id

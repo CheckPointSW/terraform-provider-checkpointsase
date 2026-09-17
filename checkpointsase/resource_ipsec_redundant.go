@@ -594,12 +594,19 @@ func resourceIpsecRedundantRead(ctx context.Context, d *schema.ResourceData, m i
 	// a plain read — see the comment on flattenTunnelData (utils.go) and on
 	// setIfPresent, which guards the analogous OpenVPN credential fields.
 	priorTunnel1, _ := d.Get("tunnel1").([]interface{})
-	if err := d.Set("tunnel1", flattenTunnelData(tunnel.Tunnel1, priorTunnel1)); err != nil {
+	priorTunnel2, _ := d.Get("tunnel2").([]interface{})
+	// The API does not guarantee tunnel.Tunnel1/tunnel.Tunnel2 keep the same
+	// member across requests — a re-create can come back with the pair in the
+	// opposite order (P81-144743). remote_id is the one value stable across
+	// that reordering (round-tripped from what this resource last wrote), so
+	// use it to match each API member back to its "tunnel1"/"tunnel2" slot
+	// instead of trusting API response position.
+	apiTunnel1, apiTunnel2 := matchRedundantTunnelsToSlots(tunnel.Tunnel1, tunnel.Tunnel2, priorTunnel1, priorTunnel2)
+	if err := d.Set("tunnel1", flattenTunnelData(apiTunnel1, priorTunnel1)); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set tunnel1", err)
 	}
-	priorTunnel2, _ := d.Get("tunnel2").([]interface{})
-	if err := d.Set("tunnel2", flattenTunnelData(tunnel.Tunnel2, priorTunnel2)); err != nil {
+	if err := d.Set("tunnel2", flattenTunnelData(apiTunnel2, priorTunnel2)); err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to set tunnel2", err)
 	}
