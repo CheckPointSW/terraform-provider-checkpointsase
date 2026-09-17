@@ -966,104 +966,62 @@ func getNetworkTunnelId(tunnel perimeter81Sdk.NetworkTunnel) string {
 	if tunnel.NetworkTunnelOpenvpn != nil {
 		return tunnel.NetworkTunnelOpenvpn.Id
 	}
-	return ""
-}
-
-/*
-getNetworkTunnelHaTunnelId extract the HaTunnelID from a NetworkTunnel union type (for redundant tunnels).
-*/
-func getNetworkTunnelHaTunnelId(tunnel perimeter81Sdk.NetworkTunnel) string {
-	if tunnel.NetworkTunnelIpsecRedundant != nil {
-		return tunnel.NetworkTunnelIpsecRedundant.HaTunnelID.Id
+	if tunnel.NetworkTunnelBase != nil {
+		return tunnel.NetworkTunnelBase.Id
 	}
 	return ""
 }
 
 /*
-getRedundantTunnelId get the redundant tunnel id
-  - @param ctx context.Context - the context
-  - @param networkId string - the network id
-  - @param tunnelBody perimeter81Sdk.BaseTunnelValues - the tunnel body
-  - @param client perimeter81Sdk.APIClient - the client
-  - @param diags diag.Diagnostics - the diagnostics
-
-@return string - the redundant tunnel id, diag.Diagnostics - the diagnostics
+getNetworkTunnelIsHA extract isHA from a NetworkTunnel union type.
 */
-func getRedundantTunnelId(ctx context.Context, networkId string, tunnelBody perimeter81Sdk.BaseTunnelValues, client perimeter81Sdk.APIClient, diags diag.Diagnostics) (string, diag.Diagnostics) {
+func getNetworkTunnelIsHA(tunnel perimeter81Sdk.NetworkTunnel) bool {
+	if tunnel.NetworkTunnelWireguard != nil {
+		return tunnel.NetworkTunnelWireguard.IsHA
+	}
+	if tunnel.NetworkTunnelIpsecSingle != nil {
+		return tunnel.NetworkTunnelIpsecSingle.IsHA
+	}
+	if tunnel.NetworkTunnelIpsecRedundant != nil {
+		return tunnel.NetworkTunnelIpsecRedundant.IsHA
+	}
+	if tunnel.NetworkTunnelOpenvpn != nil {
+		return tunnel.NetworkTunnelOpenvpn.IsHA
+	}
+	if tunnel.NetworkTunnelBase != nil {
+		return tunnel.NetworkTunnelBase.GetIsHA()
+	}
+	return false
+}
+
+/*
+isTunnelHAMember reports whether a tunnel on a standard network is one half of
+an HA pair, and whether the network read listed the tunnel at all.
+
+This has to go through the network read because the single-tunnel read does not
+return isHA at all -- measured 2026-09-11 against both an HA member and a
+standalone tunnel, the field is absent from that response in both cases.
+
+"Not listed" is returned as its own outcome rather than folded into false. A
+caller guarding a destructive call cannot treat "the network read did not
+mention this tunnel" as "this tunnel is not an HA member": an incomplete or
+not-yet-consistent network response would then read as permission to proceed.
+*/
+func isTunnelHAMember(ctx context.Context, client *perimeter81Sdk.APIClient, networkId string, tunnelId string) (isHA bool, found bool, err error) {
 	network, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkFind(ctx, networkId).Execute()
 	if err != nil {
-		diags = appendErrorDiags(diags, "Unable to fetch network", err)
-		return "", diags
+		return false, false, err
 	}
-	// Find the redundant tunnel by walking ALL gateways in the target region.
-	// The wire response for the network-find endpoint does NOT include
-	// haTunnelID per-tunnel — instead, redundant tunnel members are returned
-	// as type="ipsec" with isHA=true and a per-tunnel id. The SDK's NetworkTunnel
-	// union dispatcher falls back to NetworkTunnelBase for these (because the
-	// NetworkTunnelIpsecRedundant schema requires haTunnelID which is absent
-	// from this endpoint's response). We use the base tunnel's Id as the
-	// haTunnelId — the API's GET /tunnels/ipsec/redundant/{id} accepts either
-	// member of the pair and returns the full redundant tunnel pair.
 	for _, region := range network.Regions {
-		if region.Id != tunnelBody.RegionID {
-			continue
-		}
 		for _, gateway := range region.Instances {
 			for _, tunnel := range gateway.Tunnels {
-				ifName := getNetworkTunnelInterfaceName(tunnel)
-				if ifName != tunnelBody.TunnelName+"01" && ifName != tunnelBody.TunnelName+"02" {
-					continue
-				}
-				// Prefer haTunnelID from the redundant-specific variant if present;
-				// otherwise fall back to the base/single-routed tunnel id —
-				// the API's redundant GET endpoint accepts either pair member's
-				// id. The wire structure for redundant tunnel members is
-				// identical to a single ipsec tunnel (type:"ipsec" + isHA:true),
-				// so the SDK union dispatcher routes redundant pair members
-				// into NetworkTunnelIpsecSingle.
-				if id := getNetworkTunnelHaTunnelId(tunnel); id != "" {
-					return id, diags
-				}
-				if tunnel.NetworkTunnelIpsecSingle != nil && tunnel.NetworkTunnelIpsecSingle.Id != "" {
-					return tunnel.NetworkTunnelIpsecSingle.Id, diags
-				}
-				if tunnel.NetworkTunnelBase != nil && tunnel.NetworkTunnelBase.Id != "" {
-					return tunnel.NetworkTunnelBase.Id, diags
+				if getNetworkTunnelId(tunnel) == tunnelId {
+					return getNetworkTunnelIsHA(tunnel), true, nil
 				}
 			}
 		}
 	}
-	diags = appendErrorDiags(diags, "Unable to find tunnel",
-		fmt.Errorf("no tunnel matched name=%s in region=%s; check tunnel fields or naming convention", tunnelBody.TunnelName, tunnelBody.RegionID))
-	return "", diags
-}
-
-/*
-setNetworkRegionInfos set the network region infos
-  - @param regionsData []perimeter81Sdk.Region - the regions data
-  - @param networkData *perimeter81Sdk.Network - the network data
-  - @param regions []StandardNetworkRegionConfig - the regions
-
-@return void
-*/
-func setNetworkRegionInfos(regionsData []perimeter81Sdk.Region, networkData *perimeter81Sdk.Network, regions []StandardNetworkRegionConfig) {
-	newRegionsData := make([]StandardNetworkRegionConfig, 0)
-	for _, networkRegions := range networkData.Regions {
-		for _, regionData := range regionsData {
-			if networkRegions.Name == regionData.GetDisplayName() {
-				newRegionsData = append(newRegionsData, StandardNetworkRegionConfig{RegionID: networkRegions.Id, CpRegionId: regionData.GetId(), Dns: networkRegions.Dns, Name: networkRegions.Name})
-			}
-		}
-	}
-	for index, regionData := range regions {
-		for _, networkRegions := range newRegionsData {
-			if regionData.CpRegionId == networkRegions.CpRegionId {
-				regions[index].RegionID = networkRegions.RegionID
-				regions[index].Dns = networkRegions.Dns
-				regions[index].Name = networkRegions.Name
-			}
-		}
-	}
+	return false, false, nil
 }
 
 /*
@@ -1228,40 +1186,162 @@ func regionClonsInArray(regionId string, regions []StandardNetworkRegionConfig) 
 }
 
 /*
-importRegions import the manually added regions
-  - @param networkData *perimeter81Sdk.Network - the network data
-  - @param regionsData []perimeter81Sdk.Region - the regions date list
-  - @param regions []StandardNetworkRegionConfig - the regions inside the configuration file if exists
+reconcileNetworkRegions build the `region` list a standard network's Read should
+write to state: the footprint the API actually reports, ordered to match prior
+state.
 
-@return []StandardNetworkRegionConfig - the result
+WHY IT EXISTS (P81-145407). The Read used to seed this list from state -- it
+called flattenRegionsData(d.Get("region")) and then only ever patched those
+entries in place. The API's region count never reached the diff. Delete a region
+out of band (console, or DELETE /v3/networks/standard/{id}/regions/{regionId})
+and its stale entry, dead region_id included, stayed in state; `terraform plan`
+proposed nothing at all, so an operator running plan as a scheduled drift check
+was told the estate matched while a whole region and the gateway in it were
+gone. The same blindness hid the inverse, a region added out of band.
+checkpointsase_network is the sole owner of a standard network's footprint --
+there is no standalone region resource for standard networks, only
+checkpointsase_enhanced_region -- so both directions are real drift here.
+
+Only the Read had to change. Once a removed region drops out of state the list
+is shorter than the config, and resourceNetworkUpdate's existing
+resourceRegionCreate path puts it back.
+
+ORDER IS LOAD-BEARING. `region` is a TypeList, so rebuilding it in the API's
+order would show a reshuffle on every plan of an untouched network. Prior state
+is walked first for exactly that reason, and API-only regions are appended after.
+
+  - @param networkData *perimeter81Sdk.Network - the network as the API reports it
+  - @param regionsData []perimeter81Sdk.Region - the tenant-wide cloud-region catalogue
+  - @param stateRegions []StandardNetworkRegionConfig - the regions currently in state
+
+@return []StandardNetworkRegionConfig - the reconciled regions
 */
-func importRegions(networkData *perimeter81Sdk.Network, regionsData []perimeter81Sdk.Region, regions []StandardNetworkRegionConfig) []StandardNetworkRegionConfig {
-	if len(regions) == 0 {
-		regions = make([]StandardNetworkRegionConfig, len(networkData.Regions))
-		for i, regionItem := range networkData.Regions {
-			region := StandardNetworkRegionConfig{}
-			region.Idle = networkData.IsDefault
-			region.RegionID = regionItem.Id
-			region.Name = regionItem.Name
-			region.Dns = regionItem.Dns
-			for _, regionInfo := range regionsData {
-				if regionInfo.GetDisplayName() == regionItem.Name {
-					region.CpRegionId = regionInfo.GetId()
-					break
-				}
-			}
-			if region.CpRegionId == "" {
-				for _, regionInfo := range regionsData {
-					if regionInfo.GetName() == regionItem.Name {
-						region.CpRegionId = regionInfo.GetId()
-						break
-					}
-				}
-			}
-			regions[i] = region
+func reconcileNetworkRegions(networkData *perimeter81Sdk.Network, regionsData []perimeter81Sdk.Region, stateRegions []StandardNetworkRegionConfig) []StandardNetworkRegionConfig {
+	// A nil network is a caller bug; return an empty footprint rather than
+	// panic, for the same reason getGatewaysInArray guards (P81-144756).
+	if networkData == nil {
+		return make([]StandardNetworkRegionConfig, 0)
+	}
+
+	// The API's view of the footprint, one entry per region the tenant reports.
+	apiRegions := make([]StandardNetworkRegionConfig, 0, len(networkData.Regions))
+	for _, networkRegion := range networkData.Regions {
+		apiRegions = append(apiRegions, StandardNetworkRegionConfig{
+			RegionID:   networkRegion.Id,
+			CpRegionId: cpRegionIdForRegionName(regionsData, networkRegion.Name),
+			Name:       networkRegion.Name,
+			Dns:        networkRegion.Dns,
+		})
+	}
+
+	claimed := make([]bool, len(apiRegions))
+	reconciled := make([]StandardNetworkRegionConfig, 0, len(apiRegions))
+
+	// Prior state first, so an unchanged footprint reads back in the order the
+	// config declares it.
+	for _, stateRegion := range stateRegions {
+		match := matchAPIRegion(apiRegions, claimed, stateRegion)
+		if match < 0 {
+			// Gone on the tenant. Dropping it is the whole point: that is what
+			// makes the removal visible to the plan.
+			continue
+		}
+		claimed[match] = true
+
+		region := apiRegions[match]
+		// `idle` cannot be refreshed: no read model for a standard network's
+		// regions carries it (the same documented gap as
+		// checkpointsase_gateway's `idle`, resource_gateway.go). Carry the
+		// state value forward -- dropping it would make every config
+		// declaring idle=true diff on every plan. This does not close the
+		// gap: resourceNetworkUpdate still has no path that reconciles an
+		// existing region's idle state, so a config declaring idle=true on a
+		// region imported as false keeps diffing until the state is corrected
+		// by hand.
+		region.Idle = stateRegion.Idle
+		if region.CpRegionId == "" {
+			// The catalogue lookup is by name and can miss (a region renamed
+			// tenant-side, a catalogue entry withdrawn). Keeping the state
+			// value beats writing an empty string, which would read as a
+			// removal and propose destroying a region that is still there.
+			region.CpRegionId = stateRegion.CpRegionId
+		}
+		reconciled = append(reconciled, region)
+	}
+
+	// Whatever state did not claim is either an out-of-band addition or, when
+	// state was empty, the whole footprint of a freshly imported network.
+	for i, region := range apiRegions {
+		if !claimed[i] {
+			// Nothing to carry forward, and the API cannot be asked; false
+			// matches what the gateway resource defaults to. On the import
+			// path this false is written once and nothing downstream ever
+			// corrects it.
+			region.Idle = false
+			reconciled = append(reconciled, region)
 		}
 	}
-	return regions
+
+	return reconciled
+}
+
+/*
+matchAPIRegion find the API region a state region refers to.
+
+region_id is the server-assigned identity and is matched first. cpregion_id is
+the fallback for a state entry written before the id was known. A claimed entry
+is never matched twice, so two state blocks on the same cloud region resolve to
+two different API regions rather than collapsing onto one.
+
+  - @param apiRegions []StandardNetworkRegionConfig - the API's view of the footprint
+  - @param claimed []bool - which API regions are already spoken for
+  - @param stateRegion StandardNetworkRegionConfig - the state region to place
+
+@return int - the index into apiRegions, or -1 when the region is gone
+*/
+func matchAPIRegion(apiRegions []StandardNetworkRegionConfig, claimed []bool, stateRegion StandardNetworkRegionConfig) int {
+	if stateRegion.RegionID != "" {
+		for i, apiRegion := range apiRegions {
+			if !claimed[i] && apiRegion.RegionID == stateRegion.RegionID {
+				return i
+			}
+		}
+	}
+	if stateRegion.CpRegionId != "" {
+		for i, apiRegion := range apiRegions {
+			if !claimed[i] && apiRegion.CpRegionId == stateRegion.CpRegionId {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+/*
+cpRegionIdForRegionName resolve a network region's name to a cloud-region id.
+
+The network's regions carry a name, not the catalogue id the config declares as
+cpregion_id, so the two have to be joined by name. displayName is tried first
+and name second -- the same order resource_region.go's
+regionDisplayNameByCpRegionId relies on.
+
+  - @param regionsData []perimeter81Sdk.Region - the tenant-wide cloud-region catalogue
+  - @param name string - the network region's name
+
+@return string - the cloud-region id, or "" when the catalogue has no match
+*/
+func cpRegionIdForRegionName(regionsData []perimeter81Sdk.Region, name string) string {
+	for _, regionInfo := range regionsData {
+		if regionInfo.GetDisplayName() == name {
+			return regionInfo.GetId()
+		}
+	}
+	for _, regionInfo := range regionsData {
+		if regionInfo.GetName() == name {
+			return regionInfo.GetId()
+		}
+	}
+	return ""
 }
 
 /*

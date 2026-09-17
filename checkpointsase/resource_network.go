@@ -3,6 +3,7 @@ package checkpointsase
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
@@ -108,9 +109,14 @@ func resourceNetwork() *schema.Resource {
 							Description: "DNS suffix for the region (server-assigned).",
 						},
 						"idle": {
-							Type:        schema.TypeBool,
-							Optional:    true,
-							Description: "Whether the region's gateways are idle (disabled for user traffic). Set to `false` to make the region active.",
+							Type:     schema.TypeBool,
+							Optional: true,
+							Default:  false,
+							Description: "Whether the region's gateways are idle (disabled for user traffic). Set to `false` to make the region active. " +
+								"Set at creation only: no read model returns it (same gap as `checkpointsase_gateway.idle`), and there is no update " +
+								"path for an existing region either — changing this on a region that already exists is a silent no-op. An " +
+								"**imported** region always starts at `false` here regardless of its real state, since the API cannot be asked; " +
+								"a config declaring `true` will show a permanent diff unless corrected with a `terraform state` edit.",
 						},
 					},
 				},
@@ -278,12 +284,11 @@ func resourceNetworkRead(ctx context.Context, d *schema.ResourceData, m interfac
 		return appendErrorDiags(diags, "Unable to get CpRegions", err)
 	}
 
-	// handle regions terraform import
-	regions := flattenRegionsData(d.Get("region").([]interface{}))
-	regions = importRegions(networkData, regionsData, regions)
-
-	// flatten the regions data and set the network region infos
-	setNetworkRegionInfos(regionsData, networkData, regions)
+	// Reconcile the footprint against what the tenant actually reports, rather
+	// than copying state forward: a region added or removed out of band has to
+	// reach the diff as drift (P81-145407).
+	regions := reconcileNetworkRegions(networkData, regionsData,
+		flattenRegionsData(d.Get("region").([]interface{})))
 	CreateNetworkPayload := perimeter81Sdk.CreateNetworkPayload{
 		Name:   networkData.Name,
 		Tags:   networkData.Tags,
@@ -387,12 +392,73 @@ func resourceNetworkDelete(ctx context.Context, d *schema.ResourceData, m interf
 
 	// get the network id from the resource data
 	networkId := d.Id()
-	// delete the network and check for errors (synchronous operation — returns AsyncOperationResult, no status URL)
-	_, _, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkDelete(ctx, networkId).Execute()
+
+	// NetworkDelete returns its AsyncOperationResult INLINE -- there is no
+	// status URL to poll -- so a non-2xx result.statusCode is the only signal
+	// that the delete was rejected. Discarding the whole response, as this
+	// code used to, meant a deletion the backend completed with a 409 was
+	// reported to Terraform as a successful destroy.
+	result, resp, err := client.StandardNetworksAPI.StandardNetworksControllerV2NetworkDelete(ctx, networkId).Execute()
+	if isNotFound(resp, err) {
+		// The network is already gone. That is the goal state, not a failure.
+		//
+		// This is reachable precisely BECAUSE the convergence wait below keeps
+		// the id in state when it gives up: the backend finishes the deletion
+		// afterwards, and the retry's DELETE then answers 404. Reporting an
+		// error here would wedge the resource in state permanently -- the one
+		// thing retaining the id was supposed to avoid. A plain re-run
+		// refreshes first and never reaches this, but `-refresh=false` and a
+		// saved plan both do.
+		//
+		// resourceGatewayDelete, resourceUserDelete and resourceGroupDelete
+		// all already treat a 404 this way.
+		d.SetId("")
+		return diags
+	}
 	if err != nil {
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to delete network", err)
 	}
+	if result != nil && !isSuccessStatus(int(result.GetStatusCode())) {
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to delete network",
+			&asyncFailedError{StatusCode: int(result.GetStatusCode()), Reasons: result.GetReason()})
+	}
+
+	// A 2xx here means the deletion was ACCEPTED, not that it happened. The
+	// backend tears the network down afterwards, and returning at this point
+	// is what P81-145380 measured: a destroy that exited 0 while the network
+	// was still on the tenant more than seven minutes later, so re-applying
+	// the same configuration collided on the name and failed 409.
+	//
+	// Completion is observed the only way this endpoint allows: re-read the
+	// network until it is absent. resourceRegionDelete already does this for
+	// the sibling DeleteNetworkRegion endpoint, which answers with the same
+	// inline shape.
+	what := fmt.Sprintf("network %s to disappear from the tenant", networkId)
+	pollErr := pollUntilConverged(ctx, func(ctx context.Context) (bool, *http.Response, error) {
+		network, resp, err := client.StandardNetworksAPI.
+			StandardNetworksControllerV2NetworkFind(ctx, networkId).Execute()
+		if isNotFound(resp, err) {
+			return true, resp, nil
+		}
+		if err != nil {
+			return false, resp, err
+		}
+		// A 2xx whose body decodes to JSON null leaves the SDK returning a nil
+		// pointer with no error, which is absence by another name.
+		return network == nil, resp, nil
+	}, convergencePollInterval, convergenceTransientBudget, what)
+	if pollErr != nil {
+		// THE ID STAYS IN STATE. A wait that gave up means the network may
+		// still be on the tenant; clearing the id here would orphan it in
+		// precisely the way the un-waited delete did, and would do it while
+		// reporting success. Keeping the resource is what lets a re-run
+		// finish the job.
+		d.Partial(true)
+		return appendErrorDiags(diags, "Unable to delete network", pollErr)
+	}
+
 	d.SetId("")
 	return diags
 }

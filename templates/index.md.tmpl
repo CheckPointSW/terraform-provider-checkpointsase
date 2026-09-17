@@ -29,10 +29,11 @@ Set `base_url` (or the `BASE_URL` environment variable) to target your API regio
 
 | Region | URL |
 |---|---|
-| US (default) | `https://api.perimeter81.com/api/rest` |
-| EU | `https://api.eu.sase.checkpoint.com/api/rest` |
-| AU | `https://api.au.sase.checkpoint.com/api/rest` |
-| IN | `https://api.in.sase.checkpoint.com/api/rest` |
+| US (default) | `https://public-apigw.us.sase.checkpoint.com` |
+| EU | `https://public-apigw.eu.sase.checkpoint.com` |
+| AU | `https://public-apigw.au.sase.checkpoint.com` |
+| IN | `https://public-apigw.in.sase.checkpoint.com` |
+| CA | `https://public-apigw.ca.sase.checkpoint.com` |
 
 > **Gateway regions vs API regions:** `base_url` selects the control-plane endpoint (one of the four above). Where you actually *deploy* a cloud gateway for a network is a separate dimension covering 50+ locations — discovered at runtime via the `checkpointsase_regions` and `checkpointsase_enhanced_regions` data sources.
 

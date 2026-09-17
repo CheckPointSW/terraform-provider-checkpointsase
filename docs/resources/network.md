@@ -56,7 +56,7 @@ Required:
 
 Optional:
 
-- `idle` (Boolean) Whether the region's gateways are idle (disabled for user traffic). Set to `false` to make the region active.
+- `idle` (Boolean) Whether the region's gateways are idle (disabled for user traffic). Set to `false` to make the region active. Set at creation only: no read model returns it (same gap as `checkpointsase_gateway.idle`), and there is no update path for an existing region either — changing this on a region that already exists is a silent no-op. An **imported** region always starts at `false` here regardless of its real state, since the API cannot be asked; a config declaring `true` will show a permanent diff unless corrected with a `terraform state` edit.
 
 Read-Only:
 

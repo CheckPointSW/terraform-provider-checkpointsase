@@ -2,6 +2,7 @@ package checkpointsase
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -82,7 +83,7 @@ func dataSourceEnhancedRouteTableRead(ctx context.Context, d *schema.ResourceDat
 	response, _, err := client.EnhancedRouteTablesAPI.GetEnhancedRouteTable(ctx, networkId).Execute()
 	if err != nil {
 		d.Partial(true)
-		return appendErrorDiags(diags, "Unable to get Enhanced Route Table", err)
+		return appendErrorDiags(diags, fmt.Sprintf("Unable to get Enhanced Route Table for network_id %q", networkId), err)
 	}
 
 	routesData := flattenEnhancedRouteTableData(response.GetData())

@@ -3,12 +3,12 @@
 page_title: "checkpointsase_ipsec_redundant Resource - checkpointsase"
 subcategory: ""
 description: |-
-  UNAVAILABLE ON THE v3 API — every configuration is refused at plan time. The read, update and delete endpoints are all addressed by an haTunnelId (the id of the HA pair), and the API returns that value from no endpoint: not the network read or list, not the gateway or region reads, not the single-tunnel read, and there is no collection route that lists it. The pair endpoint answers 404 to each member tunnel's own id. Creating the pair succeeds, so this resource refuses at plan time rather than building two real tunnels it could neither manage nor destroy. Use the Harmony SASE console until the API exposes haTunnelID; checkpointsase_ipsec_single is unaffected. Measured in API-FINDINGS.md §1.39. Manages an active/standby IPsec redundant tunnel pair for a checkpointsase_network. Two tunnels (tunnel1 + tunnel2) terminate at distinct remote endpoints for failover; shared_settings (gateway subnets) and advanced_settings (IKE/IPSec parameters, phase1/phase2 proposals) apply to both tunnels uniformly. This resource has no in-place update path. region_id, network_id and tunnel_name are ForceNew, so changing one of those plans a full replacement (destroy + recreate). Changing anything else fails the apply instead, with ipsec-redundant tunnel update is not available yet — this resource's Update handler makes no API call at all. That covers last_updated and, more importantly, every field nested inside tunnel1, tunnel2, shared_settings and advanced_settings: those four blocks are marked ForceNew, but the SDK does not propagate ForceNew from a list into the schema of its element object, so editing a passphrase or an IKE lifetime produces an in-place plan that then errors. To change any of them, taint or replace the resource explicitly (terraform apply -replace=...). A PUT for this tunnel type does exist in the API and is simply not wired up here. Updating in place will be supported in a future version.
+  Manages an active/standby IPsec redundant tunnel pair for a checkpointsase_network. Two tunnels (tunnel1 + tunnel2) terminate at distinct remote endpoints for failover; shared_settings (gateway subnets) and advanced_settings (IKE/IPSec parameters, phase1/phase2 proposals) apply to both tunnels uniformly. The resource id is the HA pair id (haTunnelId), which read, update and delete are all addressed by. It is not returned by the network read, the network list, the gateway or region reads, or the single-tunnel read, and there is no collection route that lists it — the pair endpoint answers 404 to each member tunnel's own id. It is taken instead from the asynchronous create status (result.resource), which is why Create must harvest it rather than search for the pair by name. region_id, network_id and tunnel_name are ForceNew. The tunnel1, tunnel2, shared_settings and advanced_settings blocks are updated in place through PUT, with two exceptions inside them: shared_settings.peak_bandwidth is deprecated and is sent to no v3 endpoint, so changing it does not affect the tunnels, and last_updated is a local timestamp this provider writes after a successful update.
 ---
 
 # checkpointsase_ipsec_redundant (Resource)
 
-**UNAVAILABLE ON THE v3 API — every configuration is refused at plan time.** The read, update and delete endpoints are all addressed by an `haTunnelId` (the id of the HA *pair*), and the API returns that value from no endpoint: not the network read or list, not the gateway or region reads, not the single-tunnel read, and there is no collection route that lists it. The pair endpoint answers 404 to each member tunnel's own id. Creating the pair *succeeds*, so this resource refuses at plan time rather than building two real tunnels it could neither manage nor destroy. Use the Harmony SASE console until the API exposes `haTunnelID`; `checkpointsase_ipsec_single` is unaffected. Measured in API-FINDINGS.md §1.39. Manages an active/standby IPsec redundant tunnel pair for a `checkpointsase_network`. Two tunnels (`tunnel1` + `tunnel2`) terminate at distinct remote endpoints for failover; `shared_settings` (gateway subnets) and `advanced_settings` (IKE/IPSec parameters, phase1/phase2 proposals) apply to both tunnels uniformly. **This resource has no in-place update path.** `region_id`, `network_id` and `tunnel_name` are `ForceNew`, so changing one of those plans a full replacement (destroy + recreate). **Changing anything else fails the apply instead**, with `ipsec-redundant tunnel update is not available yet` — this resource's Update handler makes no API call at all. That covers `last_updated` and, more importantly, every field nested inside `tunnel1`, `tunnel2`, `shared_settings` and `advanced_settings`: those four blocks are marked `ForceNew`, but the SDK does not propagate `ForceNew` from a list into the schema of its element object, so editing a passphrase or an IKE lifetime produces an in-place plan that then errors. **To change any of them, taint or replace the resource explicitly** (`terraform apply -replace=...`). A `PUT` for this tunnel type does exist in the API and is simply not wired up here. Updating in place will be supported in a future version.
+Manages an active/standby IPsec redundant tunnel pair for a `checkpointsase_network`. Two tunnels (`tunnel1` + `tunnel2`) terminate at distinct remote endpoints for failover; `shared_settings` (gateway subnets) and `advanced_settings` (IKE/IPSec parameters, phase1/phase2 proposals) apply to both tunnels uniformly. The resource id is the HA *pair* id (`haTunnelId`), which read, update and delete are all addressed by. It is not returned by the network read, the network list, the gateway or region reads, or the single-tunnel read, and there is no collection route that lists it — the pair endpoint answers 404 to each member tunnel's own id. It is taken instead from the asynchronous create status (`result.resource`), which is why Create must harvest it rather than search for the pair by name. `region_id`, `network_id` and `tunnel_name` are `ForceNew`. The `tunnel1`, `tunnel2`, `shared_settings` and `advanced_settings` blocks are updated in place through `PUT`, with two exceptions inside them: `shared_settings.peak_bandwidth` is deprecated and is sent to no v3 endpoint, so changing it does not affect the tunnels, and `last_updated` is a local timestamp this provider writes after a successful update.
 
 ## Example Usage
 
@@ -152,7 +152,10 @@ Required:
 Optional:
 
 - `remote_id` (String) Optional remote tunnel ID. Computed if not supplied. Must be alphanumeric or a valid IP address.
-- `tunnel_id` (String) The server-assigned tunnel ID. Computed.
+
+Read-Only:
+
+- `tunnel_id` (String) The server-assigned member tunnel ID, populated on read.
 
 
 <a id="nestedblock--tunnel2"></a>
@@ -170,7 +173,10 @@ Required:
 Optional:
 
 - `remote_id` (String) Optional remote tunnel ID. Computed if not supplied. Must be alphanumeric or a valid IP address.
-- `tunnel_id` (String) The server-assigned tunnel ID. Computed.
+
+Read-Only:
+
+- `tunnel_id` (String) The server-assigned member tunnel ID, populated on read.
 
 
 <a id="nestedblock--timeouts"></a>

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -317,4 +318,133 @@ func TestGatewayImportDoesNotPanicWhenTheReadFails(t *testing.T) {
 			}
 		})
 	}
+}
+
+// networkInstanceFixture renders one GET
+// /v3/networks/standard/{networkId}/instances/{gatewayId} body. Every field
+// listed here is required by NetworkInstance's requiredProperties loop, so a
+// fixture missing any of them fails to decode and the test would be measuring
+// the fixture rather than the provider.
+func networkInstanceFixture(networkId, gatewayId string) string {
+	return fmt.Sprintf(`{
+		"createdAt":"2026-09-12T10:00:00.000Z",
+		"network":%q,
+		"region":"reg-1",
+		"instanceType":"s-2vcpu-2gb",
+		"imageType":"standard",
+		"imageVersion":"1.0.0",
+		"dns":"gw.example.test",
+		"ip":"203.0.113.10",
+		"tunnels":[],
+		"id":%q,
+		"tenantId":"tenant-1"
+	}`, networkId, gatewayId)
+}
+
+/*
+TestGatewayDeleteWaitsForTheGatewayToActuallyGo is the regression gate on
+P81-145437.
+
+WHAT THE BUG WAS. DeleteNetworkInstance returns 202 with its
+AsyncOperationResult INLINE -- the removal is accepted, not done. Delete
+checked that inline statusCode, cleared the id and returned. The measured
+result was a `terraform apply -destroy` that exited 0 while the region still
+reported both gateways, and because Terraform had already dropped the resource
+from state, nothing would ever reconcile the one left behind.
+
+WHY NOT POLL A STATUS URL. There isn't one. This endpoint answers with
+AsyncOperationResult ({resource, statusCode, reason}), not the
+AsyncOperationResponse ({statusUrl}) that the create and the tunnel deletes
+return. Completion can only be observed by re-reading the gateway until it is
+absent, which is what resourceRegionDelete already does for the sibling
+DeleteNetworkRegion endpoint.
+
+WHY THE SECOND CASE MATTERS MOST. A wait that gives up must NOT clear the id.
+Clearing it strands the gateway exactly the way the un-waited delete did, and
+does so while reporting success. Keeping the resource in state is what lets a
+re-run finish the job.
+*/
+func TestGatewayDeleteWaitsForTheGatewayToActuallyGo(t *testing.T) {
+	t.Run("returns only once the gateway is absent", func(t *testing.T) {
+		var deletes, gets int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method == http.MethodDelete {
+				deletes++
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(`{"statusCode":202,"reason":[]}`))
+				return
+			}
+			gets++
+			// The gateway is still on the tenant on the first read back --
+			// this is the eventual-consistency window the ticket measured.
+			if gets == 1 {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(networkInstanceFixture("net-1", "gw-1")))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not found","messageCode":"NOT_FOUND","status":404}`))
+		}))
+		defer srv.Close()
+
+		d := schema.TestResourceDataRaw(t, resourceGateway().Schema, map[string]interface{}{
+			"network_id": "net-1",
+			"region_id":  "reg-1",
+		})
+		d.SetId("gw-1")
+
+		diags := resourceGatewayDelete(context.Background(), d, newTestUserAPIClient(srv.URL))
+
+		if diags.HasError() {
+			t.Fatalf("delete reported an error: %v", diags)
+		}
+		if deletes != 1 {
+			t.Errorf("DELETE called %d times, want exactly 1", deletes)
+		}
+		// One read would mean the delete returned on the accepted response
+		// without ever checking, which is the bug.
+		if gets < 2 {
+			t.Errorf("gateway was read back %d time(s); the delete did not wait for it to go", gets)
+		}
+		if d.Id() != "" {
+			t.Errorf("id = %q, want cleared once the gateway is confirmed gone", d.Id())
+		}
+	})
+
+	t.Run("a gateway that never goes is an error, and stays in state", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method == http.MethodDelete {
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(`{"statusCode":202,"reason":[]}`))
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(networkInstanceFixture("net-1", "gw-1")))
+		}))
+		defer srv.Close()
+
+		d := schema.TestResourceDataRaw(t, resourceGateway().Schema, map[string]interface{}{
+			"network_id": "net-1",
+			"region_id":  "reg-1",
+		})
+		d.SetId("gw-1")
+
+		// Stands in for the Delete timeout Terraform puts on the context.
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+
+		diags := resourceGatewayDelete(ctx, d, newTestUserAPIClient(srv.URL))
+
+		if !diags.HasError() {
+			t.Fatal("delete reported success while the gateway was still on the tenant")
+		}
+		if d.Id() == "" {
+			t.Error("id was cleared on a failed wait; the gateway is now orphaned with nothing to reconcile it")
+		}
+		if !strings.Contains(diags[0].Detail, "gw-1") {
+			t.Errorf("diagnostic %q does not name the gateway it gave up on", diags[0].Detail)
+		}
+	})
 }

@@ -2,6 +2,7 @@ package checkpointsase
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -89,7 +90,7 @@ func dataSourceEnhancedNetworkHealthRead(ctx context.Context, d *schema.Resource
 	healthResponse, _, err := client.EnhancedNetworksAPI.GetEnhancedNetworkHealth(ctx, networkId).Execute()
 	if err != nil {
 		d.Partial(true)
-		return appendErrorDiags(diags, "Unable to get Enhanced Network health status", err)
+		return appendErrorDiags(diags, fmt.Sprintf("Unable to get Enhanced Network health status for network_id %q", networkId), err)
 	}
 
 	healthChecks := flattenEnhancedHealthChecks(healthResponse.GetData())

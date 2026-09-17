@@ -58,7 +58,7 @@ resource "checkpointsase_gateway" "standby" {
 
 ### Optional
 
-- `idle` (Boolean) Whether the gateway is created idle (disabled for user traffic). Set at creation only: the API has no endpoint that changes it afterwards, so a change here forces replacement. Not read back either — no read model returns it — so Terraform keeps the value you configured.
+- `idle` (Boolean) Whether the gateway is created idle (disabled for user traffic). Set at creation only: the API has no endpoint that changes it afterwards, so a change here forces replacement. No read model returns it, so Terraform keeps the value you configured and an **imported** gateway takes whatever the configuration says without verification — the API cannot be asked.
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
