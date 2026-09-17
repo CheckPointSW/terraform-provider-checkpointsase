@@ -402,8 +402,15 @@ func resourceIpsecSingleRead(ctx context.Context, d *schema.ResourceData, m inte
 	}
 
 	// get the ipsec-single tunnel and check for errors
-	tunnel, _, err := client.StandardTunnelsAPI.StandardGetIPSecSingleTunnel(ctx, networkId, tunnelId).Execute()
+	tunnel, resp, err := client.StandardTunnelsAPI.StandardGetIPSecSingleTunnel(ctx, networkId, tunnelId).Execute()
 	if err != nil {
+		if isNotFound(resp, err) {
+			// The tunnel was deleted out of band. That is drift, not
+			// failure: clear the id so the next plan proposes recreating it,
+			// instead of wedging the workspace.
+			d.SetId("")
+			return diags
+		}
 		d.Partial(true)
 		return appendErrorDiags(diags, "Unable to read ipsec-single tunnel", err)
 	}
