@@ -767,28 +767,24 @@ func TestEnhancedNetworkPrivateDNSUpdateGuidanceReachesTheDiagnostic(t *testing.
 // ---------------------------------------------------------------------------
 
 /*
-TestEnhancedNetworkPrivateDNSDeleteMakesNoRequest pins decision D9, and it is the
-most important test in this file.
+TestEnhancedNetworkPrivateDNSDeleteTurnsPrivateDNSOff pins P81-145399's fix,
+which retired decision D9. It is the most important test in this file.
 
-`terraform destroy` on this resource must issue ZERO requests. The tempting
-implementation -- PUT {"enabled": false, ...}, "undoing" what was applied -- would
-change how a live production network RESOLVES NAMES as a side effect of somebody
-removing a Terraform resource, with no plan line saying so. The API has no DELETE
-on this path because there is nothing to delete: private DNS is a setting on a
-network, and the network is not ours.
+`terraform destroy` on this resource must PUT the same "off" body Update would
+send for `enabled = false` with empty `attributes`, wait for the async operation
+exactly as Update does, and only then clear the id -- leaving the configuration in
+place is the bug this test guards against (a destroy that exits 0 having changed
+nothing on the tenant, measured live in P81-145399).
 
-THE ASSERTION IS ON THE WHOLE REQUEST LIST AND ON ITS LENGTH, not on the last
-request and not on the absence of one particular verb. A test that asserted "no
-PUT" would pass a Delete that issued a GET; one that inspected only the final call
-cannot see an extra one at all. An empty list is the only assertion that fails for
-every way of getting this wrong.
+THE ASSERTION IS ON THE WHOLE REQUEST LIST, not just its length: it must be a PUT
+to the privateDNS endpoint followed by a poll of the async status, in that order,
+and nothing else -- the same shape resourceEnhancedNetworkPrivateDNSUpdate's own
+test pins.
 
-The warning is asserted in the same test because the two halves are one behaviour.
-A destroy that silently changes nothing and a destroy that silently changes
-everything print the same thing otherwise, and the diagnostic is what tells the
-operator which one happened -- which is what "a no-op that explains itself" means.
+Delete emits no diagnostic on success, deliberately: it behaves exactly like
+Update, and Update does not warn either.
 */
-func TestEnhancedNetworkPrivateDNSDeleteMakesNoRequest(t *testing.T) {
+func TestEnhancedNetworkPrivateDNSDeleteTurnsPrivateDNSOff(t *testing.T) {
 	fake := startEnhancedPrivateDNSFake(t, &enhancedPrivateDNSFake{
 		getBody: measuredPrivateDNSConfigured,
 	})
@@ -804,36 +800,66 @@ func TestEnhancedNetworkPrivateDNSDeleteMakesNoRequest(t *testing.T) {
 		t.Fatalf("the delete reported an error: %s", diagsText(diags))
 	}
 
-	if calls := fake.calls(); len(calls) != 0 {
-		t.Fatalf("destroy issued %d request(s), %v, and must issue NONE (D9). This resource owns "+
-			"a SETTING on a network it did not create. The only write a delete could make is "+
-			"turning private DNS off, which changes how a live network resolves names because "+
-			"somebody removed a Terraform resource", len(calls), calls)
+	calls := fake.calls()
+	if len(calls) != 2 || !strings.HasPrefix(calls[0], "PUT ") ||
+		!strings.HasSuffix(calls[0], "/privateDNS") || !strings.HasPrefix(calls[1], "GET ") {
+		t.Fatalf("destroy issued %v; want exactly a PUT to .../privateDNS followed by a GET of "+
+			"the async status", calls)
+	}
+
+	var putBody string
+	for i, call := range calls {
+		if strings.HasPrefix(call, "PUT ") {
+			putBody = fake.bodies()[i]
+		}
+	}
+	if putBody == "" {
+		t.Fatalf("no PUT body captured; calls: %v", calls)
+	}
+	for _, fragment := range []string{`"enabled":false`, `"servers":[]`, `"searchDomains":[]`} {
+		if !strings.Contains(putBody, fragment) {
+			t.Errorf("the destroy write does not contain %q, which is the legal \"off\" body "+
+				"(API-FINDINGS.md 1.31).\nbody: %s", fragment, putBody)
+		}
 	}
 
 	if d.Id() != "" {
-		t.Errorf("the id is still %q after destroy; Terraform would keep tracking a resource it "+
-			"was told to release", d.Id())
+		t.Errorf("the id is still %q after a successful destroy; Terraform would keep tracking a "+
+			"resource it was told to release", d.Id())
 	}
 
-	var warned bool
-	for _, dg := range diags {
-		if dg.Severity == diag.Warning {
-			warned = true
-		}
+	if len(diags) != 0 {
+		t.Errorf("destroy emitted diagnostics on success, and it should emit none: %s",
+			diagsText(diags))
 	}
-	if !warned {
-		t.Fatalf("destroy emitted no warning. A no-op destroy and a destructive one print the "+
-			"same thing otherwise, so the operator has to be told the network was left as it "+
-			"is. Diagnostics were: %s", diagsText(diags))
+}
+
+/*
+TestEnhancedNetworkPrivateDNSDeleteKeepsTheIdWhenTheWriteFails pins the other half
+of P81-145399's fix: if the destroy write is refused or never completes, this
+resource must stay tracked rather than report a destroy that may not have landed
+on the tenant.
+*/
+func TestEnhancedNetworkPrivateDNSDeleteKeepsTheIdWhenTheWriteFails(t *testing.T) {
+	fake := startEnhancedPrivateDNSFake(t, &enhancedPrivateDNSFake{
+		putStatus: http.StatusUnprocessableEntity,
+		putBody:   measuredPrivateDNSValidationError,
+	})
+
+	d := testEnhancedNetworkPrivateDNSData(t, map[string]interface{}{
+		"network_id": "net-1",
+		"enabled":    true,
+	})
+	d.SetId("net-1")
+
+	diags := resourceEnhancedNetworkPrivateDNSDelete(context.Background(), d, fake.client())
+	if !diags.HasError() {
+		t.Fatalf("expected the destroy to report an error for a refused write; diagnostics were: %s",
+			diagsText(diags))
 	}
-	// The network has to be NAMED, and the operator has to be told what to do
-	// instead -- a warning that says only "nothing happened" leaves them
-	// believing private DNS is off.
-	for _, fragment := range []string{"net-1", "enabled = false"} {
-		if text := diagsText(diags); !strings.Contains(text, fragment) {
-			t.Errorf("the destroy warning does not mention %q.\ngot: %s", fragment, text)
-		}
+	if d.Id() != "net-1" {
+		t.Errorf("the id was cleared despite the destroy write failing; got %q, want %q "+
+			"(a failed destroy must leave the resource tracked)", d.Id(), "net-1")
 	}
 }
 
@@ -1169,8 +1195,10 @@ things about this resource's schema that are decisions rather than transcription
 
  2. network_id is Required and ForceNew. It is the object's ADDRESS: this resource
     owns one setting on the network that id names, so pointing it elsewhere is a
-    different object, not a change to this one. ForceNew is free here precisely
-    because Delete makes no request (D9) -- the replace destroys nothing.
+    different object, not a change to this one. A replace now costs a real write
+    -- Delete turns private DNS off on the old network before Create writes the
+    new one (P81-145399 retired D9's no-op) -- but there is still nothing to
+    migrate.
 */
 func TestEnhancedNetworkPrivateDNSSchemaIsTheSharedOnePlusAnAddress(t *testing.T) {
 	s := resourceEnhancedNetworkPrivateDNS().Schema

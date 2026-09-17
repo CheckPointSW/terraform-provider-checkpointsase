@@ -68,10 +68,11 @@ this in a resource file re-opens the hole.
 ANY RESOURCE THAT CALLS putPrivateDNSAndWait MUST ALSO DECLARE Timeouts. The wait
 polls, so a resource without one silently inherits SDKv2's 20-minute default and
 gives the operator no `timeouts {}` block to raise it with. Both shipping
-resources declare Create and Update against asyncResourceTimeout and deliberately
-omit Delete, which makes no request. This paragraph exists because the same note
+resources declare Create, Update AND Delete against asyncResourceTimeout, because
+Delete calls putPrivateDNSAndWait too now (P81-145399: destroy turns private DNS
+off rather than making no request). This paragraph exists because the same note
 was written once as a downstream contract, was not read, and both resources
-shipped without it.
+shipped without it for Create/Update.
 */
 const (
 	privateDNSAttrEnabled        = "enabled"
@@ -605,6 +606,30 @@ func expandCustomDnsUpdate(d *schema.ResourceData) perimeter81Sdk.CustomDnsUpdat
 	payload.Attributes.DnsPolicy = expandDnsPolicy(block[privateDNSAttrDNSPolicy])
 
 	return payload
+}
+
+/*
+defaultCustomDnsUpdate is the PUT body Delete sends: private DNS turned off, with
+both arrays present and empty.
+
+`{"enabled": false, "attributes": {"servers": [], "searchDomains": []}}` is the
+measured legal "off" body (API-FINDINGS.md 1.31, a 202) and the only body this API
+accepts that clears the configuration: `attributes` cannot be omitted (an absent
+one is a 422), and the arrays cannot be nil (they marshal without `omitempty`, so a
+nil slice would reach the wire as `null` rather than `[]`, which is a 400 on
+`servers`). No `dns_policy` is sent, which clears it too -- the write is a full
+replacement and an omitted optional block is the same as an empty one.
+
+@return perimeter81Sdk.CustomDnsUpdate - the destroy-time PUT body
+*/
+func defaultCustomDnsUpdate() perimeter81Sdk.CustomDnsUpdate {
+	return perimeter81Sdk.CustomDnsUpdate{
+		Enabled: false,
+		Attributes: perimeter81Sdk.CustomDnsUpdateAttributes{
+			Servers:       []perimeter81Sdk.CustomDnsServer{},
+			SearchDomains: []string{},
+		},
+	}
 }
 
 /*

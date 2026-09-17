@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	ctyjson "github.com/hashicorp/go-cty/cty/json"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
@@ -756,33 +755,19 @@ func TestEnhancedRegionPrivateDNSUpdateGuidanceReachesTheDiagnostic(t *testing.T
 // ---------------------------------------------------------------------------
 
 /*
-TestEnhancedRegionPrivateDNSDeleteMakesNoRequest pins decision D9, and it is the
-most important test in this file.
+TestEnhancedRegionPrivateDNSDeleteTurnsPrivateDNSOff pins P81-145399's fix, which
+retired decision D9. It is the most important test in this file and mirrors
+TestEnhancedNetworkPrivateDNSDeleteTurnsPrivateDNSOff.
 
-`terraform destroy` on this resource must issue ZERO requests. The tempting
-implementation -- PUT {"enabled": false, ...}, "undoing" what was applied -- would
-change how a live production region RESOLVES NAMES as a side effect of somebody
-removing a Terraform resource, with no plan line saying so. The API has no DELETE
-on this path because there is nothing to delete: private DNS is a setting on a
-region, and the region is not ours.
+`terraform destroy` on this resource must PUT the same "off" body Update would
+send for `enabled = false` with empty `attributes`, wait for the async operation,
+and only then clear the id -- leaving the configuration in place is the bug this
+test guards against.
 
-THE ASSERTION IS ON THE WHOLE REQUEST LIST AND ON ITS LENGTH, not on the last
-request and not on the absence of one particular verb. A test that asserted "no
-PUT" would pass a Delete that issued a GET; one that inspected only the final call
-cannot see an extra one at all. An empty list is the only assertion that fails for
-every way of getting this wrong.
-
-The warning is asserted in the same test because the two halves are one behaviour.
-A destroy that silently changes nothing and a destroy that silently changes
-everything print the same thing otherwise, and the diagnostic is what tells the
-operator which one happened -- which is what "a no-op that explains itself" means.
-
-BOTH IDS HAVE TO BE NAMED IN IT. "Terraform stopped managing private DNS on
-network net-1" is not actionable for an operator whose network has four regions,
-and a warning naming only the network is exactly what a copy of the sibling's
-Delete would produce.
+Delete emits no diagnostic on success, deliberately: it behaves exactly like
+Update, and Update does not warn either.
 */
-func TestEnhancedRegionPrivateDNSDeleteMakesNoRequest(t *testing.T) {
+func TestEnhancedRegionPrivateDNSDeleteTurnsPrivateDNSOff(t *testing.T) {
 	fake := startEnhancedPrivateDNSFake(t, &enhancedPrivateDNSFake{
 		getBody: measuredPrivateDNSConfigured,
 	})
@@ -799,38 +784,66 @@ func TestEnhancedRegionPrivateDNSDeleteMakesNoRequest(t *testing.T) {
 		t.Fatalf("the delete reported an error: %s", diagsText(diags))
 	}
 
-	if calls := fake.calls(); len(calls) != 0 {
-		t.Fatalf("destroy issued %d request(s), %v, and must issue NONE (D9). This resource owns "+
-			"a SETTING on a region it did not create. The only write a delete could make is "+
-			"turning private DNS off, which changes how a live region resolves names because "+
-			"somebody removed a Terraform resource", len(calls), calls)
+	calls := fake.calls()
+	if len(calls) != 2 || !strings.HasPrefix(calls[0], "PUT ") ||
+		!strings.HasSuffix(calls[0], "/privateDNS") || !strings.HasPrefix(calls[1], "GET ") {
+		t.Fatalf("destroy issued %v; want exactly a PUT to .../privateDNS followed by a GET of "+
+			"the async status", calls)
+	}
+
+	var putBody string
+	for i, call := range calls {
+		if strings.HasPrefix(call, "PUT ") {
+			putBody = fake.bodies()[i]
+		}
+	}
+	if putBody == "" {
+		t.Fatalf("no PUT body captured; calls: %v", calls)
+	}
+	for _, fragment := range []string{`"enabled":false`, `"servers":[]`, `"searchDomains":[]`} {
+		if !strings.Contains(putBody, fragment) {
+			t.Errorf("the destroy write does not contain %q, which is the legal \"off\" body "+
+				"(API-FINDINGS.md 1.31).\nbody: %s", fragment, putBody)
+		}
 	}
 
 	if d.Id() != "" {
-		t.Errorf("the id is still %q after destroy; Terraform would keep tracking a resource it "+
-			"was told to release", d.Id())
+		t.Errorf("the id is still %q after a successful destroy; Terraform would keep tracking a "+
+			"resource it was told to release", d.Id())
 	}
 
-	var warned bool
-	for _, dg := range diags {
-		if dg.Severity == diag.Warning {
-			warned = true
-		}
+	if len(diags) != 0 {
+		t.Errorf("destroy emitted diagnostics on success, and it should emit none: %s",
+			diagsText(diags))
 	}
-	if !warned {
-		t.Fatalf("destroy emitted no warning. A no-op destroy and a destructive one print the "+
-			"same thing otherwise, so the operator has to be told the region was left as it "+
-			"is. Diagnostics were: %s", diagsText(diags))
+}
+
+/*
+TestEnhancedRegionPrivateDNSDeleteKeepsTheIdWhenTheWriteFails mirrors the
+network resource's own test: a refused or incomplete destroy write must leave
+this resource tracked rather than report a destroy that may not have landed.
+*/
+func TestEnhancedRegionPrivateDNSDeleteKeepsTheIdWhenTheWriteFails(t *testing.T) {
+	fake := startEnhancedPrivateDNSFake(t, &enhancedPrivateDNSFake{
+		putStatus: http.StatusUnprocessableEntity,
+		putBody:   measuredPrivateDNSValidationError,
+	})
+
+	d := testEnhancedRegionPrivateDNSData(t, map[string]interface{}{
+		"network_id": testRegionPDNSNetworkID,
+		"region_id":  testRegionPDNSRegionID,
+		"enabled":    true,
+	})
+	d.SetId(testRegionPDNSID)
+
+	diags := resourceEnhancedRegionPrivateDNSDelete(context.Background(), d, fake.client())
+	if !diags.HasError() {
+		t.Fatalf("expected the destroy to report an error for a refused write; diagnostics were: %s",
+			diagsText(diags))
 	}
-	// Both ids, and what to do instead. A warning that says only "nothing
-	// happened" leaves the operator believing private DNS is off; one that names
-	// only the network leaves them guessing which region.
-	for _, fragment := range []string{
-		testRegionPDNSNetworkID, testRegionPDNSRegionID, "enabled = false",
-	} {
-		if text := diagsText(diags); !strings.Contains(text, fragment) {
-			t.Errorf("the destroy warning does not mention %q.\ngot: %s", fragment, text)
-		}
+	if d.Id() != testRegionPDNSID {
+		t.Errorf("the id was cleared despite the destroy write failing; got %q, want %q "+
+			"(a failed destroy must leave the resource tracked)", d.Id(), testRegionPDNSID)
 	}
 }
 
@@ -1240,8 +1253,9 @@ things about this resource's schema that are decisions rather than transcription
  2. BOTH network_id and region_id are Required and ForceNew. Together they are the
     object's ADDRESS: this resource owns one setting on the region those two ids
     name, so pointing it elsewhere is a different object, not a change to this
-    one. ForceNew is free here precisely because Delete makes no request (D9) --
-    the replace destroys nothing.
+    one. A replace now costs a real write -- Delete turns private DNS off on the
+    old region before Create writes the new one (P81-145399 retired D9's no-op)
+    -- but there is still nothing to migrate.
 
 The `attributes` assertion at the end is not duplicate coverage of the network
 resource's. Optional+Computed is a property of the SHARED schema, so it holds here

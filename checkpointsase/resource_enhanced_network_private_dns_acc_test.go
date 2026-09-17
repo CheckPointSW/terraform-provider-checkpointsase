@@ -68,7 +68,8 @@ var randNameEnhancedNetworkPrivateDNS = randStringBytesRmndr()
 /*
 TestAccEnhancedNetworkPrivateDNS_basic covers test-plan rows EPD-01 (apply, then
 an empty re-plan), EPD-03 (flip `enabled` in place), EPD-I01 (import by network
-id) and the LIVE half of decision D9 (destroy leaves the setting in force).
+id) and the LIVE half of P81-145399's fix (destroy turns the setting off, which
+retired decision D9's no-op).
 
 IT DOES NOT ASSUME A CLEAN TENANT, and that is a deliberate constraint rather than
 a nicety. The test tenant currently holds two probe networks left over from
@@ -130,17 +131,20 @@ what it is here to prove.
     Computed did not leak into the nested blocks: those are still Optional-only, so
     the full-replacement semantics survive where a schema can express them.
  7. An empty re-plan over that shape.
- 8. THE LIVE HALF OF D9. The private-DNS resource is removed from the configuration
-    while the network stays, so Terraform destroys the resource alone and the
-    network is still there to be read. The check then GETs the network's private DNS
-    directly and asserts it is STILL enabled with the two servers step 6 wrote.
+ 8. THE LIVE HALF OF P81-145399's FIX. The private-DNS resource is removed from
+    the configuration while the network stays, so Terraform destroys the resource
+    alone and the network is still there to be read. The check then GETs the
+    network's private DNS directly and asserts it is now DISABLED with empty
+    arrays, even though step 6 left it enabled with two servers -- the opposite of
+    what this step asserted under decision D9, which left the configuration live
+    on the tenant after destroy (the bug this fix closes).
 
 Step 8 exists because CheckDestroy cannot do this job here. A full destroy removes
 the network too, and Terraform destroys in reverse dependency order -- private DNS
 first, then its parent -- so by the time CheckDestroy runs the network is gone and
 the GET is a 404 no matter what Delete did. Removing only the resource from the
-configuration is the only way to observe "the claim was released and the setting
-stayed", which is the entire content of D9.
+configuration is the only way to observe what Delete's own write did to the
+network while the network is still there to read.
 */
 func TestAccEnhancedNetworkPrivateDNS_basic(t *testing.T) {
 	t.Parallel()
@@ -263,12 +267,13 @@ func TestAccEnhancedNetworkPrivateDNS_basic(t *testing.T) {
 				Config:   testAccEnhancedNetworkPrivateDNSConfigMeasured(),
 				PlanOnly: true,
 			},
-			// 8. The live half of D9: remove the resource, keep the network.
+			// 8. The live half of P81-145399's fix: remove the resource, keep the
+			// network, and confirm the network's private DNS was turned off.
 			{
 				Config: testAccEnhancedNetworkPrivateDNSConfigNetworkOnly(),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckEnhancedNetworkPrivateDNSGone(privateDNS),
-					testAccCheckEnhancedNetworkPrivateDNSSurvived(network),
+					testAccCheckEnhancedNetworkPrivateDNSTurnedOff(network),
 				),
 			},
 		},
@@ -295,25 +300,22 @@ func testAccCheckEnhancedNetworkPrivateDNSGone(address string) resource.TestChec
 }
 
 /*
-testAccCheckEnhancedNetworkPrivateDNSSurvived is the live evidence for decision
-D9: destroying the resource released Terraform's claim and left the network's
-private DNS exactly as it was.
+testAccCheckEnhancedNetworkPrivateDNSTurnedOff is the live evidence for
+P81-145399's fix: destroying the resource turns the network's private DNS off
+rather than leaving it exactly as it was (decision D9, retired).
 
-The offline test TestEnhancedNetworkPrivateDNSDeleteMakesNoRequest already pins
-that Delete issues zero requests, by counting them against an httptest server.
-What it cannot show is the CONSEQUENCE -- that a live network is still resolving
-names the way the last apply configured it once Terraform has stopped managing
-the setting. This reads the network directly and asserts exactly that.
-
-It asserts on `enabled` AND on the servers, because "still enabled with no
-servers" is not a state the API can hold (servers must be non-empty when enabled
-is true) and would mean something else had happened.
+The offline test TestEnhancedNetworkPrivateDNSDeleteTurnsPrivateDNSOff already
+pins that Delete issues the PUT and waits for it, by asserting the request list
+against an httptest server. What it cannot show is the CONSEQUENCE -- that a live
+network is genuinely no longer resolving names the way the last apply configured
+it, once Terraform has destroyed the resource. This reads the network directly
+and asserts exactly that.
 
   - @param networkAddress string - the enhanced network resource's address in state
 
 @return resource.TestCheckFunc
 */
-func testAccCheckEnhancedNetworkPrivateDNSSurvived(networkAddress string) resource.TestCheckFunc {
+func testAccCheckEnhancedNetworkPrivateDNSTurnedOff(networkAddress string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		rs, ok := s.RootModule().Resources[networkAddress]
 		if !ok {
@@ -331,23 +333,16 @@ func testAccCheckEnhancedNetworkPrivateDNSSurvived(networkAddress string) resour
 				networkId, err)
 		}
 
-		if !customDns.GetEnabled() {
-			return fmt.Errorf("network %s has private DNS DISABLED after the Terraform resource "+
-				"was destroyed, and it was enabled before. Destroy must make NO API call at all "+
-				"(D9): turning off a live network's private DNS because somebody removed a "+
-				"Terraform resource is exactly the outcome that decision exists to prevent",
-				networkId)
+		if customDns.GetEnabled() {
+			return fmt.Errorf("network %s still has private DNS ENABLED after the Terraform "+
+				"resource was destroyed. Destroy must PUT enabled = false with empty attributes "+
+				"(P81-145399), which is the fix this check exists to confirm", networkId)
 		}
 		attributes := customDns.Attributes
-		if attributes == nil || len(attributes.Servers) != 2 {
-			return fmt.Errorf("network %s no longer holds the two DNS servers the last apply "+
-				"wrote (attributes = %+v). Destroy must leave the configuration untouched",
-				networkId, attributes)
-		}
-		if got := attributes.Servers[0].GetAddress(); got != testAccEnhancedNetworkPrivateDNSServer {
-			return fmt.Errorf("network %s servers[0].address is %q after destroy, want %q -- "+
-				"something rewrote the configuration", networkId, got,
-				testAccEnhancedNetworkPrivateDNSServer)
+		if attributes != nil && len(attributes.Servers) != 0 {
+			return fmt.Errorf("network %s still holds %d DNS server(s) after destroy, want none: "+
+				"the destroy write must clear servers as well as disabling private DNS",
+				networkId, len(attributes.Servers))
 		}
 		return nil
 	}
