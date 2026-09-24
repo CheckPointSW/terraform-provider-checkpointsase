@@ -3,6 +3,8 @@ package checkpointsase
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
 
@@ -755,4 +758,34 @@ resource "checkpointsase_object_services" "icmp" {
   }
 }
   `, code)
+}
+
+/*
+TestObjectServicesImportStateErrorsOnMissingId pins P81-145138 for the
+list-based lookup path: importing an id the list endpoint doesn't return must
+fail with an error naming the id, not silently produce a zero-value resource
+via d.SetId("").
+*/
+func TestObjectServicesImportStateErrorsOnMissingId(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"page":1,"totalPage":1,"itemsTotal":0,"data":[]}`))
+	}))
+	defer srv.Close()
+
+	d := schema.TestResourceDataRaw(t, resourceObjectServices().Schema, map[string]interface{}{})
+	d.SetId("svc-missing")
+
+	_, err := resourceObjectServicesImportState(context.Background(), d, newTestUserAPIClient(srv.URL))
+
+	if err == nil {
+		t.Fatal("expected an error importing a nonexistent id, got nil")
+	}
+	if !strings.Contains(err.Error(), "svc-missing") {
+		t.Errorf("error %q does not name the missing id", err.Error())
+	}
+	if d.Id() != "" {
+		t.Errorf("id = %q, want empty: a failed import must not leave a partial resource behind", d.Id())
+	}
 }
