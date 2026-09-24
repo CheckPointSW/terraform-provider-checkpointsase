@@ -13,48 +13,39 @@ import (
 
 /*
 privateDNSNoOpDeleteNote is what `terraform destroy` does to an enhanced
-private-DNS resource, and -- the part that matters -- what it does NOT do.
+private-DNS resource.
 
-DECISION D9, taken by the operator on 2026-08-25 and settled for all three of
-Phase 5's write resources: destroy clears Terraform state and issues NO request.
+DECISION D9 (2026-08-25) chose to leave the configuration in place on destroy.
+SUPERSEDED 2026-09-17 (P81-145399): D9's no-op left a live tenant resolving
+through servers, search domains and a `dns_policy` that no Terraform
+configuration, and no API call, could any longer be traced to. QA measured the
+consequence directly -- destroy an `enhanced_network_private_dns`, then GET the
+same `privateDNS` endpoint on the next line, and the configuration written by the
+apply is still there, byte-for-byte, `enabled: true` included. A destroy that
+exits 0 having changed nothing on the tenant is not a smaller harm than the one D9
+was written against; it is the same shape of surprise from the other direction,
+and it is silent in the same way.
 
-It is the `checkpointsase_support_options` precedent rather than the
-`checkpointsase_firewall_policy` one, and the two differ for a reason that does
-generalise. Firewall policy's Delete writes `policyRules: []` because its rules
-PIN other Terraform objects -- an address object cannot be deleted while a rule
-names it, so leaving the rules behind makes every dependent object in the same
-`terraform destroy` fail with a 409. That write releases something; it is repair.
-
-Private DNS releases nothing. No object is pinned by it, no destroy fails because
-it still holds values, and the only write a Delete could make is
-`{"enabled": false, ...}` -- which would change how a live production network
-RESOLVES NAMES, as a side effect of somebody removing a Terraform resource, with
-no plan line saying so. A setting left behind is a smaller harm than that, so the
-setting is left behind.
-
-The consequence to be honest about, and it is on the resource description as well
-as here: after `terraform destroy` the network keeps whatever private DNS
-configuration was last applied. Destroy releases Terraform's claim on it; it does
-not undo it. If you want private DNS off, apply `enabled = false` first and then
-destroy -- that is the supported way to express it, and it is a different
-operation from removing the resource.
-
-IT IS RENDERED INTO THE REGION RESOURCE'S DESCRIPTION TOO, which is why it no
-longer says "the network". It was written for
-checkpointsase_enhanced_network_private_dns and read correctly there; on
-checkpointsase_enhanced_region_private_dns's registry page "leaves the network
-exactly as it is" describes the wrong object -- destroying a region's private-DNS
-resource leaves that REGION as it is, and says nothing about its network. The
-wording below names neither, which is what a note shared by two resources with
-different objects has to do. Do not put "network" back.
+So Delete now sends the PUT this resource's Update would send for
+`enabled = false` with empty `attributes` -- the measured legal "off" body
+(API-FINDINGS.md 1.31; see defaultCustomDnsUpdate in private_dns.go) -- and waits
+for it exactly as Update does. There is nothing D9's firewall-policy/support-options
+distinction rested on that survives this: this resource is a SETTING with no
+create and no delete of its own, so "destroy" was never going to mean "delete an
+object" either way, and turning the setting off is now the write, not the
+side effect. Import, then destroy without ever running `terraform apply`, produces
+the identical write a `terraform apply` of `enabled = false` would -- which is
+also new: under D9 an unconfigured import followed immediately by destroy made no
+request at all.
 */
-const privateDNSNoOpDeleteNote = "`terraform destroy` on this resource makes NO API call. " +
-	"It releases Terraform's claim on the setting and leaves the configuration exactly as it " +
-	"is — whatever private DNS configuration was last applied stays in force. Destroying it " +
-	"deliberately does not write `enabled = false`, because changing how a live production " +
-	"network resolves names as a side effect of removing a Terraform resource is not " +
-	"something a destroy should do. If you want private DNS off, apply `enabled = false` " +
-	"first, then destroy."
+const privateDNSNoOpDeleteNote = "`terraform destroy` on this resource turns private DNS " +
+	"off: it sends the same write `enabled = false` with empty `attributes` would, and waits " +
+	"for it to complete before returning, exactly as `terraform apply` does. Destroying this " +
+	"resource is therefore NOT free of side effects — it changes how the network resolves " +
+	"names, on purpose, so that a destroyed Terraform resource and the tenant's live " +
+	"configuration cannot go on disagreeing silently. If you want the configuration left in " +
+	"place, do not destroy this resource; remove it from state instead " +
+	"(`terraform state rm`)."
 
 /*
 privateDNSWriteAcceptedButNotCompleted and privateDNSWriteRefused are the two
@@ -74,11 +65,13 @@ caller wrapped it with -- so guidance attached any other way never reaches the
 wire. That was measured on the SWG policies and is why the helper exists
 (utils.go:1283).
 
-Neither mentions `terraform untaint`, and that omission is deliberate rather than
-an oversight. The policy resources have to name it because a tainted whole-policy
-resource is destroyed before it is recreated, and THEIR destroy empties the
-tenant's policy. This resource's Delete makes no request at all (D9), so a replace
-is harmless here: nothing is lost between the destroy and the create.
+Neither mentions `terraform untaint`, and that omission needs re-checking now that
+Delete writes (P81-145399 retired D9). A tainted resource is destroyed before it is
+recreated, and this resource's destroy now turns private DNS off before the
+replacement Create/Update turns it back on -- two writes and one async wait where
+there used to be zero, but not a loss: the same values are re-applied, in order,
+before Terraform reports success. Nothing here has measured that sequence racing
+against itself, so treat it as expected rather than as proven fast.
 
 BOTH ARE RENDERED BY THE REGION RESOURCE TOO, WHICH IS WHY NEITHER SAYS "network"
 ANY MORE AND WHY THE REFUSAL NO LONGER SAYS "this endpoint". They were written for
@@ -115,8 +108,9 @@ const privateDNSWriteAcceptedButNotCompleted = "The API ACCEPTED this write and 
 	"configuration above — Terraform cannot tell from here. Run `terraform plan` to see what " +
 	"it actually holds before changing anything; re-applying is safe once you have " +
 	"looked, because the write is a full replacement and cannot be applied twice to different " +
-	"effect. Destroying this resource would NOT undo a partial write: its Delete makes no API " +
-	"call at all."
+	"effect. Destroying this resource DOES now send its own write -- `enabled = false` with " +
+	"empty `attributes` -- so a destroy after a partial write still lands on a known state; " +
+	"it does not need the partial write to have completed first."
 
 const privateDNSWriteRefused = "The API REFUSED this write, so the private DNS " +
 	"configuration is unchanged. The message above is the server's own. Three rejections have " +
@@ -135,10 +129,12 @@ enhanced network: GET and PUT /v3/networks/enhanced/{networkId}/privateDNS.
 IT IS A SETTING ON AN EXISTING OBJECT, NOT AN OBJECT. There is no POST and no
 DELETE on this path -- the configuration exists as soon as the network does, with
 `enabled: false` and nothing else. So "create" means adopt-and-write, "update" is
-the identical call, and "destroy" means stop tracking (D9, see
-privateDNSNoOpDeleteNote). Only one Terraform resource in one configuration
-should own a given network's private DNS; a second would fight the first on every
-apply.
+the identical call, and "destroy" means write the same "off" body Update would for
+`enabled = false` (see privateDNSNoOpDeleteNote and P81-145399 -- this used to
+mean stop tracking and issue no request, decision D9, which left a destroyed
+resource's configuration live on the tenant). Only one Terraform resource in one
+configuration should own a given network's private DNS; a second would fight the
+first on every apply, on every destroy now too.
 
 THE WRITE IS ASYNCHRONOUS. The PUT declares no success response but 202 -- there is
 no 200 in its response map (swagger.yaml:633) -- so the write has NOT happened when
@@ -202,12 +198,13 @@ func resourceEnhancedNetworkPrivateDNS() *schema.Resource {
 		// resources in this package already declare asyncResourceTimeout for the
 		// same reason.
 		//
-		// THERE IS DELIBERATELY NO Delete TIMEOUT. Delete makes no API call at all
-		// (D9, privateDNSNoOpDeleteNote) -- it clears the id and returns -- so
-		// declaring a budget for it would advertise a wait that cannot happen.
+		// Delete now PUTs and polls too (P81-145399, privateDNSNoOpDeleteNote), so
+		// it needs the same budget Create and Update have, not the absence this
+		// block used to document.
 		Timeouts: &schema.ResourceTimeout{
 			Create: schema.DefaultTimeout(asyncResourceTimeout),
 			Update: schema.DefaultTimeout(asyncResourceTimeout),
+			Delete: schema.DefaultTimeout(asyncResourceTimeout),
 		},
 	}
 }
@@ -225,8 +222,10 @@ private_dns.go.
 `network_id` is Required and ForceNew because it is the object's ADDRESS: this
 resource does not own a network's identity, it owns one setting on the network
 that id names, so pointing it at a different network is a different object rather
-than a change to this one. There is nothing to migrate and nothing to destroy on
-the way -- Delete makes no request (D9) -- so the replace is free.
+than a change to this one. A replace now costs one real write: Delete turns
+private DNS off on the OLD network before Create adopts and writes the new one
+(P81-145399 retired D9's no-op) -- there is nothing to migrate, but it is no longer
+free.
 
 @return map[string]*schema.Schema
 */
@@ -470,36 +469,61 @@ func resourceEnhancedNetworkPrivateDNSUpdate(ctx context.Context, d *schema.Reso
 }
 
 /*
-resourceEnhancedNetworkPrivateDNSDelete removes the resource from Terraform state
-and makes NO API call. That is decision D9, not an unfinished function -- read
-privateDNSNoOpDeleteNote before changing it.
+resourceEnhancedNetworkPrivateDNSDelete turns private DNS off on the network and
+then removes the resource from Terraform state.
 
-The warning is part of the behaviour rather than decoration. A destroy that
-silently changes nothing and a destroy that silently rewrites a production
-network's DNS resolution print the same thing in the console; the diagnostic is
-the only thing that tells the operator which one happened, and "a no-op that
-explains itself" is what D9 asks for.
+THIS USED TO MAKE NO API CALL AT ALL (decision D9), and that no-op is what
+P81-145399 retired: a `terraform destroy` that clears state without a request
+left every configured server, search domain and DNS policy live on the tenant,
+silently, forever, with no plan line ever able to show it again. `putPrivateDNSAndWait`
+with `defaultCustomDnsUpdate()` is exactly the write `terraform apply` of
+`enabled = false` with an empty `attributes` block would send -- see
+privateDNSNoOpDeleteNote and defaultCustomDnsUpdate's own comment for why that
+body, and no other, is the one that both clears the configuration and is legal to
+send.
 
-  - @param ctx context.Context - unused; there is no request to make.
+THE ID IS ONLY CLEARED ON SUCCESS. If the write is refused or never completes,
+this resource stays tracked and the error is the operator's signal to look and
+retry -- clearing the id here regardless would tell Terraform the destroy
+succeeded while the tenant might still hold the old configuration, which is the
+same silent-drift failure this rewrite exists to close.
+
+  - @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
   - @param d *schema.ResourceData - the terraform resource data
-  - @param m interface{} - unused; there is no request to make.
+  - @param m interface{} - the terraform meta data that contains the client
 
 @return diag.Diagnostics
 */
-func resourceEnhancedNetworkPrivateDNSDelete(_ context.Context, d *schema.ResourceData,
-	_ interface{}) diag.Diagnostics {
+func resourceEnhancedNetworkPrivateDNSDelete(ctx context.Context, d *schema.ResourceData,
+	m interface{}) diag.Diagnostics {
 
 	var diags diag.Diagnostics
+	client := m.(*perimeter81Sdk.APIClient)
 
 	networkId := d.Get(privateDNSAttrNetworkID).(string)
-	diags = appendWarningDiags(diags,
-		"Private DNS left unchanged on the network",
-		fmt.Sprintf("Terraform has stopped tracking the private DNS configuration of network %q "+
-			"and made no API call. The network keeps whatever private DNS configuration was "+
-			"last applied — destroying this resource does not turn private DNS off, because "+
-			"changing how a live network resolves names as a side effect of removing a "+
-			"Terraform resource is not something a destroy should do. To turn it off, apply "+
-			"`enabled = false` first and then destroy.", networkId))
+	payload := defaultCustomDnsUpdate()
+
+	accepted, err := putPrivateDNSAndWait(ctx, client,
+		func(ctx context.Context) (*perimeter81Sdk.AsyncOperationResponse, *http.Response, error) {
+			return client.EnhancedPrivateDNSAPI.
+				UpdateEnhancedNetworkPrivateDNS(ctx, networkId).
+				CustomDnsUpdate(payload).
+				Execute()
+		})
+	if err != nil {
+		d.Partial(true)
+
+		// appendErrorDiagsWithGuidance, not appendErrorDiags: see the same note on
+		// resourceEnhancedNetworkPrivateDNSUpdate.
+		if accepted {
+			return appendErrorDiagsWithGuidance(diags,
+				"The enhanced network private DNS destroy write was accepted but did not complete",
+				privateDNSWriteAcceptedButNotCompleted, err)
+		}
+		return appendErrorDiagsWithGuidance(diags,
+			"Unable to turn off enhanced network private DNS on destroy",
+			privateDNSWriteRefused, err)
+	}
 
 	d.SetId("")
 	return diags
@@ -516,7 +540,10 @@ TypeSet -- see that function for why each would be wrong rather than merely
 inconvenient.
 
 Destroy plans never reach CustomizeDiff in SDKv2, which is what we want: a destroy
-has no configuration to check, and this resource's destroy does nothing anyway.
+has no configuration to check, and Delete's own payload is the fixed
+defaultCustomDnsUpdate() body rather than anything read from the diff, so there is
+nothing here for CustomizeDiff to validate even now that destroy writes
+(P81-145399).
 
   - @param ctx context.Context - unused
   - @param d *schema.ResourceDiff - the diff

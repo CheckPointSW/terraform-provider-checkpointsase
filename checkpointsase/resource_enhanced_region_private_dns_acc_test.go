@@ -78,16 +78,16 @@ var randNameEnhancedRegionPrivateDNS = randStringBytesRmndr()
 /*
 TestAccEnhancedRegionPrivateDNS_basic covers test-plan rows EPD-02 (apply, then an
 empty re-plan), EPD-03 (flip `enabled` in place) and EPD-I01 (import by the
-composite id), plus the LIVE half of decision D9 (destroy leaves the setting in
-force).
+composite id), plus the LIVE half of P81-145399's fix (destroy turns the setting
+off, retiring decision D9's no-op).
 
 EPD-D01 -- THE VANISHED PARENT -- IS NOT COVERED HERE, and an earlier version of
 this comment claimed it was. No step below deletes the parent network or region
-out of band, which is the only thing that would exercise it live; step 8 is D9,
-which is a different assertion (the setting SURVIVES a destroy) and was miscounted
-as this one. Covering it for real needs a step that deletes the parent behind
-Terraform's back and then re-plans, and nothing here does that. The drift branch
-itself is covered offline, by
+out of band, which is the only thing that would exercise it live; step 8 asserts
+that destroy turns the setting off, which is a different assertion and was
+miscounted as this one. Covering it for real needs a step that deletes the parent
+behind Terraform's back and then re-plans, and nothing here does that. The drift
+branch itself is covered offline, by
 TestEnhancedRegionPrivateDNSReadClearsIdWhenTheParentIsGone and
 TestEnhancedRegionPrivateDNSImportRejectsAnUnknownParent, against the measured P10
 404. The sibling network test makes no live EPD-D01 claim either, correctly.
@@ -164,17 +164,20 @@ proves what it is here to prove.
     omitted nested block -- the check that `attributes` being Computed did not leak
     into the blocks nested inside it, which are still Optional-only.
  7. An empty re-plan over the dns_policy shape, for exactly that reason.
- 8. THE LIVE HALF OF D9. The private-DNS resource is removed from the configuration
-    while the network stays, so Terraform destroys the resource alone and the
-    region is still there to be read. The check then GETs the region's private DNS
-    directly and asserts it is STILL configured the way step 6 left it.
+ 8. THE LIVE HALF OF P81-145399's FIX. The private-DNS resource is removed from
+    the configuration while the network stays, so Terraform destroys the
+    resource alone and the region is still there to be read. The check then GETs
+    the region's private DNS directly and asserts it is now DISABLED with empty
+    arrays, even though step 6 left it configured -- the opposite of what this
+    step asserted under decision D9, which left the configuration live on the
+    tenant after destroy (the bug this fix closes).
 
 Step 8 exists because CheckDestroy cannot do this job here. A full destroy removes
 the network too, and Terraform destroys in reverse dependency order -- private DNS
 first, then its parent -- so by the time CheckDestroy runs the network is gone and
 the GET is a 404 no matter what Delete did. Removing only the resource from the
-configuration is the only way to observe "the claim was released and the setting
-stayed", which is the entire content of D9.
+configuration is the only way to observe what Delete's own write did to the
+region while the region is still there to read.
 */
 func TestAccEnhancedRegionPrivateDNS_basic(t *testing.T) {
 	t.Parallel()
@@ -305,12 +308,13 @@ func TestAccEnhancedRegionPrivateDNS_basic(t *testing.T) {
 				Config:   testAccEnhancedRegionPrivateDNSConfigWithPolicy(),
 				PlanOnly: true,
 			},
-			// 8. The live half of D9: remove the resource, keep the network.
+			// 8. The live half of P81-145399's fix: remove the resource, keep the
+			// network, and confirm the region's private DNS was turned off.
 			{
 				Config: testAccEnhancedRegionPrivateDNSConfigNetworkOnly(),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckEnhancedRegionPrivateDNSGone(privateDNS),
-					testAccCheckEnhancedRegionPrivateDNSSurvived(network),
+					testAccCheckEnhancedRegionPrivateDNSTurnedOff(network),
 				),
 			},
 		},
@@ -405,26 +409,23 @@ func testAccCheckEnhancedRegionPrivateDNSGone(address string) resource.TestCheck
 }
 
 /*
-testAccCheckEnhancedRegionPrivateDNSSurvived is the live evidence for decision D9:
-destroying the resource released Terraform's claim and left the region's private
-DNS exactly as it was.
+testAccCheckEnhancedRegionPrivateDNSTurnedOff is the live evidence for
+P81-145399's fix: destroying the resource turns the region's private DNS off
+rather than leaving it exactly as it was (decision D9, retired).
 
-The offline test TestEnhancedRegionPrivateDNSDeleteMakesNoRequest already pins that
-Delete issues zero requests, by counting them against an httptest server. What it
-cannot show is the CONSEQUENCE -- that a live region is still resolving names the
-way the last apply configured it once Terraform has stopped managing the setting.
-This reads the region directly and asserts exactly that.
-
-It asserts on `enabled` AND on the dns_policy step 6 wrote, because "still enabled
-with nothing configured" is not a state the API can hold (servers must be non-empty
-when enabled is true) and would mean something else had happened.
+The offline test TestEnhancedRegionPrivateDNSDeleteTurnsPrivateDNSOff already pins
+that Delete issues the PUT and waits for it, by asserting the request list against
+an httptest server. What it cannot show is the CONSEQUENCE -- that a live region
+is genuinely no longer resolving names the way the last apply configured it, once
+Terraform has destroyed the resource. This reads the region directly and asserts
+exactly that.
 
 THE REGION ID IS TAKEN FROM THE NETWORK RESOURCE'S OWN STATE, not from the
 destroyed private-DNS resource -- which is gone by the time this runs, which is
 the whole point of the step. `region.0.id` is the same value
 one(...region[*].id) resolves to in the configuration.
 */
-func testAccCheckEnhancedRegionPrivateDNSSurvived(networkAddress string) resource.TestCheckFunc {
+func testAccCheckEnhancedRegionPrivateDNSTurnedOff(networkAddress string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		rs, ok := s.RootModule().Resources[networkAddress]
 		if !ok {
@@ -444,23 +445,17 @@ func testAccCheckEnhancedRegionPrivateDNSSurvived(networkAddress string) resourc
 				"was destroyed: %w", regionId, networkId, err)
 		}
 
-		if !customDns.GetEnabled() {
-			return fmt.Errorf("region %s of network %s has private DNS DISABLED after the "+
-				"Terraform resource was destroyed, and it was enabled before. Destroy must make "+
-				"NO API call at all (D9): turning off a live region's private DNS because "+
-				"somebody removed a Terraform resource is exactly the outcome that decision "+
-				"exists to prevent", regionId, networkId)
+		if customDns.GetEnabled() {
+			return fmt.Errorf("region %s of network %s still has private DNS ENABLED after the "+
+				"Terraform resource was destroyed. Destroy must PUT enabled = false with empty "+
+				"attributes (P81-145399), which is the fix this check exists to confirm",
+				regionId, networkId)
 		}
 		attributes := customDns.Attributes
-		if attributes == nil || len(attributes.Servers) != 1 {
-			return fmt.Errorf("region %s of network %s no longer holds the DNS server the last "+
-				"apply wrote (attributes = %+v). Destroy must leave the configuration untouched",
-				regionId, networkId, attributes)
-		}
-		if got := attributes.Servers[0].GetAddress(); got != testAccEnhancedRegionPrivateDNSServer {
-			return fmt.Errorf("region %s servers[0].address is %q after destroy, want %q -- "+
-				"something rewrote the configuration", regionId, got,
-				testAccEnhancedRegionPrivateDNSServer)
+		if attributes != nil && len(attributes.Servers) != 0 {
+			return fmt.Errorf("region %s of network %s still holds %d DNS server(s) after "+
+				"destroy, want none: the destroy write must clear servers as well as disabling "+
+				"private DNS", regionId, networkId, len(attributes.Servers))
 		}
 		return nil
 	}

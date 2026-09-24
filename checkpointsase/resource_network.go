@@ -2,6 +2,7 @@ package checkpointsase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -142,6 +143,7 @@ ResourceNetworkImportState Import gateways
 @return diag.Diagnostics
 */
 func ResourceNetworkImportState(ctx context.Context, d *schema.ResourceData, m interface{}) ([]*schema.ResourceData, error) {
+	importId := d.Id()
 	diagnostics := resourceNetworkRead(ctx, d, m)
 	if diagnostics.HasError() {
 		for _, diagnostic := range diagnostics {
@@ -149,6 +151,13 @@ func ResourceNetworkImportState(ctx context.Context, d *schema.ResourceData, m i
 				return nil, fmt.Errorf("could not import network: %s, \n %s", diagnostic.Summary, diagnostic.Detail)
 			}
 		}
+	}
+	// Read clears the id when the network is absent and returns no error
+	// diagnostic (see its not-found branch). Without this check, an import
+	// of a nonexistent id would report success and write an empty resource
+	// into state.
+	if d.Id() == "" {
+		return nil, fmt.Errorf("no network %q exists in this tenant", importId)
 	}
 	return []*schema.ResourceData{d}, nil
 }
@@ -215,6 +224,20 @@ func resourceNetworkCreate(ctx context.Context, d *schema.ResourceData, m interf
 	resource, err := pollStandardNetworkStatusForResource(ctx, client, statusId, standardNetworkPollInterval)
 	if err != nil {
 		diags = appendErrorDiags(diags, "Unable to Create Network", err)
+
+		// A ctx-deadline timeout means the backend may still be provisioning
+		// the network -- it is not a completion the server rejected. If the
+		// last status poll already reported the object's resource URL,
+		// capture the id now so the network lands in state instead of being
+		// created live on the tenant with no Terraform record of it
+		// (P81-146570). The next refresh's GET will confirm whether it
+		// actually exists and either adopt it or clear the id.
+		if errors.Is(err, context.DeadlineExceeded) && resource != "" {
+			d.SetId(getIdFromUrl(resource))
+			d.Partial(true)
+			return diags
+		}
+
 		if isAsyncConflict(err) {
 			// A 409 means the name-match loop below is guaranteed to find the
 			// very network that caused the conflict. Adopting it would point

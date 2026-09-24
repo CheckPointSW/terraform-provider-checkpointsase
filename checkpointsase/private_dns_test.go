@@ -244,10 +244,11 @@ Both resources shipped without it: the shared contract in private_dns.go asked
 for it and neither task read the line. This test is the version of that contract
 that fails.
 
-Delete is asserted ABSENT, not present. Delete makes no API call (D9), so a
-declared Delete budget would advertise a wait that cannot happen -- and a future
-edit that "completed" the block by adding one is a claim about this resource that
-is not true.
+Delete is now asserted PRESENT, and that inverts the test's original claim.
+P81-145399 retired decision D9: Delete calls putPrivateDNSAndWait too now, to
+turn private DNS off rather than leaving it live on the tenant, so a missing
+Delete budget would be the false claim -- it would advertise no wait for a PUT
+that now happens on every destroy.
 */
 func TestPrivateDNSResourcesDeclareAnAsyncTimeout(t *testing.T) {
 	for name, r := range map[string]*schema.Resource{
@@ -263,6 +264,7 @@ func TestPrivateDNSResourcesDeclareAnAsyncTimeout(t *testing.T) {
 			for label, got := range map[string]*time.Duration{
 				"Create": r.Timeouts.Create,
 				"Update": r.Timeouts.Update,
+				"Delete": r.Timeouts.Delete,
 			} {
 				if got == nil {
 					t.Errorf("%s declares no %s timeout; it polls an async operation and must "+
@@ -273,11 +275,6 @@ func TestPrivateDNSResourcesDeclareAnAsyncTimeout(t *testing.T) {
 					t.Errorf("%s %s timeout = %s, want asyncResourceTimeout (%s)",
 						name, label, *got, asyncResourceTimeout)
 				}
-			}
-			if r.Timeouts.Delete != nil {
-				t.Errorf("%s declares a Delete timeout of %s, and Delete makes NO API CALL "+
-					"(D9). A budget for a wait that cannot happen tells the operator something "+
-					"false about this resource", name, *r.Timeouts.Delete)
 			}
 		})
 	}
