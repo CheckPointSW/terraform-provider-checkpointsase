@@ -1,6 +1,7 @@
 package checkpointsase
 
 import (
+	"strings"
 	"testing"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
@@ -226,5 +227,53 @@ func TestReadByIDFromListReturnsTheZeroValueWhenAbsent(t *testing.T) {
 	}
 	if got.id != "" || got.name != "" {
 		t.Errorf("want the zero value on miss, got %+v", got)
+	}
+}
+
+// TestValidateBaseURLRejectsMalformedValues is the plan-time regression test
+// for P81-144754: base_url had no ValidateFunc, so a malformed value was
+// attempted and failed inside Go's HTTP transport with an error that never
+// named base_url. These five values are C927043's fixture.
+func TestValidateBaseURLRejectsMalformedValues(t *testing.T) {
+	bad := []string{
+		"not-a-url",
+		"ftp://example.com",
+		"http://",
+		"https://",
+		"://broken",
+	}
+	for _, s := range bad {
+		_, errs := validateBaseURL(s, "base_url")
+		if len(errs) == 0 {
+			t.Errorf("validateBaseURL(%q): want an error, got none", s)
+			continue
+		}
+		msg := errs[0].Error()
+		if !strings.Contains(msg, "base_url") {
+			t.Errorf("validateBaseURL(%q): error %q does not name base_url", s, msg)
+		}
+		if strings.Contains(msg, "transport") || strings.Contains(msg, "protocol scheme") {
+			t.Errorf("validateBaseURL(%q): error %q leaks transport wording", s, msg)
+		}
+	}
+}
+
+// TestValidateBaseURLAcceptsDocumentedEndpoints pins the five endpoints listed
+// in descriptions["base_url"] (provider.go) as valid, plus the empty string,
+// which base_url's EnvDefaultFunc/DefaultFunc resolves before this ever runs
+// against a configured value.
+func TestValidateBaseURLAcceptsDocumentedEndpoints(t *testing.T) {
+	good := []string{
+		"",
+		"https://public-apigw.us.sase.checkpoint.com",
+		"https://public-apigw.eu.sase.checkpoint.com",
+		"https://public-apigw.au.sase.checkpoint.com",
+		"https://public-apigw.in.sase.checkpoint.com",
+		"https://public-apigw.ca.sase.checkpoint.com",
+	}
+	for _, s := range good {
+		if _, errs := validateBaseURL(s, "base_url"); len(errs) != 0 {
+			t.Errorf("validateBaseURL(%q): want no error, got %v", s, errs)
+		}
 	}
 }
