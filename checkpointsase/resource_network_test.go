@@ -313,3 +313,32 @@ func TestNetworkDeleteWaitsForTheNetworkToActuallyGo(t *testing.T) {
 		}
 	})
 }
+
+/*
+TestNetworkImportStateErrorsOnMissingId pins P81-145138 for the direct-GET
+import path: importing an id the server 404s on must fail with an error
+naming the id, not silently produce a zero-value resource via d.SetId("").
+*/
+func TestNetworkImportStateErrorsOnMissingId(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Network doesn't exist.","messageCode":"NOT_FOUND","status":404}`))
+	}))
+	defer srv.Close()
+
+	d := schema.TestResourceDataRaw(t, resourceNetwork().Schema, map[string]interface{}{})
+	d.SetId("net-missing")
+
+	_, err := ResourceNetworkImportState(context.Background(), d, newTestUserAPIClient(srv.URL))
+
+	if err == nil {
+		t.Fatal("expected an error importing a nonexistent id, got nil")
+	}
+	if !strings.Contains(err.Error(), "net-missing") {
+		t.Errorf("error %q does not name the missing id", err.Error())
+	}
+	if d.Id() != "" {
+		t.Errorf("id = %q, want empty: a failed import must not leave a partial resource behind", d.Id())
+	}
+}

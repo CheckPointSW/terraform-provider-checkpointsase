@@ -1139,6 +1139,13 @@ func appendErrorDiags(diags diag.Diagnostics, summary string, err error) diag.Di
 	} else {
 		errMsg = err.Error()
 	}
+	// A bare {"message":"Unauthorized"} names no cause an operator can act on --
+	// see isUnauthorizedError.
+	if isUnauthorizedError(err) {
+		errMsg = strings.TrimSpace(errMsg) + fmt.Sprintf(
+			"\n\nThis error usually means your API key is invalid. "+
+				"Please verify your base_url (%s) and api_key.", configuredBaseUrl)
+	}
 	diags = append(diags, diag.Diagnostic{
 		Severity: diag.Error,
 		Summary:  summary,
@@ -1187,6 +1194,34 @@ func appendErrorDiagsWithGuidance(diags diag.Diagnostics, summary, guidance stri
 		last.Detail = strings.TrimSpace(last.Detail) + "\n\n" + guidance
 	}
 	return diags
+}
+
+/*
+isUnauthorizedError reports whether err is the SDK's GenericOpenAPIError for a
+401 Unauthorized response.
+
+Matched against Error()'s STATUS PREFIX rather than a body/message string.
+GenericOpenAPIError does not expose the HTTP status as its own field, but every
+branch that builds one -- both the generic `error: localVarHTTPResponse.Status`
+default and formatErrorMessage's "<status>: <message>" for the specially
+handled statuses -- puts net/http's status line (e.g. "401 Unauthorized",
+"403 Forbidden") first. A body/error CONTENT match was tried first and
+rejected: a 403 (authenticated but forbidden) or 422 whose JSON message
+happens to read "Unauthorized" would otherwise get the same "your API key is
+invalid" guidance, which is wrong for those statuses -- see the
+"a 403 with an Unauthorized-looking body is left alone" case in
+TestAppendErrorDiagsEnrichesUnauthorized.
+
+  - @param err error - the error
+
+@return bool - true if err is a 401 GenericOpenAPIError
+*/
+func isUnauthorizedError(err error) bool {
+	var apiErr *perimeter81Sdk.GenericOpenAPIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return strings.HasPrefix(apiErr.Error(), "401")
 }
 
 /*

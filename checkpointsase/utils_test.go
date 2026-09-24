@@ -1,6 +1,9 @@
 package checkpointsase
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -8,6 +11,94 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
+
+// TestAppendErrorDiagsEnrichesUnauthorized is a regression test for
+// P81-145137: a bare {"message":"Unauthorized"} login failure gave the
+// operator no indication that api_key or base_url was the likely cause.
+// appendErrorDiags must append that guidance, naming the base_url the
+// provider was actually configured with, whenever the SDK error is an
+// Unauthorized GenericOpenAPIError -- and must NOT append it for any other
+// error, where the guidance would be actively misleading.
+//
+// The GenericOpenAPIError under test is produced by driving a real SDK call
+// against a stub 401 response, not built by hand: its body/error fields are
+// unexported, so a same-package literal would not exercise the same
+// unmarshalling path production traffic does.
+func TestAppendErrorDiagsEnrichesUnauthorized(t *testing.T) {
+	prevBaseUrl := configuredBaseUrl
+	configuredBaseUrl = "https://public-apigw.us.sase.checkpoint.com"
+	defer func() { configuredBaseUrl = prevBaseUrl }()
+
+	t.Run("unauthorized error gets the guidance", func(t *testing.T) {
+		err := apiErrorFromStub(t, http.StatusUnauthorized, `{"message":"Unauthorized"}`)
+
+		diags := appendErrorDiags(nil, "Unable to authenticate", err)
+		if len(diags) != 1 {
+			t.Fatalf("got %d diagnostics, want 1", len(diags))
+		}
+		detail := diags[0].Detail
+		if !strings.Contains(detail, "Unauthorized") {
+			t.Errorf("Detail %q lost the original server message", detail)
+		}
+		if !strings.Contains(detail, "your API key is invalid") {
+			t.Errorf("Detail %q missing the guidance", detail)
+		}
+		if !strings.Contains(detail, configuredBaseUrl) {
+			t.Errorf("Detail %q does not name the configured base_url", detail)
+		}
+	})
+
+	t.Run("other errors are left alone", func(t *testing.T) {
+		err := apiErrorFromStub(t, http.StatusUnprocessableEntity, `{"message":"VALIDATION_WEB_RULES_REQUIRED"}`)
+
+		diags := appendErrorDiags(nil, "Unable to write policy", err)
+		if len(diags) != 1 {
+			t.Fatalf("got %d diagnostics, want 1", len(diags))
+		}
+		if strings.Contains(diags[0].Detail, "your API key is invalid") {
+			t.Errorf("Detail %q should not carry the Unauthorized guidance", diags[0].Detail)
+		}
+	})
+
+	// Regression for the Copilot review on PR #25: a 403 (authenticated but
+	// forbidden) whose JSON message happens to read "Unauthorized" must not
+	// get the "your API key is invalid" guidance -- that message is about
+	// permissions, not the credential itself, and isUnauthorizedError must key
+	// off the response's status line rather than the body text.
+	t.Run("a 403 with an Unauthorized-looking body is left alone", func(t *testing.T) {
+		err := apiErrorFromStub(t, http.StatusForbidden, `{"message":"Unauthorized"}`)
+
+		diags := appendErrorDiags(nil, "Unable to list regions", err)
+		if len(diags) != 1 {
+			t.Fatalf("got %d diagnostics, want 1", len(diags))
+		}
+		if strings.Contains(diags[0].Detail, "your API key is invalid") {
+			t.Errorf("Detail %q should not carry the Unauthorized guidance for a 403", diags[0].Detail)
+		}
+	})
+}
+
+// apiErrorFromStub drives StandardRegionsAPI's list-regions call against a
+// stub server returning the given status and body, and returns the resulting
+// error -- a real *perimeter81Sdk.GenericOpenAPIError, unmarshalled by the SDK
+// itself exactly as it would be for any other endpoint.
+func apiErrorFromStub(t *testing.T, status int, body string) error {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	client := perimeter81Sdk.NewAPIClient(perimeter81Sdk.NewConfiguration("not-a-real-key", server.URL))
+	_, _, err := client.StandardRegionsAPI.StandardNetworksControllerV2GetRegions(context.Background()).Execute()
+	if err == nil {
+		t.Fatalf("stub returned status %d, want a non-nil error", status)
+	}
+	return err
+}
 
 // TestFlattenTunnelDataDoesNotLeakPointers is a regression test for two bugs in
 // flattenTunnelData:

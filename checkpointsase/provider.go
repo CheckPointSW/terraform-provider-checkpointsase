@@ -37,6 +37,19 @@ logs for the provider needs to know both spellings exist.
 const providerClientName = "terraform-provider-checkpointsase"
 
 /*
+configuredBaseUrl is the base_url the provider block last configured, read by
+appendErrorDiags to name it in the guidance attached to an Unauthorized error.
+
+A package variable rather than a field threaded through every call site: the
+client SDK's login is lazy (GetBearerTokenFromApiKey runs on whichever
+resource's request happens to go out first), so an Unauthorized error can
+surface from any of the ~50 call sites that already call appendErrorDiags, none
+of which otherwise has the base_url in scope -- meta is a bare
+*perimeter81Sdk.APIClient with no exported accessor for it.
+*/
+var configuredBaseUrl string
+
+/*
 Provider Set up the provider schema
 
 @return &schema.Provider
@@ -186,6 +199,12 @@ func providerConfigure(con context.Context, d *schema.ResourceData,
 		return nil, nil
 	}
 	log.Println("[INFO] Initializing Check Point SASE client")
+
+	// Remembered so that appendErrorDiags can name it in the guidance it
+	// attaches to an Unauthorized error -- login is lazy (the SDK fetches its
+	// bearer token on the first real request, from whichever resource runs
+	// first), so there is no single call here to validate eagerly.
+	configuredBaseUrl = baseUrl
 
 	return client, nil
 }
