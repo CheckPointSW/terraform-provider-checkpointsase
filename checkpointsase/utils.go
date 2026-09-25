@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -54,6 +55,34 @@ func validateRemoteID(v interface{}, k string) (warns []string, errs []error) {
 		return warns, errs
 	}
 	errs = append(errs, fmt.Errorf("%q must be alphanumeric or a valid IP address, got: %s", k, s))
+	return warns, errs
+}
+
+// validateBaseURL is a schema.SchemaValidateFunc enforcing that base_url is
+// an absolute http/https URL with a host, per the "Valid values" list in
+// descriptions["base_url"] (provider.go). Without this, a malformed value
+// (a typo, an unsupported scheme, a scheme with no host) was accepted at
+// plan time and only failed inside Go's HTTP transport, surfacing a
+// networking error that never named base_url (P81-144754). An empty string
+// is let through: base_url is Optional with an EnvDefaultFunc, so an unset
+// value here is filled in by Terraform before this ever runs against the
+// resolved default.
+func validateBaseURL(v interface{}, k string) (warns []string, errs []error) {
+	s, ok := v.(string)
+	if !ok {
+		errs = append(errs, fmt.Errorf("expected type of %q to be string", k))
+		return warns, errs
+	}
+	if s == "" {
+		return warns, errs
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		errs = append(errs, fmt.Errorf(
+			"%q must be an absolute http or https URL (e.g. https://public-apigw.us.sase.checkpoint.com), got: %s",
+			k, s))
+		return warns, errs
+	}
 	return warns, errs
 }
 

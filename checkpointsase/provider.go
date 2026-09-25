@@ -65,10 +65,11 @@ func Provider() *schema.Provider {
 				Description: descriptions["api_key"],
 			},
 			"base_url": {
-				Type:        schema.TypeString,
-				Optional:    true,
-				DefaultFunc: schema.EnvDefaultFunc("BASE_URL", perimeter81Sdk.BaseURLUS),
-				Description: descriptions["base_url"],
+				Type:         schema.TypeString,
+				Optional:     true,
+				DefaultFunc:  schema.EnvDefaultFunc("BASE_URL", perimeter81Sdk.BaseURLUS),
+				ValidateFunc: validateBaseURL,
+				Description:  descriptions["base_url"],
 			},
 		},
 		ResourcesMap: map[string]*schema.Resource{
