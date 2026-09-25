@@ -10,6 +10,7 @@ import (
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
 
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
@@ -223,4 +224,180 @@ func TestObjectAddressesImportStateErrorsOnMissingId(t *testing.T) {
 	if d.Id() != "" {
 		t.Errorf("id = %q, want empty: a failed import must not leave a partial resource behind", d.Id())
 	}
+}
+
+/*
+objectAddressesRawConfig builds the cty configuration value Terraform sends for
+this resource, filling every attribute the schema declares — nulls for the ones
+a case does not set — so the value's type matches the resource's ImpliedType()
+exactly, as Terraform's does. Modelled on objectServicesRawConfig.
+*/
+func objectAddressesRawConfig(t *testing.T, valueType string, values ...string) cty.Value {
+	t.Helper()
+	resourceType := resourceObjectAddresses().CoreConfigSchema().ImpliedType()
+
+	valueElements := make([]cty.Value, len(values))
+	for i, v := range values {
+		valueElements[i] = cty.StringVal(v)
+	}
+	valueValue := cty.ListValEmpty(cty.String)
+	if len(valueElements) > 0 {
+		valueValue = cty.ListVal(valueElements)
+	}
+
+	attributes := map[string]cty.Value{}
+	for name, attributeType := range resourceType.AttributeTypes() {
+		attributes[name] = cty.NullVal(attributeType)
+	}
+	attributes["name"] = cty.StringVal("fake-addr")
+	attributes["value_type"] = cty.StringVal(valueType)
+	attributes["value"] = valueValue
+	return cty.ObjectVal(attributes)
+}
+
+/*
+planObjectAddresses runs the SDK's real diff machinery — including CustomizeDiff
+— over a configuration, the way `terraform plan` does. Modelled on
+planObjectServices.
+*/
+func planObjectAddresses(t *testing.T, config cty.Value) error {
+	t.Helper()
+	r := resourceObjectAddresses()
+	_, err := r.Diff(
+		context.Background(),
+		&terraform.InstanceState{RawConfig: config},
+		terraform.NewResourceConfigShimmed(config, r.CoreConfigSchema()),
+		nil,
+	)
+	return err
+}
+
+/*
+TestObjectAddressesValueRulesAreRefusedAtPlanTime is the unit test for P81-144755:
+`value` had no plan-time CIDR validation for a `cidr` entry (unlike
+`network.subnet`), and nothing checked the value count against `value_type`. Both
+gaps let a bad configuration through `terraform plan` and on to the server, which
+returns a 422.
+*/
+func TestObjectAddressesValueRulesAreRefusedAtPlanTime(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		valueType string
+		values    []string
+		wantErr   string
+	}{
+		{name: "ip with one value is accepted", valueType: "ip", values: []string{"193.168.3.1"}},
+		{
+			name:      "ip with two values is rejected",
+			valueType: "ip",
+			values:    []string{"193.168.3.1", "193.168.3.2"},
+			wantErr:   `value_type "ip" requires exactly 1 value, got 2`,
+		},
+		{name: "cidr with a valid cidr is accepted", valueType: "cidr", values: []string{"10.50.0.0/16"}},
+		{
+			name:      "cidr with a malformed cidr is rejected",
+			valueType: "cidr",
+			values:    []string{"10.50.0.0/99"},
+			wantErr:   `to be a valid IPv4 Value`,
+		},
+		{
+			name:      "cidr with two values is rejected on count before ever reaching IsCIDR",
+			valueType: "cidr",
+			values:    []string{"10.50.0.0/16", "10.60.0.0/16"},
+			wantErr:   `value_type "cidr" requires exactly 1 value, got 2`,
+		},
+		{name: "fqdn with one value is accepted", valueType: "fqdn", values: []string{"example.com"}},
+		{
+			name:      "fqdn with two values is rejected",
+			valueType: "fqdn",
+			values:    []string{"a.example.com", "b.example.com"},
+			wantErr:   `value_type "fqdn" requires exactly 1 value, got 2`,
+		},
+		{name: "list with one value is accepted", valueType: "list", values: []string{"193.168.3.1"}},
+		{name: "list with several values is accepted", valueType: "list", values: []string{"193.168.3.1", "193.168.3.2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := planObjectAddresses(t, objectAddressesRawConfig(t, tc.valueType, tc.values...))
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("this configuration is valid but the plan refused it: %v", err)
+			case tc.wantErr == "":
+				return
+			case err == nil:
+				t.Fatalf("this configuration planned cleanly; it must fail with %q", tc.wantErr)
+			case !strings.Contains(err.Error(), tc.wantErr):
+				t.Errorf("the plan error does not say %q, so it cannot be acted on:\n%v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+/*
+objectAddressesRawConfigWithElements is objectAddressesRawConfig's low-level
+sibling: it takes the `value` elements as cty.Value directly, so a test can hand
+it a null or an unknown element instead of always a concrete string.
+*/
+func objectAddressesRawConfigWithElements(t *testing.T, valueType string, valueElements ...cty.Value) cty.Value {
+	t.Helper()
+	resourceType := resourceObjectAddresses().CoreConfigSchema().ImpliedType()
+
+	valueValue := cty.ListValEmpty(cty.String)
+	if len(valueElements) > 0 {
+		valueValue = cty.ListVal(valueElements)
+	}
+
+	attributes := map[string]cty.Value{}
+	for name, attributeType := range resourceType.AttributeTypes() {
+		attributes[name] = cty.NullVal(attributeType)
+	}
+	attributes["name"] = cty.StringVal("fake-addr")
+	attributes["value_type"] = cty.StringVal(valueType)
+	attributes["value"] = valueValue
+	return cty.ObjectVal(attributes)
+}
+
+/*
+TestObjectAddressesValueRulesToleratePartiallyKnownOrNullElements is the
+regression test for the two issues Copilot's PR review raised against
+resourceObjectAddressesCustomizeDiff:
+
+ 1. A list with a known length but an unresolved (unknown) element — e.g.
+    `value = [aws_x.a.id, aws_x.b.id]` — must still be checked against
+    value_type's arity, since the count is already known even though the
+    content is not. The original code bailed out on ANY unknown element via
+    IsWhollyKnown, which let a 2-element `cidr` value through uncaught.
+ 2. A null element (`value = [null]`) must be refused as a configuration
+    error, not reach AsString() and panic the provider.
+*/
+func TestObjectAddressesValueRulesToleratePartiallyKnownOrNullElements(t *testing.T) {
+	unknown := cty.UnknownVal(cty.String)
+
+	t.Run("cidr with two unknown-but-present elements is rejected on count, not silently accepted", func(t *testing.T) {
+		err := planObjectAddresses(t, objectAddressesRawConfigWithElements(t, "cidr", unknown, unknown))
+		if err == nil {
+			t.Fatal("this configuration has 2 values under value_type \"cidr\"; it must fail even though both are unresolved")
+		}
+		if !strings.Contains(err.Error(), `value_type "cidr" requires exactly 1 value, got 2`) {
+			t.Errorf("got error %q, want it to mention the count mismatch", err)
+		}
+	})
+
+	t.Run("cidr with a single unresolved element is accepted, deferring the CIDR check", func(t *testing.T) {
+		err := planObjectAddresses(t, objectAddressesRawConfigWithElements(t, "cidr", unknown))
+		if err != nil {
+			t.Fatalf("a single not-yet-known value must not be refused before it is known: %v", err)
+		}
+	})
+
+	t.Run("cidr with a null element is refused as a config error, not a panic", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("plan panicked instead of returning a diagnostic: %v", r)
+			}
+		}()
+		err := planObjectAddresses(t, objectAddressesRawConfigWithElements(t, "cidr", cty.NullVal(cty.String)))
+		if err == nil {
+			t.Fatal("a null value cannot be a valid CIDR; the plan must refuse it")
+		}
+	})
 }
