@@ -88,9 +88,9 @@ resource "checkpointsase_ipsec_single" "example" {
 
 Required:
 
-- `auth` (List of String) List of phase 1 authentication algorithms (e.g. `["sha256"]`).
-- `dh` (List of Number) List of phase 1 Diffie-Hellman group numbers (e.g. `[14]` for MODP2048).
-- `encryption` (List of String) List of phase 1 encryption algorithms (e.g. `["aes-cbc-256"]`).
+- `auth` (List of String) List of phase 1 authentication algorithms (e.g. `["sha256"]`). Allowed values: `md5`, `sha1`, `sha384`, `sha256`, `sha512`, `aesxcbc`, `aescmac`, `prfmd5`, `prfsha1`, `prfaesxcbc`, `prfaescmac`, `prfsha256`, `prfsha384`, `prfsha512`.
+- `dh` (List of Number) List of phase 1 Diffie-Hellman group numbers (e.g. `[14]` for MODP2048). Allowed values: `2` (MODP1024), `5` (MODP1536), `14` (MODP2048), `19` (ECP256), `20` (ECP384), `21` (ECP521), `31` (Curve25519).
+- `encryption` (List of String) List of phase 1 encryption algorithms (e.g. `["aes256"]`). Allowed values: `3des`, `blowfish128`, `blowfish192`, `blowfish256`, `aes128`, `aes192`, `aes256`, `aes128ctr`, `aes192ctr`, `aes256ctr`, `camellia128`, `camellia192`, `camellia256`, `camellia128ctr`, `camellia192ctr`, `camellia256ctr`, `aes128ccm8`, `aes192ccm8`, `aes256ccm8`, `aes128ccm16`, `aes192ccm16`, `aes256ccm16`, `aes128gcm8`, `aes192gcm8`, `aes256gcm8`, `aes128gcm16`, `aes192gcm16`, `aes256gcm16`, `camellia128ccm16`, `camellia192ccm16`, `camellia256ccm16`, `chacha20poly1305`.
 
 
 <a id="nestedblock--phase2"></a>
@@ -98,9 +98,9 @@ Required:
 
 Required:
 
-- `auth` (List of String) List of phase 2 authentication algorithms.
-- `dh` (List of Number) List of phase 2 Diffie-Hellman group numbers.
-- `encryption` (List of String) List of phase 2 encryption algorithms.
+- `auth` (List of String) List of phase 2 authentication algorithms. Allowed values: `md5`, `sha1`, `sha384`, `sha256`, `sha512`, `aesxcbc`, `aescmac`, `prfmd5`, `prfsha1`, `prfaesxcbc`, `prfaescmac`, `prfsha256`, `prfsha384`, `prfsha512`.
+- `dh` (List of Number) List of phase 2 Diffie-Hellman group numbers. Allowed values: `2` (MODP1024), `5` (MODP1536), `14` (MODP2048), `19` (ECP256), `20` (ECP384), `21` (ECP521), `31` (Curve25519).
+- `encryption` (List of String) List of phase 2 encryption algorithms. Allowed values: `3des`, `blowfish128`, `blowfish192`, `blowfish256`, `aes128`, `aes192`, `aes256`, `aes128ctr`, `aes192ctr`, `aes256ctr`, `camellia128`, `camellia192`, `camellia256`, `camellia128ctr`, `camellia192ctr`, `camellia256ctr`, `aes128ccm8`, `aes192ccm8`, `aes256ccm8`, `aes128ccm16`, `aes192ccm16`, `aes256ccm16`, `aes128gcm8`, `aes192gcm8`, `aes256gcm8`, `aes128gcm16`, `aes192gcm16`, `aes256gcm16`, `camellia128ccm16`, `camellia192ccm16`, `camellia256ccm16`, `chacha20poly1305`.
 
 
 <a id="nestedblock--timeouts"></a>

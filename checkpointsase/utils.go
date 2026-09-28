@@ -189,6 +189,29 @@ const tunnelNameRuleMessage = "must be 3-15 characters using only letters and di
 	"no hyphens, underscores, dots or spaces"
 
 /*
+The four constants below name the IPSec proposal values the contract
+restricts each field to (infra/public_api_v3/yaml/clean-openapi.yaml,
+IPSecAlgorithms / IPSecPhaseCommon / IPSecPhaseCommonV2_3). The schema itself
+carries no enum - the server validates these - so the attribute Description
+is the only list a Terraform user has. See P81-146882.
+*/
+const ipsecAuthValues = "Allowed values: `md5`, `sha1`, `sha384`, `sha256`, `sha512`, `aesxcbc`, " +
+	"`aescmac`, `prfmd5`, `prfsha1`, `prfaesxcbc`, `prfaescmac`, `prfsha256`, `prfsha384`, `prfsha512`."
+
+const ipsecEncryptionValues = "Allowed values: `3des`, `blowfish128`, `blowfish192`, `blowfish256`, " +
+	"`aes128`, `aes192`, `aes256`, `aes128ctr`, `aes192ctr`, `aes256ctr`, `camellia128`, `camellia192`, " +
+	"`camellia256`, `camellia128ctr`, `camellia192ctr`, `camellia256ctr`, `aes128ccm8`, `aes192ccm8`, " +
+	"`aes256ccm8`, `aes128ccm16`, `aes192ccm16`, `aes256ccm16`, `aes128gcm8`, `aes192gcm8`, `aes256gcm8`, " +
+	"`aes128gcm16`, `aes192gcm16`, `aes256gcm16`, `camellia128ccm16`, `camellia192ccm16`, " +
+	"`camellia256ccm16`, `chacha20poly1305`."
+
+const ipsecDHValues = "Allowed values: `2` (MODP1024), `5` (MODP1536), `14` (MODP2048), `19` (ECP256), " +
+	"`20` (ECP384), `21` (ECP521), `31` (Curve25519)."
+
+const ipsecKeyExchangeMethodValues = "Allowed values: `modp1024`, `modp1536`, `modp2048`, `ecp256`, " +
+	"`ecp384`, `ecp521`, `curve25519`."
+
+/*
 p81GatewaySubnetsEnhancedRule is the server's own restriction on
 p81_gateway_subnets for the enhanced-network tunnel endpoints, carried in the
 attribute Description so a reader can tell it is the API's rule and not the
