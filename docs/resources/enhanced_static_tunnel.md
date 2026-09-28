@@ -100,9 +100,9 @@ resource "checkpointsase_enhanced_static_tunnel" "example" {
 
 Required:
 
-- `auth` (List of String) List of phase 1 authentication algorithms.
-- `encryption` (List of String) List of phase 1 encryption algorithms.
-- `key_exchange_method` (List of String) List of phase 1 key exchange methods (Diffie-Hellman groups).
+- `auth` (List of String) List of phase 1 authentication algorithms. Allowed values: `md5`, `sha1`, `sha384`, `sha256`, `sha512`, `aesxcbc`, `aescmac`, `prfmd5`, `prfsha1`, `prfaesxcbc`, `prfaescmac`, `prfsha256`, `prfsha384`, `prfsha512`.
+- `encryption` (List of String) List of phase 1 encryption algorithms. Allowed values: `3des`, `blowfish128`, `blowfish192`, `blowfish256`, `aes128`, `aes192`, `aes256`, `aes128ctr`, `aes192ctr`, `aes256ctr`, `camellia128`, `camellia192`, `camellia256`, `camellia128ctr`, `camellia192ctr`, `camellia256ctr`, `aes128ccm8`, `aes192ccm8`, `aes256ccm8`, `aes128ccm16`, `aes192ccm16`, `aes256ccm16`, `aes128gcm8`, `aes192gcm8`, `aes256gcm8`, `aes128gcm16`, `aes192gcm16`, `aes256gcm16`, `camellia128ccm16`, `camellia192ccm16`, `camellia256ccm16`, `chacha20poly1305`.
+- `key_exchange_method` (List of String) List of phase 1 key exchange methods (Diffie-Hellman groups). Allowed values: `modp1024`, `modp1536`, `modp2048`, `ecp256`, `ecp384`, `ecp521`, `curve25519`.
 
 
 <a id="nestedblock--phase2"></a>
@@ -110,9 +110,9 @@ Required:
 
 Required:
 
-- `auth` (List of String) List of phase 2 authentication algorithms.
-- `encryption` (List of String) List of phase 2 encryption algorithms.
-- `key_exchange_method` (List of String) List of phase 2 key exchange methods (Diffie-Hellman groups).
+- `auth` (List of String) List of phase 2 authentication algorithms. Allowed values: `md5`, `sha1`, `sha384`, `sha256`, `sha512`, `aesxcbc`, `aescmac`, `prfmd5`, `prfsha1`, `prfaesxcbc`, `prfaescmac`, `prfsha256`, `prfsha384`, `prfsha512`.
+- `encryption` (List of String) List of phase 2 encryption algorithms. Allowed values: `3des`, `blowfish128`, `blowfish192`, `blowfish256`, `aes128`, `aes192`, `aes256`, `aes128ctr`, `aes192ctr`, `aes256ctr`, `camellia128`, `camellia192`, `camellia256`, `camellia128ctr`, `camellia192ctr`, `camellia256ctr`, `aes128ccm8`, `aes192ccm8`, `aes256ccm8`, `aes128ccm16`, `aes192ccm16`, `aes256ccm16`, `aes128gcm8`, `aes192gcm8`, `aes256gcm8`, `aes128gcm16`, `aes192gcm16`, `aes256gcm16`, `camellia128ccm16`, `camellia192ccm16`, `camellia256ccm16`, `chacha20poly1305`.
+- `key_exchange_method` (List of String) List of phase 2 key exchange methods (Diffie-Hellman groups). Allowed values: `modp1024`, `modp1536`, `modp2048`, `ecp256`, `ecp384`, `ecp521`, `curve25519`.
 
 
 <a id="nestedblock--timeouts"></a>

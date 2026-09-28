@@ -124,7 +124,7 @@ func resourceIpsecRedundant() *schema.Resource {
 										Type:        schema.TypeList,
 										Required:    true,
 										MinItems:    1,
-										Description: "List of phase 1 authentication algorithms (e.g. `[\"sha256\"]`).",
+										Description: "List of phase 1 authentication algorithms (e.g. `[\"sha256\"]`). " + ipsecAuthValues,
 										Elem: &schema.Schema{
 											Type: schema.TypeString,
 										},
@@ -133,7 +133,7 @@ func resourceIpsecRedundant() *schema.Resource {
 										Type:        schema.TypeList,
 										Required:    true,
 										MinItems:    1,
-										Description: "List of phase 1 encryption algorithms (e.g. `[\"aes-cbc-256\"]`).",
+										Description: "List of phase 1 encryption algorithms (e.g. `[\"aes256\"]`). " + ipsecEncryptionValues,
 										Elem: &schema.Schema{
 											Type: schema.TypeString,
 										},
@@ -141,7 +141,7 @@ func resourceIpsecRedundant() *schema.Resource {
 									"dh": {
 										Type:        schema.TypeList,
 										Required:    true,
-										Description: "List of phase 1 Diffie-Hellman group numbers (e.g. `[14]` for MODP2048).",
+										Description: "List of phase 1 Diffie-Hellman group numbers (e.g. `[14]` for MODP2048). " + ipsecDHValues,
 										Elem: &schema.Schema{
 											Type: schema.TypeInt,
 										},
@@ -158,7 +158,7 @@ func resourceIpsecRedundant() *schema.Resource {
 										Type:        schema.TypeList,
 										Required:    true,
 										MinItems:    1,
-										Description: "List of phase 2 authentication algorithms.",
+										Description: "List of phase 2 authentication algorithms. " + ipsecAuthValues,
 										Elem: &schema.Schema{
 											Type: schema.TypeString,
 										},
@@ -167,7 +167,7 @@ func resourceIpsecRedundant() *schema.Resource {
 										Type:        schema.TypeList,
 										Required:    true,
 										MinItems:    1,
-										Description: "List of phase 2 encryption algorithms.",
+										Description: "List of phase 2 encryption algorithms. " + ipsecEncryptionValues,
 										Elem: &schema.Schema{
 											Type: schema.TypeString,
 										},
@@ -175,7 +175,7 @@ func resourceIpsecRedundant() *schema.Resource {
 									"dh": {
 										Type:        schema.TypeList,
 										Required:    true,
-										Description: "List of phase 2 Diffie-Hellman group numbers.",
+										Description: "List of phase 2 Diffie-Hellman group numbers. " + ipsecDHValues,
 										Elem: &schema.Schema{
 											Type: schema.TypeInt,
 										},
