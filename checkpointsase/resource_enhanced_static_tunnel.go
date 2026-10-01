@@ -25,7 +25,7 @@ func resourceEnhancedStaticTunnel() *schema.Resource {
 			"`checkpointsase_enhanced_network`. A static tunnel terminates at a single " +
 			"remote endpoint identified by `remote_public_ip` (PSK) or via certificate " +
 			"authentication (`auth_type = \"cert\"` + `customer_root_ca`). " +
-			"The tunnel's route is part of the tunnel: Harmony SASE creates it with the " +
+			"The tunnel's route is part of the tunnel: Check Point SASE creates it with the " +
 			"tunnel, and its subnets are this resource's own `remote_gateway_subnets`, so " +
 			"set the routed subnets there — but **never as `0.0.0.0/0`**, which permanently " +
 			"blocks every subsequent update of the tunnel (see that attribute). " +

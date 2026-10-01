@@ -1,7 +1,7 @@
 # Reads the tenant's whole HTTPS-inspection policy without owning it.
 #
 # This is the READ-ONLY half of a name that is also a resource. Use it when the
-# policy belongs to somebody else -- a tenant maintained in the Harmony SASE
+# policy belongs to somebody else -- a tenant maintained in the Check Point SASE
 # console, or another Terraform configuration -- because the resource of the same
 # name deletes every rule its own configuration does not contain.
 #

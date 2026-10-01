@@ -9,7 +9,7 @@
 # Two consequences worth reading before you apply this:
 #
 #   * Any rule that is NOT in this configuration is removed on the next apply,
-#     including rules somebody added in the Harmony SASE console.
+#     including rules somebody added in the Check Point SASE console.
 #   * `terraform destroy` deletes every web access rule in the tenant. The API
 #     documents the result as "all internet traffic will be allowed after
 #     deletion".

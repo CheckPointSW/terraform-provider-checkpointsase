@@ -275,7 +275,7 @@ func TestSchemaP81GatewaySubnetsDocumentTheServerRule(t *testing.T) {
 	}
 	wants := []string{
 		// The server's message, quoted so the reader knows it is the API's rule.
-		`The list of Harmony SASE Subnets can only be "0.0.0.0/0" or the network Subnet`,
+		`The list of Check Point SASE Subnets can only be "0.0.0.0/0" or the network Subnet`,
 		// The status code, so it is recognisable when it arrives.
 		"409",
 		// Where the other permitted value comes from.

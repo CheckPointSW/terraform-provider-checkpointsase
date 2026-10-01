@@ -85,7 +85,7 @@ func testAccPreCheck(t *testing.T) {
 
 /*
 testAccPreCheckRegion is required by the tests that interpolate testAccRegionID()
-into their configuration — a STANDARD Harmony SASE region ID.
+into their configuration — a STANDARD Check Point SASE region ID.
 
 Note which tests deliberately do NOT call it: every fixture built on
 checkpointsase_enhanced_*. Enhanced networks draw from a different region
@@ -100,7 +100,7 @@ exists to remove.
 func testAccPreCheckRegion(t *testing.T) {
 	if v := os.Getenv("CHECKPOINT_SASE_TEST_REGION_ID"); v == "" {
 		t.Fatal("CHECKPOINT_SASE_TEST_REGION_ID must be set for acceptance tests. " +
-			"Harmony SASE region IDs are tenant-specific; list the valid IDs for the " +
+			"Check Point SASE region IDs are tenant-specific; list the valid IDs for the " +
 			"target tenant via the checkpointsase_regions data source or " +
 			"GET /v3/networks/standard/harmony-sase-regions.")
 	}
@@ -113,13 +113,13 @@ func testAccPreCheckRegion(t *testing.T) {
 func testAccPreCheckSecondaryRegion(t *testing.T) {
 	if v := os.Getenv("CHECKPOINT_SASE_TEST_REGION_ID_2"); v == "" {
 		t.Fatal("CHECKPOINT_SASE_TEST_REGION_ID_2 must be set for acceptance tests " +
-			"that require a second, distinct region. Harmony SASE region IDs are " +
+			"that require a second, distinct region. Check Point SASE region IDs are " +
 			"tenant-specific; list the valid IDs for the target tenant via the " +
 			"checkpointsase_regions data source or GET /v3/networks/standard/harmony-sase-regions.")
 	}
 }
 
-// testAccRegionID returns the STANDARD Harmony SASE region ID used by
+// testAccRegionID returns the STANDARD Check Point SASE region ID used by
 // acceptance tests that create standard networks/regions. It is tenant-specific,
 // so it is sourced from the environment rather than hardcoded;
 // testAccPreCheckRegion enforces that it is set, and every caller of this
@@ -129,7 +129,7 @@ func testAccRegionID() string {
 	return os.Getenv("CHECKPOINT_SASE_TEST_REGION_ID")
 }
 
-// testAccRegionID2 returns a second, distinct Harmony SASE region ID for
+// testAccRegionID2 returns a second, distinct Check Point SASE region ID for
 // acceptance tests that need two regions. testAccPreCheckSecondaryRegion
 // enforces that it is set before any such test runs.
 func testAccRegionID2() string {

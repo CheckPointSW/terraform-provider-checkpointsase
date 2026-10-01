@@ -1,6 +1,6 @@
 # Terraform Provider Check Point SASE
 
-This provider manages [Check Point Harmony SASE](https://www.checkpoint.com/harmony-sase/)
+This provider manages [Check Point SASE](https://www.checkpoint.com/harmony-sase/)
 (formerly Perimeter 81) resources with Terraform. The provider name is
 `checkpointsase` and it targets the `/v3` public API.
 

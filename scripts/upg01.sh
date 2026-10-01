@@ -11,7 +11,7 @@
 # registry: the provider has never been published there (registry.terraform.io
 # returns 404 for both the "checkpointsase" and legacy "perimeter81" names),
 # and there is no such thing as "provider 2.3.0" in any case -- "v2.3"
-# denotes the Harmony SASE *API* version, not a provider release. Provider
+# denotes the Check Point SASE *API* version, not a provider release. Provider
 # tags stop at v1.8.1, which predates the rebrand and has a different
 # package layout.
 #
@@ -75,7 +75,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 BASELINE_SHA="d4e7810"          # v2.3-API baseline commit (origin/main)
-BASELINE_VERSION="2.3.0"        # Harmony SASE API version, reused as the
+BASELINE_VERSION="2.3.0"        # Check Point SASE API version, reused as the
 CURRENT_VERSION="3.0.0"         # provider version for this harness's fixture.
 BINARY_NAME="terraform-provider-checkpointsase"
 

@@ -23,7 +23,7 @@ configuration that does both is usually a mistake: the resource owns the whole
 list, so the data source next to it reads what the resource wrote.
 
 What these are FOR is the case where the resource is wrong: a tenant whose policy
-is maintained in the Harmony SASE console, and a Terraform configuration that
+is maintained in the Check Point SASE console, and a Terraform configuration that
 needs to see it -- to name a rule in an output, to count rules, to assert
 something about them -- without adopting it. The resource would delete every
 console-made rule on the next apply. These read and do not write.
@@ -108,7 +108,7 @@ func dataSourceAccessPolicy() *schema.Resource {
 		Description: "Reads the tenant's **entire** web access policy — the whole ordered " +
 			"`webRules` list from `GET /v3/ia/access/policy` — without managing it. " +
 			"Use this to inspect a policy that something else owns: a tenant maintained in " +
-			"the Harmony SASE console, or one managed by a different Terraform configuration. " +
+			"the Check Point SASE console, or one managed by a different Terraform configuration. " +
 			"It takes no arguments; there is one policy per tenant and the API addresses it " +
 			"by path. " +
 			"This does **not** adopt the policy and never writes. The " +
@@ -249,7 +249,7 @@ func dataSourceHttpsInspectionPolicy() *schema.Resource {
 			"`bypassRules` list from `GET /v3/ia/https-inspection/policy` — without managing " +
 			"it. " +
 			"Use this to inspect a policy that something else owns: a tenant maintained in " +
-			"the Harmony SASE console, or one managed by a different Terraform configuration. " +
+			"the Check Point SASE console, or one managed by a different Terraform configuration. " +
 			"It takes no arguments; there is one policy per tenant and the API addresses it " +
 			"by path. " +
 			"This does **not** adopt the policy and never writes. The " +
