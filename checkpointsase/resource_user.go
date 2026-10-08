@@ -101,9 +101,10 @@ func resourceUser() *schema.Resource {
 				ForceNew: true,
 				Default:  "database",
 				Description: "Identity provider backing the account. `database` is Check Point SASE's " +
-					"own directory; the others federate to an external IdP. Write-only: the read " +
-					"model exposes `idProviders`/`idProviderGroups` and no `idpType`, so this is " +
-					"absent from the state of an imported user.",
+					"own directory; `saml`, `gsuite`, `okta`, `azureAD`, and `adLdap` each federate to " +
+					"the external IdP of the same name. Write-only: the read model exposes " +
+					"`idProviders`/`idProviderGroups` and no `idpType`, so this is absent from the " +
+					"state of an imported user.",
 				ValidateFunc: validation.StringInSlice(
 					[]string{"database", "saml", "gsuite", "okta", "azureAD", "adLdap"}, false),
 				// Same shape and same hazard as invite_message: absent from an

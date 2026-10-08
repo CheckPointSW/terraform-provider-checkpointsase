@@ -56,7 +56,7 @@ resource "checkpointsase_user" "engineer" {
 
 - `access_groups` (List of String) IDs of access groups to place the user in at creation time. An empty list is accepted and means no access groups.
 - `email_verified` (Boolean) Create-time instruction, **not** the account's current verification state. `true` marks the address verified up front and skips the verification step; `false` (the default) invites the user and lets them verify. The value is never read back from the server, because the user verifying their own address would otherwise look like drift on an attribute that forces replacement. To observe whether an address has actually been verified, read `email_verified` from the `checkpointsase_users` data source, which has no diff to trigger. Changing this value replaces the user.
-- `idp_type` (String) Identity provider backing the account. `database` is Check Point SASE's own directory; the others federate to an external IdP. Write-only: the read model exposes `idProviders`/`idProviderGroups` and no `idpType`, so this is absent from the state of an imported user.
+- `idp_type` (String) Identity provider backing the account. `database` is Check Point SASE's own directory; `saml`, `gsuite`, `okta`, `azureAD`, and `adLdap` each federate to the external IdP of the same name. Write-only: the read model exposes `idProviders`/`idProviderGroups` and no `idpType`, so this is absent from the state of an imported user.
 - `profile_data` (Block List, Max: 1) Optional profile fields sent with the invitation. (see [below for nested schema](#nestedblock--profile_data))
 
 ### Read-Only
