@@ -998,6 +998,98 @@ func TestHttpsInspectionAdmitsTheFeatureGatedCombinations(t *testing.T) {
 	}
 }
 
+/*
+TestHttpsInspectionDestinationsDomainsIsValidatedAtPlanTime pins P81-145133:
+`destinations.domains` had no ValidateFunc at all, so the bug's literal
+reproduction -- a rule whose domain is `not a domain at all`, spaces included --
+passed `terraform plan` and `terraform apply` and stored a rule that could never
+match any traffic.
+
+The table exercises isHttpsInspectionDomainFQDN directly, not just the bug's one
+reproduction, because the validator reimplements validator.js'
+`isFQDN(str, {allow_wildcard: true})` -- the function the backend itself runs --
+line for line, and a table that only checked the one reported string would not
+catch a translation mistake in any of isFQDN's other rules (no tld, a numeric
+tld, an over-length label, a leading or trailing hyphen, an underscore, a
+full-width character).
+*/
+func TestHttpsInspectionDestinationsDomainsIsValidatedAtPlanTime(t *testing.T) {
+	validate := resourceHttpsInspectionPolicy().Schema["rule"].Elem.(*schema.Resource).
+		Schema["destinations"].Elem.(*schema.Resource).Schema["domains"].Elem.(*schema.Schema).
+		ValidateFunc
+	if validate == nil {
+		t.Fatal("destinations.domains has no ValidateFunc, so P81-145133's reproduction -- " +
+			"\"not a domain at all\" -- reaches POST /v3/ia/https-inspection/policy and " +
+			"stores a rule that can never match any traffic")
+	}
+
+	for _, tc := range []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"P81-145133's exact reproduction", "not a domain at all", true},
+		{"an ordinary domain", "example.com", false},
+		{"a subdomain", "mail.example.com", false},
+		{"a wildcard domain, which this endpoint's own rules are meaningless without",
+			"*.example.com", false},
+		{"no tld at all", "localhost", true},
+		{"a numeric tld", "example.123", true},
+		{"a label of 64 characters, one past isFQDN's limit",
+			strings.Repeat("a", 64) + ".com", true},
+		{"a label of exactly 63 characters", strings.Repeat("a", 63) + ".com", false},
+		{"a label starting with a hyphen", "-example.com", true},
+		{"a label ending with a hyphen", "example-.com", true},
+		{"an internal hyphen, which is legal", "ex-ample.com", false},
+		{"an underscore, which isFQDN refuses by default", "ex_ample.com", true},
+		{"empty", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, errs := validate(tc.value, "destinations.0.domains")
+			if gotErr := len(errs) > 0; gotErr != tc.wantErr {
+				t.Fatalf("ValidateFunc(%q) errors = %v, want error = %v",
+					tc.value, errs, tc.wantErr)
+			}
+		})
+	}
+
+	t.Run("the reproduction is refused by a full plan, not only the raw ValidateFunc", func(t *testing.T) {
+		config := map[string]interface{}{
+			"rule": []interface{}{httpsInspectionValidRule(map[string]interface{}{
+				"destinations": []interface{}{map[string]interface{}{
+					"domains": []interface{}{"not a domain at all"},
+				}},
+			})},
+		}
+		diags := resourceHttpsInspectionPolicy().Validate(terraform.NewResourceConfigRaw(config))
+		if !diags.HasError() {
+			t.Fatal("this configuration validated cleanly; P81-145133's reproduction must be " +
+				"refused at plan time, not stored as a rule that can never match")
+		}
+		var joined string
+		for _, d := range diags {
+			joined += d.Summary + " " + d.Detail + " "
+		}
+		if !strings.Contains(joined, "domains") {
+			t.Errorf("the plan error does not name `domains`:\n%s", joined)
+		}
+	})
+
+	t.Run("a legal domain plans cleanly", func(t *testing.T) {
+		config := map[string]interface{}{
+			"rule": []interface{}{httpsInspectionValidRule(map[string]interface{}{
+				"destinations": []interface{}{map[string]interface{}{
+					"domains": []interface{}{"*.example.com"},
+				}},
+			})},
+		}
+		diags := resourceHttpsInspectionPolicy().Validate(terraform.NewResourceConfigRaw(config))
+		if diags.HasError() {
+			t.Errorf("a legal wildcard domain was refused at plan time: %v", diags)
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Shape of the resource itself
 // ---------------------------------------------------------------------------
