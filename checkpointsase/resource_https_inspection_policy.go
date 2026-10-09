@@ -3,6 +3,7 @@ package checkpointsase
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	perimeter81Sdk "github.com/CheckPointSW/perimeter-81-client-sdk/v3"
@@ -90,6 +91,137 @@ var httpsInspectionDestinationBuckets = []httpsInspectionBucket{
 // httpsInspectionRuleNameMaxRunes is HttpsInspectionRule.name's `maxLength`, in
 // CHARACTERS. See accessPolicyRuleNameMaxRunes.
 const httpsInspectionRuleNameMaxRunes = 100
+
+/*
+httpsInspectionDomainTLDPattern and httpsInspectionDomainLabelPattern together
+reimplement validator.js' `isFQDN(str, { allow_wildcard: true })` -- the exact
+function the backend runs on `destinations.domains` -- rather than an
+independently-invented hostname grammar. See validateHttpsInspectionDomain for
+why that distinction matters and what bug it closes.
+
+Every other option isFQDN takes is left at its default: `require_tld: true`,
+`allow_underscores: false`, `allow_trailing_dot: false`,
+`allow_numeric_tld: false`, `ignore_max_length: false`. Only `allow_wildcard` is
+turned on, matching the one override the backend makes.
+
+httpsInspectionDomainTLDPattern is isFQDN's tld test:
+`/^([a-z\u00A1-\u00A8\u00AA-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF]{2,}|xn[a-z0-9-]{2,})$/i`
+httpsInspectionDomainLabelPattern is isFQDN's per-label test:
+`/^[a-z_\u00a1-\uffff0-9-]+$/i`
+Both are reproduced with the identical Unicode ranges and case-insensitivity,
+because a narrower Go-ism here would silently refuse an internationalised
+domain the backend accepts, or the reverse.
+*/
+var (
+	httpsInspectionDomainTLDPattern = regexp.MustCompile(
+		`(?i)^([a-z\x{00A1}-\x{00A8}\x{00AA}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFEF}]{2,}` +
+			`|xn[a-z0-9-]{2,})$`)
+	httpsInspectionDomainLabelPattern = regexp.MustCompile(
+		`(?i)^[a-z_\x{00A1}-\x{FFFF}0-9-]+$`)
+	httpsInspectionDomainFullWidthPattern = regexp.MustCompile(`[\x{FF01}-\x{FF5E}]`)
+)
+
+/*
+isHttpsInspectionDomainFQDN is validator.js' isFQDN(str, {allow_wildcard: true}),
+translated line for line rather than approximated, so that a value this
+function accepts or refuses matches what /v3/ia/https-inspection/policy's own
+validation does. Diverging from it in either direction would be worse than
+having no validator at all: refuse MORE than the backend and a legal
+configuration a reviewer cannot explain starts failing plan; refuse LESS and
+P81-145133 is still open for the shapes this function misses.
+*/
+func isHttpsInspectionDomainFQDN(s string) bool {
+	// allow_wildcard: true -- the one option this endpoint's own validation
+	// turns on, because "every subdomain of example.com" is the ordinary way
+	// to write a bypass or inspect rule for a whole site.
+	s = strings.TrimPrefix(s, "*.")
+
+	parts := strings.Split(s, ".")
+	// require_tld: true (the default) -- disallow fqdns without a tld.
+	if len(parts) < 2 {
+		return false
+	}
+	tld := parts[len(parts)-1]
+	// allow_numeric_tld: false (the default).
+	if !httpsInspectionDomainTLDPattern.MatchString(tld) {
+		return false
+	}
+	if strings.ContainsAny(tld, " \t\n\r\f\v") {
+		return false
+	}
+	if isAllDigits(tld) {
+		return false
+	}
+
+	for _, part := range parts {
+		// ignore_max_length: false (the default).
+		if len(part) > 63 {
+			return false
+		}
+		if !httpsInspectionDomainLabelPattern.MatchString(part) {
+			return false
+		}
+		if httpsInspectionDomainFullWidthPattern.MatchString(part) {
+			return false
+		}
+		if strings.HasPrefix(part, "-") || strings.HasSuffix(part, "-") {
+			return false
+		}
+		// allow_underscores: false (the default).
+		if strings.Contains(part, "_") {
+			return false
+		}
+	}
+	return true
+}
+
+// isAllDigits is isFQDN's `/^\d+$/` numeric-tld check.
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+/*
+validateHttpsInspectionDomain is destinations.domains' ValidateFunc, and the
+problem it closes is P81-145133.
+
+Before this validator, `destinations.domains` had NO ValidateFunc at all, so a
+rule whose domain was the literal string `not a domain at all` -- spaces
+included -- passed `terraform plan`, passed `terraform apply`, and landed on the
+tenant: the backend's own isFQDN check lives behind POST
+/v3/ia/https-inspection/policy, which this provider never reaches during plan.
+The rule then read back, showed in the console, and could never match any
+traffic, because nothing on the wire is ever that string. For a `bypass` rule
+specifically that is a silent security regression: traffic the customer meant to
+exempt from inspection gets inspected instead, and the configuration looks
+correct the whole time.
+
+This is a gap in an existing pattern, not a new one: the resource already
+refuses CIDR-shaped and enum-shaped garbage at plan time (`IsCIDR` on the tunnel
+resources, `StringInSlice` on `action` / `status` / `applied_on` above), all for
+the same reason -- a wrong value here is never going to be accepted by the
+server as meaning what the operator wrote, so there is no reason to spend a
+round trip discovering that. `domains` was the one destination type that gap had
+not yet closed.
+*/
+func validateHttpsInspectionDomain(v interface{}, k string) (warns []string, errs []error) {
+	domain, ok := v.(string)
+	if !ok {
+		return nil, []error{fmt.Errorf("%s: expected a string", k)}
+	}
+	if !isHttpsInspectionDomainFQDN(domain) {
+		return nil, []error{fmt.Errorf(
+			"%s: %q is not a valid domain", k, domain)}
+	}
+	return nil, nil
+}
 
 // httpsInspectionAppliedOnValues is the `appliedOn` enum. The OpenAPI document
 // and `$defs.ruleAppliedOn` in p81-mongo-validation-schemas agree exactly, and
@@ -575,8 +707,12 @@ func httpsInspectionDestinationsResource() *schema.Resource {
 				Optional: true,
 				Description: "Domains this rule matches — a destination type the web access policy " +
 					"does not have. A set: order is not significant. Omit it to leave the rule " +
-					"unrestricted by domain.",
-				Elem: &schema.Schema{Type: schema.TypeString},
+					"unrestricted by domain. Each entry must be a domain the API's own " +
+					"`isFQDN` validation accepts, with wildcards allowed (`*.example.com`); a value that is not shaped like a domain is refused at plan time.",
+				Elem: &schema.Schema{
+					Type:         schema.TypeString,
+					ValidateFunc: validateHttpsInspectionDomain,
+				},
 			},
 			"addresses": {
 				Type:     schema.TypeSet,
