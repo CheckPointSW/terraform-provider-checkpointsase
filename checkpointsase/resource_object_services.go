@@ -55,6 +55,16 @@ type objectServicesProtocolEntry struct {
 	valueType attrPresence
 	value     attrPresence
 	options   attrPresence
+	// valueTypeStr and valueCount back the arity check in
+	// validateObjectServicesProtocolValueArity: valueType/value above only say
+	// whether the attributes were set, not which value_type was chosen or how
+	// many elements value carries. valueCountKnown is false when the value
+	// list's own length is not yet resolved (e.g. the whole list comes from an
+	// unknown expression), in which case the arity check defers to a later plan
+	// the same way resourceObjectAddressesCustomizeDiff defers its CIDR check.
+	valueTypeStr    string
+	valueCount      int
+	valueCountKnown bool
 }
 
 /*
@@ -114,6 +124,41 @@ func validateObjectServicesProtocols(entries []objectServicesProtocolEntry) erro
 				return fmt.Errorf("protocols[%d]: a %s entry requires both value_type and value. %s",
 					e.index, e.protocol, objectServicesProtocolRule)
 			}
+			if err := validateObjectServicesProtocolValueArity(e); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+/*
+validateObjectServicesProtocolValueArity enforces the arity value_type's
+documentation promises but the schema cannot: `single` means exactly one port,
+and `range` means at least two (a low and a high; the server pairs the first
+two and anything beyond that is still a port list the API accepts). `list`
+carries no arity rule of its own here — MinItems: 1 on the value attribute
+already refuses an empty list.
+
+Skipped when valueCountKnown is false: the value list's own length is not yet
+resolved (e.g. the whole list comes from an unknown expression), so the check
+defers to a later plan rather than reporting against a count it cannot yet
+see — mirroring resourceObjectAddressesCustomizeDiff's handling of value.
+*/
+func validateObjectServicesProtocolValueArity(e objectServicesProtocolEntry) error {
+	if !e.valueCountKnown {
+		return nil
+	}
+	switch e.valueTypeStr {
+	case "single":
+		if e.valueCount != 1 {
+			return fmt.Errorf("protocols[%d]: value_type \"single\" requires exactly 1 value, got %d",
+				e.index, e.valueCount)
+		}
+	case "range":
+		if e.valueCount < 2 {
+			return fmt.Errorf("protocols[%d]: value_type \"range\" requires at least 2 values, got %d",
+				e.index, e.valueCount)
 		}
 	}
 	return nil
@@ -152,12 +197,16 @@ func objectServicesProtocolEntriesFromRawConfig(raw cty.Value) ([]objectServices
 		if element.IsNull() || !element.IsKnown() || !element.Type().IsObjectType() {
 			continue
 		}
+		valueCount, valueCountKnown := rawConfigAttrListLength(element, "value")
 		entries = append(entries, objectServicesProtocolEntry{
-			index:     index,
-			protocol:  rawConfigAttrString(element, "protocol"),
-			valueType: rawConfigAttrPresence(element, "value_type"),
-			value:     rawConfigAttrPresence(element, "value"),
-			options:   rawConfigAttrPresence(element, "protocol_options"),
+			index:           index,
+			protocol:        rawConfigAttrString(element, "protocol"),
+			valueType:       rawConfigAttrPresence(element, "value_type"),
+			value:           rawConfigAttrPresence(element, "value"),
+			options:         rawConfigAttrPresence(element, "protocol_options"),
+			valueTypeStr:    rawConfigAttrString(element, "value_type"),
+			valueCount:      valueCount,
+			valueCountKnown: valueCountKnown,
 		})
 	}
 	return entries, true
@@ -191,6 +240,24 @@ func rawConfigAttrString(element cty.Value, name string) string {
 	return attr.AsString()
 }
 
+// rawConfigAttrListLength returns name's configured list length and true, or
+// (0, false) when the length itself is not yet knowable — absent, null, not a
+// list, or an unknown value where even the length is unresolved. A list's own
+// length is known even when one of its elements is an unresolved
+// interpolation (LengthInt does not require IsWhollyKnown), which is why
+// validateObjectServicesProtocolValueArity can still run in that case —
+// mirrors resourceObjectAddressesCustomizeDiff's count check on `value`.
+func rawConfigAttrListLength(element cty.Value, name string) (int, bool) {
+	if !element.Type().HasAttribute(name) {
+		return 0, false
+	}
+	attr := element.GetAttr(name)
+	if attr.IsNull() || !attr.IsKnown() || !attr.CanIterateElements() {
+		return 0, false
+	}
+	return attr.LengthInt(), true
+}
+
 /*
 objectServicesProtocolEntriesFromDiff is the fallback for a diff that carries no
 raw config. It reads the planned values, where an absent attribute is
@@ -218,7 +285,14 @@ func objectServicesProtocolEntriesFromDiff(d *schema.ResourceDiff) []objectServi
 		value, _ := m["value"].([]interface{})
 		options, _ := m["protocol_options"].(int)
 
-		entry := objectServicesProtocolEntry{index: index, protocol: protocol, options: attrUnknownPresence}
+		entry := objectServicesProtocolEntry{
+			index:           index,
+			protocol:        protocol,
+			options:         attrUnknownPresence,
+			valueTypeStr:    valueType,
+			valueCount:      len(value),
+			valueCountKnown: true,
+		}
 		if valueType != "" {
 			entry.valueType = attrPresent
 		}
