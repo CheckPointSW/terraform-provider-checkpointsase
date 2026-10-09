@@ -412,6 +412,102 @@ func TestObjectServicesProtocolRuleIsRefusedAtPlanTime(t *testing.T) {
 }
 
 /*
+TestObjectServicesProtocolValueArityIsRefusedAtPlanTime pins
+validateObjectServicesProtocolValueArity: `value_type = "single"` must carry
+exactly 1 port (0 or 2+ is refused), and `value_type = "range"` must carry at
+least 2 (0 or 1 is refused). `list` has no arity rule of its own here — an
+empty value is already refused by the value attribute's MinItems: 1.
+*/
+func TestObjectServicesProtocolValueArityIsRefusedAtPlanTime(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		protocols []map[string]cty.Value
+		wantErr   string
+	}{
+		{
+			name: "single with exactly one port is accepted",
+			protocols: []map[string]cty.Value{{
+				"protocol":   cty.StringVal("tcp"),
+				"value_type": cty.StringVal("single"),
+				"value":      objectServicesPorts(443),
+			}},
+		},
+		{
+			name: "single with two ports is rejected",
+			protocols: []map[string]cty.Value{{
+				"protocol":   cty.StringVal("tcp"),
+				"value_type": cty.StringVal("single"),
+				"value":      objectServicesPorts(443, 8443),
+			}},
+			wantErr: `protocols[0]: value_type "single" requires exactly 1 value, got 2`,
+		},
+		{
+			name: "range with two ports is accepted",
+			protocols: []map[string]cty.Value{{
+				"protocol":   cty.StringVal("udp"),
+				"value_type": cty.StringVal("range"),
+				"value":      objectServicesPorts(1000, 2000),
+			}},
+		},
+		{
+			name: "range with one port is rejected",
+			protocols: []map[string]cty.Value{{
+				"protocol":   cty.StringVal("udp"),
+				"value_type": cty.StringVal("range"),
+				"value":      objectServicesPorts(1000),
+			}},
+			wantErr: `protocols[0]: value_type "range" requires at least 2 values, got 1`,
+		},
+		{
+			name: "list with one port is accepted",
+			protocols: []map[string]cty.Value{{
+				"protocol":   cty.StringVal("tcp"),
+				"value_type": cty.StringVal("list"),
+				"value":      objectServicesPorts(443),
+			}},
+		},
+		{
+			name: "list with several ports is accepted",
+			protocols: []map[string]cty.Value{{
+				"protocol":   cty.StringVal("tcp"),
+				"value_type": cty.StringVal("list"),
+				"value":      objectServicesPorts(443, 8080, 8443),
+			}},
+		},
+		{
+			name: "the offending entry is named by its own index",
+			protocols: []map[string]cty.Value{
+				{
+					"protocol":   cty.StringVal("tcp"),
+					"value_type": cty.StringVal("single"),
+					"value":      objectServicesPorts(443),
+				},
+				{
+					"protocol":   cty.StringVal("udp"),
+					"value_type": cty.StringVal("range"),
+					"value":      objectServicesPorts(53),
+				},
+			},
+			wantErr: `protocols[1]: value_type "range" requires at least 2 values, got 1`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := planObjectServices(t, objectServicesRawConfig(t, tc.protocols...))
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("this configuration is valid but the plan refused it: %v", err)
+			case tc.wantErr == "":
+				return
+			case err == nil:
+				t.Fatalf("this configuration planned cleanly; it must fail with %q", tc.wantErr)
+			case !strings.Contains(err.Error(), tc.wantErr):
+				t.Errorf("the plan error does not say %q, so it cannot be acted on:\n%v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+/*
 TestObjectServicesProtocolRuleWithoutARawConfig pins what the fallback in
 objectServicesProtocolEntriesFromDiff can and cannot do, so the degradation is a
 recorded property rather than a surprise.
