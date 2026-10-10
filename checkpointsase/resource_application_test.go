@@ -453,7 +453,7 @@ func testAccCheckApplicationGrantsTheDefaultGroup() resource.TestCheckFunc {
 //   - The id is cleared, so Terraform stops tracking a resource it was told to
 //     release. Dropping it from state is the agreed behaviour, not a bug.
 //   - Exactly one warning, naming the application by name AND id, and no error.
-//     The name and id are what an operator types into the Infinity Portal to
+//     The name and id are what an operator types into the Check Point Portal to
 //     finish the job by hand, so a warning that omits them is a warning that
 //     cannot be acted on. The severity is Warning rather than Error on purpose:
 //     erroring would break `terraform destroy` for every existing user to tell

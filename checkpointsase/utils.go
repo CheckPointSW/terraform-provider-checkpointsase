@@ -221,7 +221,7 @@ Measured live 2026-08-17. Creating an enhanced static tunnel
 (POST /v3/networks/enhanced/{networkId}/tunnels/ipsec/static) with
 p81GatewaySubnets set to an arbitrary CIDR is refused:
 
-	409 {"message":"The list of Harmony SASE Subnets can only be \"0.0.0.0/0\"
+	409 {"message":"The list of Check Point SASE Subnets can only be \"0.0.0.0/0\"
 	     or the network Subnet","messageCode":"CONFLICT"}
 
 So the permitted values are exactly two: the default route, or the enclosing
@@ -252,7 +252,7 @@ endpoint was exercised — and whether the standard-network endpoints
 const p81GatewaySubnetsEnhancedRule = "Server-enforced: the list can hold only " +
 	"`0.0.0.0/0` or the parent `checkpointsase_enhanced_network`'s own `subnet`; " +
 	"any other CIDR is refused at apply time with " +
-	"`409 The list of Harmony SASE Subnets can only be \"0.0.0.0/0\" or the network Subnet`. " +
+	"`409 The list of Check Point SASE Subnets can only be \"0.0.0.0/0\" or the network Subnet`. " +
 	"The plan-time validator checks CIDR format only — the permitted subnet lives on " +
 	"another resource and is usually unknown while planning, so the allowed-value half " +
 	"of the rule cannot be checked before apply."

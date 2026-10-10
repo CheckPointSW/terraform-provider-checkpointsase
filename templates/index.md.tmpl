@@ -3,18 +3,18 @@
 page_title: "{{ .ProviderShortName }} Provider"
 subcategory: ""
 description: |-
-  Manage Check Point Harmony SASE resources via the Public REST API.
+  Manage Check Point SASE resources via the Public REST API.
 ---
 
 # {{ .ProviderShortName }} Provider
 
-The Check Point SASE Terraform provider manages [Check Point Harmony SASE](https://www.checkpoint.com/harmony/sase/) resources — networks (standard cloud-hosted and enhanced SD-WAN), gateways, IPsec / OpenVPN / WireGuard tunnels, firewall policies, the object library (addresses and services), and applications — through the Harmony SASE Public REST API.
+The Check Point SASE Terraform provider manages [Check Point SASE](https://www.checkpoint.com/harmony/sase/) resources — networks (standard cloud-hosted and enhanced SD-WAN), gateways, IPsec / OpenVPN / WireGuard tunnels, firewall policies, the object library (addresses and services), and applications — through the Check Point SASE Public REST API.
 
-Compatible with **Harmony SASE Public API v2.3.0 and later**. Earlier API versions are not supported by this provider.
+Compatible with **Check Point SASE Public API v2.3.0 and later**. Earlier API versions are not supported by this provider.
 
 ## Authentication
 
-The provider authenticates with an API key (JWT). Generate one in the Check Point Infinity Portal under **Harmony SASE → Settings → API Keys**.
+The provider authenticates with an API key (JWT). Generate one in the Check Point Portal under **Check Point SASE → Settings → API Keys**.
 
 The key can be supplied two ways:
 

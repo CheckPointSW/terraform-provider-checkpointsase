@@ -2,7 +2,7 @@
 # configuration of it. Every use is rejected during `terraform plan`, for
 # `type = "static"` and `type = "dynamic"` alike.
 #
-# A route is not a separate object — it belongs to its tunnel. Harmony SASE
+# A route is not a separate object — it belongs to its tunnel. Check Point SASE
 # creates the route when the tunnel is created, and the route's subnets are the
 # tunnel's own `remote_gateway_subnets`: one value, two views. So there is
 # never a tunnel without a route, and nothing here for Terraform to create.

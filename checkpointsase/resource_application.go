@@ -90,9 +90,9 @@ func resourceApplication() *schema.Resource {
 			"**All attributes are immutable**: any change to a field on this resource " +
 			"forces full replacement (destroy + re-create), not in-place update. " +
 			"**`terraform destroy` only removes the resource from state, and warns " +
-			"that it did so.** The Harmony SASE Public API exposes no delete endpoint " +
+			"that it did so.** The Check Point SASE Public API exposes no delete endpoint " +
 			"for applications, so the application continues to exist on the server. " +
-			"Delete it manually via the Infinity Portal if needed.",
+			"Delete it manually via the Check Point Portal if needed.",
 		CreateContext: resourceApplicationCreate,
 		ReadContext:   resourceApplicationRead,
 		DeleteContext: resourceApplicationDelete,
@@ -514,7 +514,7 @@ that message as "the application is gone". The provider was right that it could
 not delete; it was wrong to report that it had. The warning is the whole fix.
 
 The name and the id are both in the message on purpose: they are what an operator
-types into the Infinity Portal to finish the job by hand, and a warning that
+types into the Check Point Portal to finish the job by hand, and a warning that
 cannot be acted on is barely better than the silence it replaced. Both are read
 before SetId clears the id.
 
@@ -567,9 +567,9 @@ func resourceApplicationDelete(_ context.Context, d *schema.ResourceData, _ inte
 	diags = appendWarningDiags(diags,
 		fmt.Sprintf("Application %q was left on the tenant", appName),
 		fmt.Sprintf("Terraform has stopped tracking application %q (id %s) and made no API "+
-			"call. The Harmony SASE Public API exposes no DELETE for applications, so it is "+
+			"call. The Check Point SASE Public API exposes no DELETE for applications, so it is "+
 			"still on the tenant and still reachable by the users and groups it grants. "+
-			"Delete it manually in the Infinity Portal if you no longer want it.\n\n"+
+			"Delete it manually in the Check Point Portal if you no longer want it.\n\n"+
 			"If this destroy is part of a replacement (every attribute on this resource is "+
 			"immutable, so any change forces one), the application named above is the OLD "+
 			"one, and it stays on the tenant whether or not the replacement is created. A "+

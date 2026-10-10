@@ -193,7 +193,7 @@ func resourceAccessPolicy() *schema.Resource {
 			"order the policy is stored in, and every apply is a single `POST` that replaces the " +
 			"array. There is no partial update. " +
 			"**Any rule that is not in your configuration is removed on the next apply.** That " +
-			"includes rules somebody added in the Harmony SASE console: this resource cannot " +
+			"includes rules somebody added in the Check Point SASE console: this resource cannot " +
 			"merge with them, and adopting a tenant whose policy is also edited by hand will " +
 			"delete those edits. Only one Terraform resource, in one configuration, can manage " +
 			"this policy. " +
