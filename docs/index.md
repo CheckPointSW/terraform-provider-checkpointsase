@@ -10,7 +10,7 @@ description: |-
 
 The Check Point SASE Terraform provider manages [Check Point SASE](https://www.checkpoint.com/harmony/sase/) resources — networks (standard cloud-hosted and enhanced SD-WAN), gateways, IPsec / OpenVPN / WireGuard tunnels, firewall policies, the object library (addresses and services), and applications — through the Check Point SASE Public REST API.
 
-Compatible with **Check Point SASE Public API v2.3.0 and later**. Earlier API versions are not supported by this provider.
+Compatible with **Check Point SASE Public API v3.0.0 and later**. Earlier API versions are not supported by this provider.
 
 ## Authentication
 
