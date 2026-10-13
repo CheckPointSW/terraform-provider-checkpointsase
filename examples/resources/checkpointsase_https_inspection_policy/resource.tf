@@ -10,7 +10,7 @@
 # Two consequences worth reading before you apply this:
 #
 #   * Any rule that is NOT in this configuration is removed on the next apply,
-#     including rules somebody added in the Harmony SASE console.
+#     including rules somebody added in the Check Point SASE console.
 #   * `terraform destroy` removes every bypass rule in the tenant. Traffic those
 #     rules were excluding from HTTPS inspection stops being excluded.
 #

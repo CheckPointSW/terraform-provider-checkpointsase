@@ -113,7 +113,7 @@ gap, and why it must not be "fixed" into a reset.
 func resourceSupportOptions() *schema.Resource {
 	return &schema.Resource{
 		Description: "Manages the end-user support options of a Check Point SASE **account** — the " +
-			"phone, live-chat and user-guide entries the Harmony SASE agent shows to end users. " +
+			"phone, live-chat and user-guide entries the Check Point SASE agent shows to end users. " +
 			"This is an account-wide singleton, not a per-network object: there is no " +
 			"`network_id`, one instance covers the whole tenant, and its id is always " +
 			"`support-options`. " +

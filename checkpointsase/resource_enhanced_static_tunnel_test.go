@@ -301,7 +301,7 @@ resource "checkpointsase_enhanced_static_tunnel" "demo" {
   # This is server-side; the provider sends the same body either way.
   #
   # p81_gateway_subnets is separately constrained -- create answers
-  #   409 "The list of Harmony SASE Subnets can only be "0.0.0.0/0" or the
+  #   409 "The list of Check Point SASE Subnets can only be "0.0.0.0/0" or the
   #        network Subnet"
   # for anything else, so the default route is the correct value for it.
   p81_gateway_subnets    = ["0.0.0.0/0"]
@@ -369,7 +369,7 @@ resource "checkpointsase_enhanced_static_tunnel" "demo" {
   # This is server-side; the provider sends the same body either way.
   #
   # p81_gateway_subnets is separately constrained -- create answers
-  #   409 "The list of Harmony SASE Subnets can only be "0.0.0.0/0" or the
+  #   409 "The list of Check Point SASE Subnets can only be "0.0.0.0/0" or the
   #        network Subnet"
   # for anything else, so the default route is the correct value for it.
   p81_gateway_subnets    = ["0.0.0.0/0"]

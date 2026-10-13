@@ -99,7 +99,7 @@ func resourceEnhancedRegionImportState(ctx context.Context, d *schema.ResourceDa
 	}
 
 	// Recover harmony_sase_region_id by matching the enhanced region's name
-	// against the global Harmony SASE region list. The GET endpoint that Read
+	// against the global Check Point SASE region list. The GET endpoint that Read
 	// uses (/v2.3/networks/enhanced/{networkId}/regions/{regionId}) does NOT
 	// return harmony_sase_region_id (the swagger's EnhancedRegion schema
 	// lacks it), but it does return the region `name` which is identical to

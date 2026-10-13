@@ -3,7 +3,7 @@
 # This is the READ-ONLY half of a name that is also a resource. Terraform allows
 # a data source and a resource to share a name, and the convention is exactly
 # this: `data` reads what is there, `resource` owns it. Use the data source when
-# the policy belongs to somebody else -- a tenant maintained in the Harmony SASE
+# the policy belongs to somebody else -- a tenant maintained in the Check Point SASE
 # console, or another Terraform configuration -- because the resource deletes
 # every rule its own configuration does not contain.
 #

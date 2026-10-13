@@ -414,7 +414,7 @@ READ THIS BEFORE RUNNING IT. This test writes ACCOUNT-WIDE settings. Unlike ever
 other acceptance test in this package it creates nothing, scopes nothing to a
 throwaway network, and cannot be isolated: there is exactly one support-options
 document per tenant, and while this test runs, the phone numbers, live-chat target
-and user-guide switch the Harmony SASE agent shows to every end user of the target
+and user-guide switch the Check Point SASE agent shows to every end user of the target
 account are whatever this test last applied.
 
 It therefore captures the account's real values in PreCheck and restores them from

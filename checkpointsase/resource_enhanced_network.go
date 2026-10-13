@@ -175,7 +175,7 @@ func resourceEnhancedNetworkImportState(ctx context.Context, d *schema.ResourceD
 	for _, r := range apiRegions {
 		harmonyId, ok := nameToHarmonyId[r.Name]
 		if !ok {
-			return nil, fmt.Errorf("could not import enhanced network: no Harmony SASE region found matching region name %q (network region id %s)", r.Name, r.Id)
+			return nil, fmt.Errorf("could not import enhanced network: no Check Point SASE region found matching region name %q (network region id %s)", r.Name, r.Id)
 		}
 		entry := map[string]interface{}{
 			"id":          r.Id,

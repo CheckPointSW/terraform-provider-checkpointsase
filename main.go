@@ -8,7 +8,7 @@ import (
 )
 
 // Generate the Check Point SASE Terraform provider documentation using `tfplugindocs`:
-//go:generate go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs generate --provider-name checkpointsase
+//go:generate go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs generate --provider-name terraform-provider-checkpointsase
 
 /*
 version and commit are injected at release time by goreleaser, whose ldflags

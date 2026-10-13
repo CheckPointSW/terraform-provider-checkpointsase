@@ -311,7 +311,7 @@ func resourceHttpsInspectionPolicy() *schema.Resource {
 			"order the policy is stored in, and every apply is a single `POST` that replaces the " +
 			"array. There is no partial update. " +
 			"**Any rule that is not in your configuration is removed on the next apply.** That " +
-			"includes rules somebody added in the Harmony SASE console: this resource cannot " +
+			"includes rules somebody added in the Check Point SASE console: this resource cannot " +
 			"merge with them, and adopting a tenant whose policy is also edited by hand will " +
 			"delete those edits. Only one Terraform resource, in one configuration, can manage " +
 			"this policy. " +
@@ -671,7 +671,7 @@ func httpsInspectionSourcesResource() *schema.Resource {
 					"policy does not have. The API declares these as ids; the SWG service's own " +
 					"stored bypass rules hold executable names such as `notepad.exe`, and which " +
 					"of the two a tenant expects has **not** been verified against a live " +
-					"policy, so pass exactly what the Harmony SASE console shows. A set: order " +
+					"policy, so pass exactly what the Check Point SASE console shows. A set: order " +
 					"is not significant. Omit it to leave the rule unrestricted by application.",
 				Elem: &schema.Schema{Type: schema.TypeString},
 			},
