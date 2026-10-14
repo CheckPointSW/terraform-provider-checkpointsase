@@ -10,6 +10,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 )
 
 /*
@@ -246,18 +247,20 @@ longer free.
 func enhancedRegionPrivateDNSSchema() map[string]*schema.Schema {
 	s := privateDNSSchema()
 	s[privateDNSAttrNetworkID] = &schema.Schema{
-		Type:     schema.TypeString,
-		Required: true,
-		ForceNew: true,
+		Type:         schema.TypeString,
+		Required:     true,
+		ForceNew:     true,
+		ValidateFunc: validation.StringIsNotEmpty,
 		Description: "ID of the enhanced network the region belongs to. Changing it replaces " +
 			"the resource: together with `region_id` it is the address of the setting, not a " +
 			"property of it. The network must already exist — this endpoint answers `404` " +
 			"for an id it does not know.",
 	}
 	s[privateDNSAttrRegionID] = &schema.Schema{
-		Type:     schema.TypeString,
-		Required: true,
-		ForceNew: true,
+		Type:         schema.TypeString,
+		Required:     true,
+		ForceNew:     true,
+		ValidateFunc: validation.StringIsNotEmpty,
 		Description: "ID of the region within that enhanced network whose private DNS this " +
 			"configures. Changing it replaces the resource. This is the region's own id — the " +
 			"`id` of a `region` block on `checkpointsase_enhanced_network`, NOT the " +
@@ -288,6 +291,34 @@ func getEnhancedRegionPrivateDNS(ctx context.Context, client *perimeter81Sdk.API
 
 	return client.EnhancedPrivateDNSAPI.
 		GetEnhancedRegionPrivateDNS(ctx, networkId, regionId).Execute()
+}
+
+/*
+enhancedRegionPrivateDNSAddress reads the two path ids from resource attributes,
+falling back to the composite resource id when partial state omitted either one.
+
+A failed create can retain the composite id while losing the individual required
+attributes. The next refresh/update must still address the same region rather
+than sending empty path segments.
+*/
+func enhancedRegionPrivateDNSAddress(d *schema.ResourceData) (string, string, error) {
+	networkId := d.Get(privateDNSAttrNetworkID).(string)
+	regionId := d.Get(privateDNSAttrRegionID).(string)
+	if networkId != "" && regionId != "" {
+		return networkId, regionId, nil
+	}
+
+	idNetwork, idRegion, err := parseEnhancedRegionPrivateDNSID(d.Id())
+	if err != nil {
+		return "", "", fmt.Errorf("could not determine enhanced region private DNS address: %w", err)
+	}
+	if networkId == "" {
+		networkId = idNetwork
+	}
+	if regionId == "" {
+		regionId = idRegion
+	}
+	return networkId, regionId, nil
 }
 
 /*
@@ -327,8 +358,11 @@ func resourceEnhancedRegionPrivateDNSCreate(ctx context.Context, d *schema.Resou
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
 
-	networkId := d.Get(privateDNSAttrNetworkID).(string)
-	regionId := d.Get(privateDNSAttrRegionID).(string)
+	networkId, regionId, err := enhancedRegionPrivateDNSAddress(d)
+	if err != nil {
+		return appendErrorDiags(diags,
+			"Unable to determine enhanced region private DNS address", err)
+	}
 
 	if _, _, err := getEnhancedRegionPrivateDNS(ctx, client, networkId, regionId); err != nil {
 		d.Partial(true)
@@ -410,8 +444,11 @@ func resourceEnhancedRegionPrivateDNSRead(ctx context.Context, d *schema.Resourc
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
 
-	networkId := d.Get(privateDNSAttrNetworkID).(string)
-	regionId := d.Get(privateDNSAttrRegionID).(string)
+	networkId, regionId, err := enhancedRegionPrivateDNSAddress(d)
+	if err != nil {
+		return appendErrorDiags(diags,
+			"Unable to determine enhanced region private DNS address", err)
+	}
 
 	customDns, resp, err := getEnhancedRegionPrivateDNS(ctx, client, networkId, regionId)
 	if err != nil {
@@ -501,8 +538,11 @@ func resourceEnhancedRegionPrivateDNSUpdate(ctx context.Context, d *schema.Resou
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
 
-	networkId := d.Get(privateDNSAttrNetworkID).(string)
-	regionId := d.Get(privateDNSAttrRegionID).(string)
+	networkId, regionId, err := enhancedRegionPrivateDNSAddress(d)
+	if err != nil {
+		return appendErrorDiags(diags,
+			"Unable to determine enhanced region private DNS address", err)
+	}
 	payload := expandCustomDnsUpdate(d)
 
 	accepted, err := putPrivateDNSAndWait(ctx, client,
@@ -556,8 +596,11 @@ func resourceEnhancedRegionPrivateDNSDelete(ctx context.Context, d *schema.Resou
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
 
-	networkId := d.Get(privateDNSAttrNetworkID).(string)
-	regionId := d.Get(privateDNSAttrRegionID).(string)
+	networkId, regionId, err := enhancedRegionPrivateDNSAddress(d)
+	if err != nil {
+		return appendErrorDiags(diags,
+			"Unable to determine enhanced region private DNS address", err)
+	}
 	payload := defaultCustomDnsUpdate()
 
 	accepted, err := putPrivateDNSAndWait(ctx, client,

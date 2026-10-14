@@ -188,6 +188,37 @@ func TestEnhancedRegionPrivateDNSReadUsesBothIdsInThePath(t *testing.T) {
 }
 
 /*
+TestEnhancedRegionPrivateDNSReadRecoversAddressFromCompositeID covers refresh
+after a failed create left only the composite id in partial state.
+*/
+func TestEnhancedRegionPrivateDNSReadRecoversAddressFromCompositeID(t *testing.T) {
+	fake := startEnhancedPrivateDNSFake(t, &enhancedPrivateDNSFake{
+		getBody: measuredPrivateDNSConfigured,
+	})
+
+	d := testEnhancedRegionPrivateDNSData(t, map[string]interface{}{})
+	d.SetId(testRegionPDNSID)
+
+	diags := resourceEnhancedRegionPrivateDNSRead(context.Background(), d, fake.client())
+	if diags.HasError() {
+		t.Fatalf("the read failed: %s", diagsText(diags))
+	}
+	want := []string{"GET " + testRegionPDNSPath}
+	if got := fake.calls(); !testComparableArraiesEq(got, want) {
+		t.Errorf("the read issued %v, want %v; partial state must recover both path ids "+
+			"from the composite resource id", got, want)
+	}
+	for name, want := range map[string]string{
+		privateDNSAttrNetworkID: testRegionPDNSNetworkID,
+		privateDNSAttrRegionID:  testRegionPDNSRegionID,
+	} {
+		if got := d.Get(name); got != want {
+			t.Errorf("%s = %#v after refresh, want %q", name, got, want)
+		}
+	}
+}
+
+/*
 TestEnhancedRegionPrivateDNSReadClearsIdWhenTheParentIsGone pins EPD-D01, and it
 pins a branch that this codebase has three times been wrong to add elsewhere.
 
@@ -1309,6 +1340,17 @@ func TestEnhancedRegionPrivateDNSSchemaIsTheSharedOnePlusTwoAddresses(t *testing
 				"property of it -- without ForceNew, changing it would UPDATE the new region's "+
 				"private DNS in place while Terraform believed it was still managing the old "+
 				"one, leaving the old region's configuration untracked and unchanged", name)
+		}
+		if attr.ValidateFunc == nil {
+			t.Errorf("%s must reject an empty value before it becomes an empty URL path segment", name)
+		} else {
+			if _, errors := attr.ValidateFunc("", name); len(errors) == 0 {
+				t.Errorf("%s accepts an empty value, which produces an authorization error for "+
+					"the malformed private-DNS path", name)
+			}
+			if _, errors := attr.ValidateFunc("valid-id", name); len(errors) != 0 {
+				t.Errorf("%s rejects a non-empty id: %v", name, errors)
+			}
 		}
 		if strings.TrimSpace(attr.Description) == "" {
 			t.Errorf("%s has no Description; tfplugindocs renders the registry docs from it", name)
