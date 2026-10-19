@@ -339,6 +339,33 @@ func TestEnhancedNetworkPrivateDNSReadClearsIdWhenTheNetworkIsGone(t *testing.T)
 }
 
 /*
+TestEnhancedNetworkPrivateDNSReadRecoversNetworkIDFromResourceID covers refresh
+after a failed create retained the resource id but omitted network_id in partial
+state. For this resource those identifiers are the same value.
+*/
+func TestEnhancedNetworkPrivateDNSReadRecoversNetworkIDFromResourceID(t *testing.T) {
+	fake := startEnhancedPrivateDNSFake(t, &enhancedPrivateDNSFake{
+		getBody: measuredPrivateDNSConfigured,
+	})
+
+	d := testEnhancedNetworkPrivateDNSData(t, map[string]interface{}{})
+	d.SetId("net-1")
+
+	diags := resourceEnhancedNetworkPrivateDNSRead(context.Background(), d, fake.client())
+	if diags.HasError() {
+		t.Fatalf("the read failed: %s", diagsText(diags))
+	}
+	want := []string{"GET /v3/networks/enhanced/net-1/privateDNS"}
+	if got := fake.calls(); !testComparableArraiesEq(got, want) {
+		t.Errorf("the read issued %v, want %v; partial state must recover network_id "+
+			"from the resource id", got, want)
+	}
+	if got := d.Get(privateDNSAttrNetworkID); got != "net-1" {
+		t.Errorf("network_id = %#v after refresh, want %q", got, "net-1")
+	}
+}
+
+/*
 TestEnhancedNetworkPrivateDNSReadKeepsTheIdOnEveryOtherError is the other half of
 the test above, and it exists so that "clear the id on 404" cannot degrade into
 "clear the id whenever the read fails".

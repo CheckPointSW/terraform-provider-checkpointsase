@@ -265,6 +265,18 @@ func getEnhancedNetworkPrivateDNS(ctx context.Context, client *perimeter81Sdk.AP
 }
 
 /*
+enhancedNetworkPrivateDNSAddress returns the network id from its attribute, or
+from the resource id if partial state retained the id but omitted the attribute.
+*/
+func enhancedNetworkPrivateDNSAddress(d *schema.ResourceData) string {
+	networkId := d.Get(privateDNSAttrNetworkID).(string)
+	if networkId == "" {
+		networkId = d.Id()
+	}
+	return networkId
+}
+
+/*
 resourceEnhancedNetworkPrivateDNSCreate adopts the network's existing private DNS
 configuration and then writes the configured one.
 
@@ -301,7 +313,7 @@ func resourceEnhancedNetworkPrivateDNSCreate(ctx context.Context, d *schema.Reso
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
 
-	networkId := d.Get(privateDNSAttrNetworkID).(string)
+	networkId := enhancedNetworkPrivateDNSAddress(d)
 
 	if _, _, err := getEnhancedNetworkPrivateDNS(ctx, client, networkId); err != nil {
 		d.Partial(true)
@@ -352,7 +364,7 @@ func resourceEnhancedNetworkPrivateDNSRead(ctx context.Context, d *schema.Resour
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
 
-	networkId := d.Get(privateDNSAttrNetworkID).(string)
+	networkId := enhancedNetworkPrivateDNSAddress(d)
 
 	customDns, resp, err := getEnhancedNetworkPrivateDNS(ctx, client, networkId)
 	if err != nil {
@@ -438,7 +450,7 @@ func resourceEnhancedNetworkPrivateDNSUpdate(ctx context.Context, d *schema.Reso
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
 
-	networkId := d.Get(privateDNSAttrNetworkID).(string)
+	networkId := enhancedNetworkPrivateDNSAddress(d)
 	payload := expandCustomDnsUpdate(d)
 
 	accepted, err := putPrivateDNSAndWait(ctx, client,
@@ -500,7 +512,7 @@ func resourceEnhancedNetworkPrivateDNSDelete(ctx context.Context, d *schema.Reso
 	var diags diag.Diagnostics
 	client := m.(*perimeter81Sdk.APIClient)
 
-	networkId := d.Get(privateDNSAttrNetworkID).(string)
+	networkId := enhancedNetworkPrivateDNSAddress(d)
 	payload := defaultCustomDnsUpdate()
 
 	accepted, err := putPrivateDNSAndWait(ctx, client,
